@@ -225,9 +225,9 @@ class Frame {
     return x || y ? `<g transform="translate(${x} ${y})">${body}</g>` : body
   }
   // Shows sub-scene i of n for its slice of a T-second cycle, building only the one on screen.
-  cycle(scenes: (() => string)[], T: number): string {
+  cycle(scenes: (() => string)[], T: number, t = this.t): string {
     const n = scenes.length
-    const i = Math.floor((((this.t % T) + T) % T) / (T / n))
+    const i = Math.floor((((t % T) + T) % T) / (T / n))
     return scenes[i]()
   }
 }
@@ -392,7 +392,11 @@ function idle(f: Frame): string {
   return f.cycle([sweeping, walking, phone, chatting, reading], 40)
 }
 
-// ---------- working: laptop, papers, delegating, boxes, office, analysis ----------
+// ---------- working: laptop, papers, delegating, boxes, office, analysis, smoke break ----------
+
+// A turn that runs this long counts as a hard task: Claude takes smoke breaks while on it,
+// and gets a lightbulb when it lands.
+export const HARD_SECONDS = 90
 
 function working(f: Frame): string {
   const typing = () => {
@@ -451,14 +455,38 @@ function working(f: Frame): string {
     f.g('magscan 5s steps(10) infinite', spr(['.lll...', 'lcccl..', 'lcccl..', 'lcccl..', '.lllb..', '....bb.', '.....bb']), 58, 5) +
     f.g('tw 5s step-end infinite', spr(['www', '..w', '.ww', '...', '.w.']), 78, 1)
 
-  return f.cycle([typing, papers, delegate, boxes, office, analyze], 36)
+  const smokeBreak = () => {
+    const puff = 'wave 3s step-end infinite'
+    const cig =
+      rect(16, 1, 3, 1, 'w') +
+      f.g('on .6s step-end infinite', rect(19, 1, 1, 1, 'r')) +
+      f.g('off .6s step-end infinite', rect(19, 1, 1, 1, 'f'))
+    const smoke = [0, 1, 2].map(i => f.g(`riseR 2.4s linear infinite ${-i * 0.8}s`, rect(0, 0, 1 + (i % 2), 1, 'g'), 19, -1)).join('')
+    return (
+      rect(50, 15, 26, 1, 'L') + rect(50, 16, 26, 2, 'G') +
+      clawd(f, 58, 9, { eyes: 'closed', sit: true, bob: 'bob 3s step-end infinite', armRUp: true, armR: puff, extra: f.g(puff, cig) + smoke }) +
+      f.g('tw 3s step-end infinite -1s', rect(0, 0, 1, 2, 'c'), 59, 7)
+    )
+  }
+
+  const scenes = [typing, papers, delegate, boxes, office, analyze]
+  if (f.t < HARD_SECONDS) return f.cycle(scenes, 36)
+  // Once the task is hard, the smoke break comes first, then joins the rotation.
+  return f.cycle([smokeBreak, ...scenes], 42, f.t - HARD_SECONDS)
 }
 
 // ---------- task complete: one burst of confetti, jumping and dancing ----------
 
 export const DONE_SECONDS = 6.5
 
-function done(f: Frame): string {
+const BULB = ['.yyy.', 'yhwhy', 'yhhhy', '.yyy.', '.lLl.']
+
+function lightbulb(f: Frame): string {
+  const rays = rect(3, -5, 1, 1, 'y') + rect(11, -5, 1, 1, 'y') + rect(7, -8, 1, 1, 'y') + rect(4, -7, 1, 1, 'y') + rect(10, -7, 1, 1, 'y')
+  return spr(BULB, 5, -6) + f.g('on .6s step-end infinite', rays)
+}
+
+function done(f: Frame, eureka = false): string {
   const colors = ['r', 'y', 'c', 'n', 'p', 'v', 'f', 'u']
   let confetti = ''
   for (let i = 0; i < 34; i++) {
@@ -473,7 +501,7 @@ function done(f: Frame): string {
   }
   return (
     confetti +
-    f.g('dance 2.4s step-end 0s 2 forwards', clawd(f, 66, 10, { eyes: 'happy', armL: 'wave .3s step-end infinite', armR: 'wave .3s step-end infinite -.15s', walk: true })) +
+    f.g('dance 2.4s step-end 0s 2 forwards', clawd(f, 66, 10, { eyes: 'happy', armL: 'wave .3s step-end infinite', armR: 'wave .3s step-end infinite -.15s', walk: true, extra: eureka ? lightbulb(f) : '' })) +
     f.g('hop .6s step-end 0s 9', mini(f, 52, 13, '', false)) +
     f.g('hop .6s step-end -.3s 9', mini(f, 86, 13, '', false)) +
     sparkle(f, 60, 2, 0, 0.9) + sparkle(f, 88, 4, 0.45, 0.9) + sparkle(f, 46, 6, 0.3, 0.9)
@@ -599,14 +627,37 @@ function confused(f: Frame): string {
   )
 }
 
+// ---------- loop: the same tool call over and over, as a roller-coaster loop it never leaves ----------
+
+function coaster(f: Frame): string {
+  const cx = 72
+  const cy = 9
+  let track = ''
+  for (let k = 0; k < 48; k++) {
+    const a = (k / 48) * 2 * Math.PI
+    track += rect(Math.round(cx + 7 * Math.sin(a)), Math.round(cy + 7 * Math.cos(a)), 1, 1, 'L')
+  }
+  let supports = ''
+  for (let x = 38; x < W; x += 6) supports += rect(x, 17, 1, 1, 'G')
+  const step = Math.floor((((f.t % 1.6) + 1.6) % 1.6) / 1.6 * 16)
+  const a = (step / 16) * 2 * Math.PI
+  const rider = spr(['.oo.', 'oeeo', 'rRRr'], Math.round(cx + 5 * Math.sin(a)) - 2, Math.round(cy + 5 * Math.cos(a)) - 1)
+  return (
+    rect(34, 16, W - 34, 1, 'L') + supports + track + rider +
+    sparkle(f, 84, 1, 0, 0.8) + sparkle(f, 58, 3, 0.4, 0.8) +
+    f.g('tw .8s step-end infinite -.2s', spr(['y.y', '.y.', 'y.y']), 88, 9)
+  )
+}
+
 // One still frame of `mood`, `t` seconds after it began.
-export function sceneSvg(mood: Mood, t: number): string {
+export function sceneSvg(mood: Mood, t: number, eureka = false): string {
   const f = new Frame(t)
   const body =
     mood === 'working' ? working(f) :
-    mood === 'done' ? done(f) :
+    mood === 'done' ? done(f, eureka) :
     mood === 'relax' ? relax(f) :
     mood === 'error' ? confused(f) :
+    mood === 'loop' ? coaster(f) :
     idle(f)
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W * 3}" height="${H * 3}" shape-rendering="crispEdges">` +

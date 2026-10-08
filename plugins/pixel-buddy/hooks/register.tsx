@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Ctx, Limit, Mood } from '../types'
-import { DONE_SECONDS, ERROR_SECONDS, SCENE_HEIGHT, SCENE_WIDTH, sceneSvg } from './scene'
+import { DONE_SECONDS, ERROR_SECONDS, HARD_SECONDS, SCENE_HEIGHT, SCENE_WIDTH, sceneSvg } from './scene'
 
 const mood = atom({ plugin: 'pixel-buddy', key: 'mood' } as const, 'idle' as Mood)
 const moodAt = atom({ plugin: 'pixel-buddy', key: 'moodAt' } as const, 0)
@@ -12,6 +12,19 @@ const now = atom({ plugin: 'pixel-buddy', key: 'now' } as const, 0)
 const minute = atom({ plugin: 'pixel-buddy', key: 'minute' } as const, 0)
 const ctx = atom({ plugin: 'pixel-buddy', key: 'ctx' } as const, null as Ctx | null)
 const limits = atom({ plugin: 'pixel-buddy', key: 'limits' } as const, [] as Limit[])
+const eureka = atom({ plugin: 'pixel-buddy', key: 'eureka' } as const, false)
+const loopSince = atom({ plugin: 'pixel-buddy', key: 'loopSince' } as const, null as number | null)
+const toolCounts = atom({ plugin: 'pixel-buddy', key: 'toolCounts' } as const, {} as Record<string, number>)
+
+// The same tool with the same input this many times in one turn means Claude is going in circles.
+const LOOP_REPEATS = 3
+const RESERVED = new Set(['tool', 'tool_use_id', 'agentId', 'consent'])
+
+function hash(s: string): string {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return (h >>> 0).toString(36)
+}
 
 // The "task complete" party plays once, then Claude relaxes for a while before idling.
 const RELAX_MS = 4 * 60_000
@@ -107,16 +120,24 @@ function sceneFor(m: Mood, elapsed: number): { mood: Mood; t: number } {
   return { mood: m, t: elapsed }
 }
 
+const ALT: Partial<Record<Mood, string>> = {
+  done: 'celebrating',
+  relax: 'relaxing',
+  error: 'puzzled',
+  loop: 'going round a roller-coaster loop',
+}
+
 const kTokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`)
 
 // Terminal drawing: a text mascot and block bars, since the terminal cannot show the SVGs.
 const ORANGE = '#d97757'
 const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
-function faceFor(m: Mood, t: number): string {
+function faceFor(m: Mood, t: number, idea = false): string {
   const f = Math.floor(t * 1000 / FRAME_MS)
   if (m === 'working') return `(o_o) ${SPIN[f % SPIN.length]}`
-  if (m === 'done') return f % 6 < 3 ? '\\(^o^)/' : '/(^o^)\\'
+  if (m === 'loop') return `(@_@) ${['◜', '◝', '◞', '◟'][f % 4]}`
+  if (m === 'done') return (f % 6 < 3 ? '\\(^o^)/' : '/(^o^)\\') + (idea ? ' (!)' : '')
   if (m === 'relax') return '(-‿-) z'
   if (m === 'error') return f % 10 < 5 ? '(o_O)?' : '(O_o)?'
   return f % 40 === 0 ? '(-_-)' : '(o_o)'
@@ -202,7 +223,23 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    await update($, toolCounts, () => ({}))
+    await update($, loopSince, () => null)
     await setMood($, 'working')
+    return next(e)
+  })
+
+  // Counts each main-loop tool call by its input; a repeat past LOOP_REPEATS starts the coaster.
+  on('tool.call', async ($, e, next) => {
+    if (!e.agentId && (await read($, loopSince)) === null) {
+      const args = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
+      const sig = `${e.tool}:${hash(JSON.stringify(args))}`
+      await update($, toolCounts, c => ({ ...c, [sig]: (c[sig] ?? 0) + 1 }))
+      if (((await read($, toolCounts))[sig] ?? 0) >= LOOP_REPEATS) {
+        const t = await $.clock.now()
+        await update($, loopSince, () => t)
+      }
+    }
     return next(e)
   })
 
@@ -211,6 +248,11 @@ export const register: Register = (on, options) => {
   // The hand-offs are worked out from the clock on each frame (see sceneFor), so no timer can be lost.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId) return next(e)
+    const t = await $.clock.now()
+    const startedAt = (await read($, mood)) === 'working' ? await read($, moodAt) : t
+    const solved = !e.isAborted && e.reason !== 'error'
+    await update($, eureka, () => solved && t - startedAt >= HARD_SECONDS * 1000)
+    await update($, loopSince, () => null)
     await setMood($, e.isAborted ? 'idle' : e.reason === 'error' ? 'error' : 'done')
     return next(e)
   })
@@ -226,7 +268,12 @@ export const register: Register = (on, options) => {
     const m: Mood = e.props.isWorking ? 'working' : stored === 'working' ? 'idle' : stored
     const tFrame = await read($, frame)
     const since = m === stored ? await read($, moodAt) : 0
-    const { mood: shownMood, t: sceneT } = sceneFor(m, Math.max(0, (tFrame - since) / 1000))
+    const loopAt = await read($, loopSince)
+    const { mood: shownMood, t: sceneT } =
+      e.props.isWorking && loopAt !== null
+        ? { mood: 'loop' as Mood, t: Math.max(0, (tFrame - loopAt) / 1000) }
+        : sceneFor(m, Math.max(0, (tFrame - since) / 1000))
+    const idea = shownMood === 'done' && (await read($, eureka))
     const shown = [
       { kind: 'five_hour', label: '5h', icon: 'clock' as const },
       { kind: 'seven_day', label: '7d', icon: 'cal' as const },
@@ -239,7 +286,7 @@ export const register: Register = (on, options) => {
     if (e.surface !== 'desktop' && e.surface !== 'vscode') {
       return (
         <Box flexDirection="row" flexWrap="wrap" gap={3}>
-          <Text bold color={ORANGE}>{faceFor(shownMood, sceneT)}</Text>
+          <Text bold color={ORANGE}>{faceFor(shownMood, sceneT, idea)}</Text>
           {shown.map(s => (
             <Box key={s.kind} flexDirection="row" gap={1}>
               <Text bold>{s.label}</Text>
@@ -265,8 +312,8 @@ export const register: Register = (on, options) => {
           ))}
         </Box>
         <Svg
-          source={sceneSvg(shownMood, sceneT)}
-          alt={`Claude is ${shownMood === 'done' ? 'celebrating' : shownMood === 'relax' ? 'relaxing' : shownMood === 'error' ? 'puzzled' : shownMood}`}
+          source={sceneSvg(shownMood, sceneT, idea)}
+          alt={`Claude is ${idea ? 'having a eureka moment' : ALT[shownMood] ?? shownMood}`}
           width={SCENE_WIDTH}
           height={SCENE_HEIGHT}
         />
