@@ -1,0 +1,8 @@
+{
+  "name": "pixel-buddy-fixed",
+  "owner": { "name": "local" },
+  "description": "Locally fixed pixel-buddy (manifest + terminal display)",
+  "plugins": [
+    { "name": "pixel-buddy", "source": "./plugins/pixel-buddy", "description": "Usage meters, mascot, cache timer and context meter" }
+  ]
+}
