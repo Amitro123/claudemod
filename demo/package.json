@@ -1,0 +1,13 @@
+{
+  "name": "pixel-buddy-demo",
+  "private": true,
+  "type": "module",
+  "description": "Renders assets/pixel-buddy.gif from the plugin's real scene code",
+  "scripts": {
+    "frames": "node render-frames.mjs",
+    "gif": "node render-frames.mjs && python make-gif.py"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}

@@ -20,6 +20,9 @@ const toolCounts = atom({ plugin: 'pixel-buddy', key: 'toolCounts' } as const, {
 const LOOP_REPEATS = 3
 const RESERVED = new Set(['tool', 'tool_use_id', 'agentId', 'consent'])
 
+// The intervals armed by session.start, kept so a later session.start can cancel them.
+const timers: { cancel: () => void }[] = []
+
 function hash(s: string): string {
   let h = 5381
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
@@ -37,6 +40,7 @@ const RED = '#e5534b'
 const levelColor = (p: number) => (p >= 90 ? RED : p >= 70 ? AMBER : GREEN)
 
 function span(ms: number): string {
+  if (!Number.isFinite(ms)) return '–'
   const m = Math.max(0, Math.round(ms / 60_000))
   const d = Math.floor(m / 1440)
   const h = Math.floor((m % 1440) / 60)
@@ -72,17 +76,17 @@ function ringSvg(percent: number, icon: 'clock' | 'cal'): string {
 // A pixel hourglass: sand on top drains as the cache TTL runs out.
 function hourglassSvg(frac: number): string {
   const sand = frac > 0 ? (frac > 0.2 ? GREEN : AMBER) : '#555'
-  const frame = '#9a9a9a'
+  const glass = '#9a9a9a'
   let px = ''
   const r = (x: number, y: number, w: number, h: number, c: string) => {
     px += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${c}"/>`
   }
-  r(0, 0, 7, 1, frame)
-  r(0, 8, 7, 1, frame)
-  r(1, 1, 1, 2, frame); r(5, 1, 1, 2, frame); r(2, 3, 1, 1, frame); r(4, 3, 1, 1, frame)
-  r(3, 4, 1, 1, frame)
-  r(2, 5, 1, 1, frame); r(4, 5, 1, 1, frame); r(1, 6, 1, 2, frame); r(5, 6, 1, 2, frame)
-  const top = Math.ceil(2 * frac)
+  r(0, 0, 7, 1, glass)
+  r(0, 8, 7, 1, glass)
+  r(1, 1, 1, 2, glass); r(5, 1, 1, 2, glass); r(2, 3, 1, 1, glass); r(4, 3, 1, 1, glass)
+  r(3, 4, 1, 1, glass)
+  r(2, 5, 1, 1, glass); r(4, 5, 1, 1, glass); r(1, 6, 1, 2, glass); r(5, 6, 1, 2, glass)
+  const top = Math.ceil(2 * Math.min(1, Math.max(0, frac)))
   if (top > 0) r(2, 3 - top, 3, top, sand)
   r(2, 7, 3, 1, sand)
   if (frac < 1 && frac > 0) r(2, 6, 3, 1, sand)
@@ -177,6 +181,10 @@ export const register: Register = (on, options) => {
   const ttlMs = options.cacheTtl === '5m' ? 5 * 60_000 : 60 * 60_000
 
   on('session.start', async ($, e, next) => {
+    // session.start can fire again for the same module (an enable, a worker respawn):
+    // drop the previous timers so the intervals never stack up.
+    for (const timer of timers.splice(0)) timer.cancel()
+
     const u = await $.session.usage()
     await update($, ctx, () => u.context)
     await update($, limits, () => u.rateLimits)
@@ -184,25 +192,28 @@ export const register: Register = (on, options) => {
     await update($, minute, () => t0)
 
     // Keep "resets in" fresh, and tick the cache countdown while it is warm.
-    $.clock.every(60_000, async () => {
+    timers.push($.clock.every(60_000, async () => {
       const t = await $.clock.now()
       await update($, minute, () => t)
       await refreshStatus($, ttlMs)
-    })
+    }))
     await update($, moodAt, () => t0)
-    $.clock.every(FRAME_MS, async () => {
+    timers.push($.clock.every(FRAME_MS, async () => {
       const t = await $.clock.now()
       await update($, frame, () => t)
-    })
-    $.clock.every(1_000, async () => {
+    }))
+    timers.push($.clock.every(1_000, async () => {
       const at = await read($, cacheAt)
       if (at === null) return
       const t = await $.clock.now()
-      if (t - at < ttlMs + 2_000) {
+      // Tick while warm, and always once more after expiry: a late tick (the machine
+      // slept) must still flip the label to "cold" instead of freezing a stale countdown.
+      const shownWarm = (await read($, now)) - at < ttlMs
+      if (t - at < ttlMs + 2_000 || shownWarm) {
         await update($, now, () => t)
         await refreshStatus($, ttlMs)
       }
-    })
+    }))
 
     await refreshStatus($, ttlMs)
     $.ui.toast('pixel-buddy loaded')
@@ -250,10 +261,10 @@ export const register: Register = (on, options) => {
     if (e.agentId) return next(e)
     const t = await $.clock.now()
     const startedAt = (await read($, mood)) === 'working' ? await read($, moodAt) : t
-    const solved = !e.isAborted && e.reason !== 'error'
+    const solved = !e.isAborted && e.reason === 'answer'
     await update($, eureka, () => solved && t - startedAt >= HARD_SECONDS * 1000)
     await update($, loopSince, () => null)
-    await setMood($, e.isAborted ? 'idle' : e.reason === 'error' ? 'error' : 'done')
+    await setMood($, e.isAborted ? 'idle' : solved ? 'done' : 'error')
     return next(e)
   })
 
@@ -267,12 +278,16 @@ export const register: Register = (on, options) => {
     const stored = await read($, mood)
     const m: Mood = e.props.isWorking ? 'working' : stored === 'working' ? 'idle' : stored
     const tFrame = await read($, frame)
-    const since = m === stored ? await read($, moodAt) : 0
+    // When the band's mood is not the stored one (the UI says "working" before turn.start
+    // lands, or the turn ended before turn.complete ran) there is no start time: run a
+    // free clock that stays under HARD_SECONDS, never the raw epoch (which reads as a
+    // turn that has run for decades and jumps straight to the smoke break).
+    const elapsed = m === stored ? (tFrame - (await read($, moodAt))) / 1000 : (tFrame / 1000) % HARD_SECONDS
     const loopAt = await read($, loopSince)
     const { mood: shownMood, t: sceneT } =
       e.props.isWorking && loopAt !== null
         ? { mood: 'loop' as Mood, t: Math.max(0, (tFrame - loopAt) / 1000) }
-        : sceneFor(m, Math.max(0, (tFrame - since) / 1000))
+        : sceneFor(m, Math.max(0, elapsed))
     const idea = shownMood === 'done' && (await read($, eureka))
     const shown = [
       { kind: 'five_hour', label: '5h', icon: 'clock' as const },

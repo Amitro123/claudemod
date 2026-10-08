@@ -56,7 +56,7 @@ function spr(rows: string[], x = 0, y = 0): string {
   rows.forEach((row, j) => {
     let i = 0
     while (i < row.length) {
-      const c = row[i]
+      const c = row[i] ?? '.'
       if (c === '.' || c === ' ') {
         i++
         continue
@@ -134,7 +134,7 @@ function parseAnim(def: string): Anim {
   const hit = animCache.get(def)
   if (hit) return hit
   const parts = def.trim().split(/\s+/)
-  const name = parts[0]
+  const name = parts[0] ?? ''
   const track = KF[name] ?? (name.startsWith('vis') ? visTrack(Number(name.slice(3))) : [[0, {}], [100, {}]] as Track)
   const times: number[] = []
   let timing: Timing = { kind: 'linear' }
@@ -158,13 +158,16 @@ function parseAnim(def: string): Anim {
 }
 
 function sampleProp(track: Track, key: keyof Pose, pct: number, timing: Timing): number {
-  const pts = track.filter(([, p]) => p[key] !== undefined).map(([at, p]) => [at, p[key] as number] as const)
-  if (!pts.length) return BASE[key]
-  if (pts[0][0] > 0) pts.unshift([0, BASE[key]])
-  if (pts[pts.length - 1][0] < 100) pts.push([100, BASE[key]])
+  const pts: (readonly [number, number])[] = track
+    .filter(([, p]) => p[key] !== undefined)
+    .map(([at, p]) => [at, p[key] as number] as const)
+  const first = pts[0]
+  if (!first) return BASE[key]
+  if (first[0] > 0) pts.unshift([0, BASE[key]])
+  if ((pts[pts.length - 1] as readonly [number, number])[0] < 100) pts.push([100, BASE[key]])
   for (let i = 0; i < pts.length - 1; i++) {
-    const [a, va] = pts[i]
-    const [b, vb] = pts[i + 1]
+    const [a, va] = pts[i] as readonly [number, number]
+    const [b, vb] = pts[i + 1] as readonly [number, number]
     if (pct >= a && pct < b) {
       let f = (pct - a) / (b - a)
       if (timing.kind === 'step') f = 0
@@ -172,7 +175,7 @@ function sampleProp(track: Track, key: keyof Pose, pct: number, timing: Timing):
       return va + (vb - va) * f
     }
   }
-  return pts[pts.length - 1][1]
+  return (pts[pts.length - 1] as readonly [number, number])[1]
 }
 
 // The pose of an animation at time t, or null where it has no effect (before or after its run).
@@ -195,7 +198,10 @@ function poseAt(def: string, t: number): Required<Pose> | null {
   return out
 }
 function lastValue(track: Track, key: keyof Pose): number {
-  for (let i = track.length - 1; i >= 0; i--) if (track[i][1][key] !== undefined) return track[i][1][key] as number
+  for (let i = track.length - 1; i >= 0; i--) {
+    const v = track[i]?.[1][key]
+    if (v !== undefined) return v
+  }
   return BASE[key]
 }
 
@@ -227,8 +233,8 @@ class Frame {
   // Shows sub-scene i of n for its slice of a T-second cycle, building only the one on screen.
   cycle(scenes: (() => string)[], T: number, t = this.t): string {
     const n = scenes.length
-    const i = Math.floor((((t % T) + T) % T) / (T / n))
-    return scenes[i]()
+    const i = Math.min(n - 1, Math.floor((((t % T) + T) % T) / (T / n)))
+    return scenes[i]?.() ?? ''
   }
 }
 
@@ -493,10 +499,10 @@ function done(f: Frame, eureka = false): string {
     const x = 26 + Math.floor(rnd(i * 3.7) * 72)
     const dur = (1.6 + rnd(i * 5.1) * 1.2).toFixed(2)
     const d = (rnd(i * 9.3) * 1.2).toFixed(2)
-    const c = colors[i % colors.length]
+    const c = colors[i % colors.length] ?? 'y'
     const piece =
       f.g(`on ${(0.3 + Math.round(rnd(i) * 2) * 0.15).toFixed(2)}s step-end infinite`, rnd(i) > 0.5 ? rect(0, 0, 1, 2, c) : rect(0, 0, 2, 1, c)) +
-      f.g(`off ${(0.3 + Math.round(rnd(i) * 2) * 0.15).toFixed(2)}s step-end infinite`, rect(0, 0, 1, 1, colors[(i + 3) % colors.length]))
+      f.g(`off ${(0.3 + Math.round(rnd(i) * 2) * 0.15).toFixed(2)}s step-end infinite`, rect(0, 0, 1, 1, colors[(i + 3) % colors.length] ?? 'y'))
     confetti += f.g(`fall ${dur}s steps(12) ${d}s 2 both`, piece, x, 0)
   }
   return (
