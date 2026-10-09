@@ -67,6 +67,10 @@ Set with `claude plugin configure clawd-hud@clawd-hud`, or in the plugin setting
 
 **0.4.0**: the hard-task smoke break, the eureka lightbulb and the loop coaster. **0.3.0**: the error mood.
 
+## License
+
+MIT, see [LICENSE](LICENSE).
+
 ## Regenerating the GIF
 
 The GIF is rendered from the plugin's real `scene.ts` and `gauges.ts`, so it is not a mock-up:
