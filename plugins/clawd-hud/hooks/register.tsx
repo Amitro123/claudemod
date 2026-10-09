@@ -4,17 +4,49 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Ctx, Limit, Mood } from '../types'
 import { DONE_SECONDS, ERROR_SECONDS, HARD_SECONDS, SCENE_HEIGHT, SCENE_WIDTH, sceneSvg } from './scene'
 
-const mood = atom({ plugin: 'pixel-buddy', key: 'mood' } as const, 'idle' as Mood)
-const moodAt = atom({ plugin: 'pixel-buddy', key: 'moodAt' } as const, 0)
-const frame = atom({ plugin: 'pixel-buddy', key: 'frame' } as const, 0)
-const cacheAt = atom({ plugin: 'pixel-buddy', key: 'cacheAt' } as const, null as number | null)
-const now = atom({ plugin: 'pixel-buddy', key: 'now' } as const, 0)
-const minute = atom({ plugin: 'pixel-buddy', key: 'minute' } as const, 0)
-const ctx = atom({ plugin: 'pixel-buddy', key: 'ctx' } as const, null as Ctx | null)
-const limits = atom({ plugin: 'pixel-buddy', key: 'limits' } as const, [] as Limit[])
-const eureka = atom({ plugin: 'pixel-buddy', key: 'eureka' } as const, false)
-const loopSince = atom({ plugin: 'pixel-buddy', key: 'loopSince' } as const, null as number | null)
-const toolCounts = atom({ plugin: 'pixel-buddy', key: 'toolCounts' } as const, {} as Record<string, number>)
+const mood = atom({ plugin: 'clawd-hud', key: 'mood' } as const, 'idle' as Mood)
+const moodAt = atom({ plugin: 'clawd-hud', key: 'moodAt' } as const, 0)
+const frame = atom({ plugin: 'clawd-hud', key: 'frame' } as const, 0)
+const cacheAt = atom({ plugin: 'clawd-hud', key: 'cacheAt' } as const, null as number | null)
+const now = atom({ plugin: 'clawd-hud', key: 'now' } as const, 0)
+const minute = atom({ plugin: 'clawd-hud', key: 'minute' } as const, 0)
+const ctx = atom({ plugin: 'clawd-hud', key: 'ctx' } as const, null as Ctx | null)
+const limits = atom({ plugin: 'clawd-hud', key: 'limits' } as const, [] as Limit[])
+const eureka = atom({ plugin: 'clawd-hud', key: 'eureka' } as const, false)
+const loopSince = atom({ plugin: 'clawd-hud', key: 'loopSince' } as const, null as number | null)
+const toolCounts = atom({ plugin: 'clawd-hud', key: 'toolCounts' } as const, {} as Record<string, number>)
+const cost = atom({ plugin: 'clawd-hud', key: 'cost' } as const, null as number | null)
+
+// Personal plans meter a 5-hour and a weekly window; enterprise seats meter the week and a
+// monthly spend cap (a gateway's `spend_limit`, which can run past 100%).
+type Cfg = { plan: string; cacheTtl: string }
+type Win = { kind: string; label: string; icon: Icon }
+type Icon = 'clock' | 'cal' | 'spend'
+const PERSONAL: Win[] = [
+  { kind: 'five_hour', label: '5h', icon: 'clock' },
+  { kind: 'seven_day', label: '7d', icon: 'cal' },
+]
+const ENTERPRISE: Win[] = [
+  { kind: 'seven_day', label: '7d', icon: 'cal' },
+  { kind: 'spend_limit', label: 'mo', icon: 'spend' },
+]
+
+const isEnterprise = (cfg: Cfg, rl: Limit[]) =>
+  cfg.plan === 'enterprise' || (cfg.plan !== 'personal' && rl.some(l => l.kind === 'spend_limit'))
+
+const MIN = 60_000
+const ttlOf = (cfg: Cfg, enterprise: boolean) =>
+  cfg.cacheTtl === '5m' ? 5 * MIN : cfg.cacheTtl === '1h' ? 60 * MIN : enterprise ? 5 * MIN : 60 * MIN
+
+// When the window resets: the API's own time, or for a spend cap without one, the 1st of next month.
+function resetAt(win: Win, lim: Limit | undefined, t: number): number | null {
+  if (lim?.resetsAt) return Date.parse(lim.resetsAt)
+  if (win.kind !== 'spend_limit') return null
+  const d = new Date(t)
+  return new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime()
+}
+
+const usd = (n: number) => `$${n.toFixed(2)}`
 
 // The same tool with the same input this many times in one turn means Claude is going in circles.
 const LOOP_REPEATS = 3
@@ -54,13 +86,16 @@ function clockText(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-function ringSvg(percent: number, icon: 'clock' | 'cal'): string {
+const GLYPH: Record<Icon, string> = {
+  clock: '<circle cx="15" cy="15" r="5.5" fill="none" stroke="#a0a0a0" stroke-width="1.6"/><path d="M15 12v3.4h2.6" fill="none" stroke="#a0a0a0" stroke-width="1.6" stroke-linecap="round"/>',
+  cal: '<rect x="10" y="11" width="10" height="9" rx="1.5" fill="none" stroke="#a0a0a0" stroke-width="1.6"/><path d="M10 14h10M12.5 9.5v3M17.5 9.5v3" stroke="#a0a0a0" stroke-width="1.6" stroke-linecap="round"/>',
+  spend: '<path d="M17.6 11.6c-.5-.8-1.5-1.3-2.6-1.3-1.5 0-2.6.8-2.6 2s1.1 1.7 2.6 2 2.6.8 2.6 2-1.1 2-2.6 2c-1.1 0-2.1-.5-2.6-1.3M15 8.8v1.5M15 19.7v1.5" fill="none" stroke="#a0a0a0" stroke-width="1.6" stroke-linecap="round"/>',
+}
+
+function ringSvg(percent: number, icon: Icon): string {
   const C = 2 * Math.PI * 12
   const p = Math.min(100, Math.max(0, percent)) / 100
-  const glyph =
-    icon === 'clock'
-      ? '<circle cx="15" cy="15" r="5.5" fill="none" stroke="#a0a0a0" stroke-width="1.6"/><path d="M15 12v3.4h2.6" fill="none" stroke="#a0a0a0" stroke-width="1.6" stroke-linecap="round"/>'
-      : '<rect x="10" y="11" width="10" height="9" rx="1.5" fill="none" stroke="#a0a0a0" stroke-width="1.6"/><path d="M10 14h10M12.5 9.5v3M17.5 9.5v3" stroke="#a0a0a0" stroke-width="1.6" stroke-linecap="round"/>'
+  const glyph = GLYPH[icon]
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30" width="30" height="30">` +
     `<circle cx="15" cy="15" r="12" fill="none" stroke="#3a3a3a" stroke-width="2.6"/>` +
@@ -158,19 +193,38 @@ function cacheText(at: number | null, tNow: number, ttlMs: number): { label: str
   return { label: at === null ? 'cache –' : warm ? `cache ${clockText(left)}` : 'cache cold', warm, left }
 }
 
-// One line in the status bar with every reading, for surfaces that draw neither band.
-async function refreshStatus($: EngineInterface, ttlMs: number) {
+async function countCall($: EngineInterface, e: { tool: string; agentId?: string }) {
+  if (e.agentId || (await read($, loopSince)) !== null) return
+  const args = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
+  const sig = `${e.tool}:${hash(JSON.stringify(args))}`
+  await update($, toolCounts, c => ({ ...c, [sig]: (c[sig] ?? 0) + 1 }))
+  if (((await read($, toolCounts))[sig] ?? 0) >= LOOP_REPEATS) {
+    const t = await $.clock.now()
+    await update($, loopSince, () => t)
+  }
+}
+
+// The plan's windows and cache TTL, from the latest rate-limit reading.
+async function planOf($: EngineInterface, cfg: Cfg) {
   const rl = await read($, limits)
+  const enterprise = isEnterprise(cfg, rl)
+  return { rl, enterprise, wins: enterprise ? ENTERPRISE : PERSONAL, ttlMs: ttlOf(cfg, enterprise) }
+}
+
+// One line in the status bar with every reading, for surfaces that draw neither band.
+async function refreshStatus($: EngineInterface, cfg: Cfg) {
+  const { rl, enterprise, wins, ttlMs } = await planOf($, cfg)
   const c = await read($, ctx)
   const at = await read($, cacheAt)
+  const spent = await read($, cost)
   const t = await $.clock.now()
   const pct = (k: string) => {
     const l = rl.find(x => x.kind === k)
     return l ? `${Math.round(l.percentUsed)}%` : '–'
   }
   const parts = [
-    `5h ${pct('five_hour')}`,
-    `7d ${pct('seven_day')}`,
+    ...wins.map(w => `${w.label} ${pct(w.kind)}`),
+    ...(enterprise && spent !== null ? [usd(spent)] : []),
     cacheText(at, t, ttlMs).label,
     c?.percent === undefined ? 'ctx –' : `ctx ${c.percent}%`,
   ]
@@ -178,7 +232,7 @@ async function refreshStatus($: EngineInterface, ttlMs: number) {
 }
 
 export const register: Register = (on, options) => {
-  const ttlMs = options.cacheTtl === '5m' ? 5 * 60_000 : 60 * 60_000
+  const cfg: Cfg = { plan: String(options.plan ?? 'auto'), cacheTtl: String(options.cacheTtl ?? 'auto') }
 
   on('session.start', async ($, e, next) => {
     // session.start can fire again for the same module (an enable, a worker respawn):
@@ -188,6 +242,7 @@ export const register: Register = (on, options) => {
     const u = await $.session.usage()
     await update($, ctx, () => u.context)
     await update($, limits, () => u.rateLimits)
+    await update($, cost, () => u.cost?.usd ?? null)
     const t0 = await $.clock.now()
     await update($, minute, () => t0)
 
@@ -195,7 +250,7 @@ export const register: Register = (on, options) => {
     timers.push($.clock.every(60_000, async () => {
       const t = await $.clock.now()
       await update($, minute, () => t)
-      await refreshStatus($, ttlMs)
+      await refreshStatus($, cfg)
     }))
     await update($, moodAt, () => t0)
     timers.push($.clock.every(FRAME_MS, async () => {
@@ -206,17 +261,18 @@ export const register: Register = (on, options) => {
       const at = await read($, cacheAt)
       if (at === null) return
       const t = await $.clock.now()
+      const { ttlMs } = await planOf($, cfg)
       // Tick while warm, and always once more after expiry: a late tick (the machine
       // slept) must still flip the label to "cold" instead of freezing a stale countdown.
       const shownWarm = (await read($, now)) - at < ttlMs
       if (t - at < ttlMs + 2_000 || shownWarm) {
         await update($, now, () => t)
-        await refreshStatus($, ttlMs)
+        await refreshStatus($, cfg)
       }
     }))
 
-    await refreshStatus($, ttlMs)
-    $.ui.toast('pixel-buddy loaded')
+    await refreshStatus($, cfg)
+    $.ui.toast('clawd-hud loaded')
     return next(e)
   })
 
@@ -224,12 +280,13 @@ export const register: Register = (on, options) => {
   on('session.measure', async ($, e, next) => {
     await update($, ctx, () => e.context)
     if (e.rateLimits.length) await update($, limits, () => e.rateLimits)
+    if (e.cost) await update($, cost, () => e.cost?.usd ?? null)
     if (e.changed.includes('context')) {
       const t = await $.clock.now()
       await update($, cacheAt, () => t)
       await update($, now, () => t)
     }
-    await refreshStatus($, ttlMs)
+    await refreshStatus($, cfg)
     return next(e)
   })
 
@@ -241,18 +298,11 @@ export const register: Register = (on, options) => {
   })
 
   // Counts each main-loop tool call by its input; a repeat past LOOP_REPEATS starts the coaster.
+  // tool.call gates every tool, so the counting is best-effort: a failure must never block the call.
   on('tool.call', async ($, e, next) => {
-    if (!e.agentId && (await read($, loopSince)) === null) {
-      const args = Object.fromEntries(Object.entries(e).filter(([k]) => !RESERVED.has(k)))
-      const sig = `${e.tool}:${hash(JSON.stringify(args))}`
-      await update($, toolCounts, c => ({ ...c, [sig]: (c[sig] ?? 0) + 1 }))
-      if (((await read($, toolCounts))[sig] ?? 0) >= LOOP_REPEATS) {
-        const t = await $.clock.now()
-        await update($, loopSince, () => t)
-      }
-    }
+    await countCall($, e)
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   // Task complete: the party plays once, then Claude relaxes, then idles. An error gets
   // its own puzzled beat instead of silently idling, so a failure is visible at a glance.
@@ -273,7 +323,8 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey) return next(e)
     const ui = $.ui.resolve(e)
     const { Box, Text } = ui
-    const rl = await read($, limits)
+    const { rl, enterprise, wins } = await planOf($, cfg)
+    const spent = enterprise ? await read($, cost) : null
     const t = await read($, minute)
     const stored = await read($, mood)
     const m: Mood = e.props.isWorking ? 'working' : stored === 'working' ? 'idle' : stored
@@ -289,13 +340,11 @@ export const register: Register = (on, options) => {
         ? { mood: 'loop' as Mood, t: Math.max(0, (tFrame - loopAt) / 1000) }
         : sceneFor(m, Math.max(0, elapsed))
     const idea = shownMood === 'done' && (await read($, eureka))
-    const shown = [
-      { kind: 'five_hour', label: '5h', icon: 'clock' as const },
-      { kind: 'seven_day', label: '7d', icon: 'cal' as const },
-    ].map(s => ({ ...s, lim: rl.find(l => l.kind === s.kind) }))
-
-    const caption = (lim: Limit | undefined, label: string) =>
-      lim?.resetsAt && t ? `${label} · resets in ${span(Date.parse(lim.resetsAt) - t)}` : `${label} · waiting for a reading`
+    const shown = wins.map(w => {
+      const lim = rl.find(l => l.kind === w.kind)
+      const at = t ? resetAt(w, lim, t) : null
+      return { ...w, lim, resets: lim && at !== null && t ? `resets in ${span(at - t)}` : 'waiting for a reading' }
+    })
     const pctText = (lim: Limit | undefined) => (lim ? `${Math.round(lim.percentUsed)}%` : '–')
 
     if (e.surface !== 'desktop' && e.surface !== 'vscode') {
@@ -307,9 +356,10 @@ export const register: Register = (on, options) => {
               <Text bold>{s.label}</Text>
               <Text color={s.lim ? levelColor(s.lim.percentUsed) : undefined} dimColor={!s.lim}>{bar(s.lim?.percentUsed ?? 0)}</Text>
               <Text bold>{pctText(s.lim)}</Text>
-              <Text dimColor>{s.lim?.resetsAt && t ? `resets in ${span(Date.parse(s.lim.resetsAt) - t)}` : 'waiting for a reading'}</Text>
+              <Text dimColor>{s.resets}</Text>
             </Box>
           ))}
+          {spent !== null ? <Text bold>{`${usd(spent)} this session`}</Text> : null}
         </Box>
       )
     }
@@ -322,9 +372,15 @@ export const register: Register = (on, options) => {
             <Box key={s.kind} flexDirection="row" alignItems="center" gap={1}>
               <Svg source={ringSvg(s.lim?.percentUsed ?? 0, s.icon)} alt={`${s.label} usage ring`} width={30} height={30} />
               <Text bold>{pctText(s.lim)}</Text>
-              <Text dimColor>{caption(s.lim, s.label)}</Text>
+              <Text dimColor>{`${s.label} · ${s.resets}`}</Text>
             </Box>
           ))}
+          {spent !== null ? (
+            <Box flexDirection="row" alignItems="center" gap={1}>
+              <Text bold>{usd(spent)}</Text>
+              <Text dimColor>this session</Text>
+            </Box>
+          ) : null}
         </Box>
         <Svg
           source={sceneSvg(shownMood, sceneT, idea)}
@@ -339,6 +395,7 @@ export const register: Register = (on, options) => {
   // Beside the model picker: prompt-cache countdown and context fill.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const { Box, Text } = $.ui.resolve(e)
+    const { ttlMs } = await planOf($, cfg)
     const at = await read($, cacheAt)
     const tNow = await read($, now)
     const c = await read($, ctx)

@@ -4,13 +4,13 @@
 //
 // Every mascot frame comes straight from hooks/scene.ts (Node strips the types), framed in a
 // mock Claude Code window with the usage rings, cache hourglass and context meter the plugin
-// draws. Frames land in demo/frames/*.png; make-gif.py stitches them into pixel-buddy.gif.
+// draws. Frames land in demo/frames/*.png; make-gif.py stitches them into clawd-hud.gif.
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Resvg } from '@resvg/resvg-js'
-import { sceneSvg, HARD_SECONDS } from '../plugins/pixel-buddy/hooks/scene.ts'
+import { sceneSvg, HARD_SECONDS } from '../plugins/clawd-hud/hooks/scene.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const out = join(here, 'frames')
@@ -125,7 +125,7 @@ for (const [bi, b] of beats.entries()) {
     // window chrome
     svg += `<rect width="${W}" height="30" fill="#262626"/>`
     svg += `<circle cx="18" cy="15" r="6" fill="#e5534b"/><circle cx="38" cy="15" r="6" fill="#e5a33a"/><circle cx="58" cy="15" r="6" fill="#4cc35a"/>`
-    svg += text(W / 2, 20, 'Claude Code  ·  pixel-buddy plugin', { size: 13, fill: '#9a9a9a', anchor: 'middle' })
+    svg += text(W / 2, 20, 'Claude Code  ·  clawd-hud plugin', { size: 13, fill: '#9a9a9a', anchor: 'middle' })
 
     // mood badge
     const badge = `${b.label}  ·  ${b.note}`

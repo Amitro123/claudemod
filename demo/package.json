@@ -1,8 +1,8 @@
 {
-  "name": "pixel-buddy-demo",
+  "name": "clawd-hud-demo",
   "private": true,
   "type": "module",
-  "description": "Renders assets/pixel-buddy.gif from the plugin's real scene code",
+  "description": "Renders assets/clawd-hud.gif from the plugin's real scene code",
   "scripts": {
     "frames": "node render-frames.mjs",
     "gif": "node render-frames.mjs && python make-gif.py"

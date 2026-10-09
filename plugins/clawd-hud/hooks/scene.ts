@@ -487,9 +487,10 @@ export const DONE_SECONDS = 6.5
 
 const BULB = ['.yyy.', 'yhwhy', 'yhhhy', '.yyy.', '.lLl.']
 
+// Sits on the head, low enough that the dance's 4px hop (from y=10) keeps every ray in the band.
 function lightbulb(f: Frame): string {
-  const rays = rect(3, -5, 1, 1, 'y') + rect(11, -5, 1, 1, 'y') + rect(7, -8, 1, 1, 'y') + rect(4, -7, 1, 1, 'y') + rect(10, -7, 1, 1, 'y')
-  return spr(BULB, 5, -6) + f.g('on .6s step-end infinite', rays)
+  const rays = rect(3, -4, 1, 1, 'y') + rect(11, -4, 1, 1, 'y') + rect(7, -6, 1, 1, 'y') + rect(4, -6, 1, 1, 'y') + rect(10, -6, 1, 1, 'y')
+  return spr(BULB, 5, -5) + f.g('on .6s step-end infinite', rays)
 }
 
 function done(f: Frame, eureka = false): string {

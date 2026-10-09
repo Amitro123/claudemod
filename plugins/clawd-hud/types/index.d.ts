@@ -4,7 +4,7 @@ export type Ctx = { tokens?: number; window: number; percent?: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'pixel-buddy': {
+    'clawd-hud': {
       mood: Mood
       moodAt: number
       frame: number
@@ -16,6 +16,7 @@ declare module 'claude-code' {
       eureka: boolean
       loopSince: number | null
       toolCounts: Record<string, number>
+      cost: number | null
     }
   }
 }
