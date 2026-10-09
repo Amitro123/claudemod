@@ -37,7 +37,7 @@ In a terminal (which can't draw SVG) the same readings show up as a text face `(
 ## Install
 
 ```text
-/plugin marketplace add Amitro123/Cluademod
+/plugin marketplace add Amitro123/claudemod
 /plugin install clawd-hud@clawd-hud
 ```
 
