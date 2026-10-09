@@ -2,7 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Ctx, Limit, Mood } from '../types'
+import { BATTERY, BOLT, LOW, OK, PILL, batterySvg, boltSvg, cellsText, charge, pillSvg } from './gauges'
 import { DONE_SECONDS, ERROR_SECONDS, HARD_SECONDS, SCENE_HEIGHT, SCENE_WIDTH, sceneSvg } from './scene'
+
+// ---------- state ----------
 
 const mood = atom({ plugin: 'clawd-hud', key: 'mood' } as const, 'idle' as Mood)
 const moodAt = atom({ plugin: 'clawd-hud', key: 'moodAt' } as const, 0)
@@ -17,24 +20,36 @@ const loopSince = atom({ plugin: 'clawd-hud', key: 'loopSince' } as const, null 
 const toolCounts = atom({ plugin: 'clawd-hud', key: 'toolCounts' } as const, {} as Record<string, number>)
 const cost = atom({ plugin: 'clawd-hud', key: 'cost' } as const, null as number | null)
 
+const MIN = 60_000
+// The mascot is redrawn as still frames at this interval (8 a second).
+const FRAME_MS = 125
+// After the fireworks the spark rests this long before idling.
+const RELAX_MS = 4 * MIN
+// The same tool with the same input this many times in one turn means Claude is going in circles.
+const LOOP_REPEATS = 3
+const RESERVED = new Set(['tool', 'tool_use_id', 'agentId', 'consent'])
+
+// The intervals armed by session.start, kept so a later session.start can cancel them.
+const timers: { cancel: () => void }[] = []
+
+// ---------- plans ----------
+
 // Personal plans meter a 5-hour and a weekly window; enterprise seats meter the week and a
 // monthly spend cap (a gateway's `spend_limit`, which can run past 100%).
 type Cfg = { plan: string; cacheTtl: string }
-type Win = { kind: string; label: string; icon: Icon }
-type Icon = 'clock' | 'cal' | 'spend'
+type Win = { kind: string; label: string }
 const PERSONAL: Win[] = [
-  { kind: 'five_hour', label: '5h', icon: 'clock' },
-  { kind: 'seven_day', label: '7d', icon: 'cal' },
+  { kind: 'five_hour', label: '5h' },
+  { kind: 'seven_day', label: '7d' },
 ]
 const ENTERPRISE: Win[] = [
-  { kind: 'seven_day', label: '7d', icon: 'cal' },
-  { kind: 'spend_limit', label: 'mo', icon: 'spend' },
+  { kind: 'seven_day', label: '7d' },
+  { kind: 'spend_limit', label: 'mo' },
 ]
 
 const isEnterprise = (cfg: Cfg, rl: Limit[]) =>
   cfg.plan === 'enterprise' || (cfg.plan !== 'personal' && rl.some(l => l.kind === 'spend_limit'))
 
-const MIN = 60_000
 const ttlOf = (cfg: Cfg, enterprise: boolean) =>
   cfg.cacheTtl === '5m' ? 5 * MIN : cfg.cacheTtl === '1h' ? 60 * MIN : enterprise ? 5 * MIN : 60 * MIN
 
@@ -46,96 +61,51 @@ function resetAt(win: Win, lim: Limit | undefined, t: number): number | null {
   return new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime()
 }
 
-const usd = (n: number) => `$${n.toFixed(2)}`
-
-// The same tool with the same input this many times in one turn means Claude is going in circles.
-const LOOP_REPEATS = 3
-const RESERVED = new Set(['tool', 'tool_use_id', 'agentId', 'consent'])
-
-// The intervals armed by session.start, kept so a later session.start can cancel them.
-const timers: { cancel: () => void }[] = []
-
-function hash(s: string): string {
-  let h = 5381
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
-  return (h >>> 0).toString(36)
+async function planOf($: EngineInterface, cfg: Cfg) {
+  const rl = await read($, limits)
+  const enterprise = isEnterprise(cfg, rl)
+  return { rl, enterprise, wins: enterprise ? ENTERPRISE : PERSONAL, ttlMs: ttlOf(cfg, enterprise) }
 }
 
-// The "task complete" party plays once, then Claude relaxes for a while before idling.
-const RELAX_MS = 4 * 60_000
-// The mascot is drawn as still frames at this interval (about 7 per second).
-const FRAME_MS = 150
+// ---------- text ----------
 
-const GREEN = '#4cc35a'
-const AMBER = '#e5a33a'
-const RED = '#e5534b'
-const levelColor = (p: number) => (p >= 90 ? RED : p >= 70 ? AMBER : GREEN)
-
-function span(ms: number): string {
+// "2d 4h", "3h 12m", "45m".
+function until(ms: number): string {
   if (!Number.isFinite(ms)) return '–'
-  const m = Math.max(0, Math.round(ms / 60_000))
-  const d = Math.floor(m / 1440)
-  const h = Math.floor((m % 1440) / 60)
-  if (d) return `${d}d ${h}h`
-  if (h) return `${h}h ${m % 60}m`
-  return `${m}m`
+  const mins = Math.max(0, Math.round(ms / MIN))
+  const d = Math.floor(mins / 1440)
+  const h = Math.floor(mins / 60) % 24
+  return d ? `${d}d ${h}h` : h ? `${h}h ${mins % 60}m` : `${mins % 60}m`
 }
 
-function clockText(ms: number): string {
+const mmss = (ms: number) => {
   const s = Math.max(0, Math.ceil(ms / 1000))
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-const GLYPH: Record<Icon, string> = {
-  clock: '<circle cx="15" cy="15" r="5.5" fill="none" stroke="#a0a0a0" stroke-width="1.6"/><path d="M15 12v3.4h2.6" fill="none" stroke="#a0a0a0" stroke-width="1.6" stroke-linecap="round"/>',
-  cal: '<rect x="10" y="11" width="10" height="9" rx="1.5" fill="none" stroke="#a0a0a0" stroke-width="1.6"/><path d="M10 14h10M12.5 9.5v3M17.5 9.5v3" stroke="#a0a0a0" stroke-width="1.6" stroke-linecap="round"/>',
-  spend: '<path d="M17.6 11.6c-.5-.8-1.5-1.3-2.6-1.3-1.5 0-2.6.8-2.6 2s1.1 1.7 2.6 2 2.6.8 2.6 2-1.1 2-2.6 2c-1.1 0-2.1-.5-2.6-1.3M15 8.8v1.5M15 19.7v1.5" fill="none" stroke="#a0a0a0" stroke-width="1.6" stroke-linecap="round"/>',
+const usd = (n: number) => `$${n.toFixed(2)}`
+const tok = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`)
+
+// A window as what is left of it: "66% left", or past a spend cap, "over by 12%".
+function leftOf(lim: Limit | undefined) {
+  if (!lim) return { left: 0, over: false, text: '–' }
+  const used = lim.percentUsed
+  if (used > 100) return { left: 0, over: true, text: `over by ${Math.round(used - 100)}%` }
+  const left = Math.max(0, 100 - used)
+  return { left, over: false, text: `${Math.round(left)}% left` }
 }
 
-function ringSvg(percent: number, icon: Icon): string {
-  const C = 2 * Math.PI * 12
-  const p = Math.min(100, Math.max(0, percent)) / 100
-  const glyph = GLYPH[icon]
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30" width="30" height="30">` +
-    `<circle cx="15" cy="15" r="12" fill="none" stroke="#3a3a3a" stroke-width="2.6"/>` +
-    (p > 0
-      ? `<circle cx="15" cy="15" r="12" fill="none" stroke="${levelColor(percent)}" stroke-width="2.6" stroke-linecap="round" ` +
-        `stroke-dasharray="${(C * p).toFixed(2)} ${C.toFixed(2)}" transform="rotate(-90 15 15)"/>`
-      : '') +
-    glyph +
-    `</svg>`
-  )
-}
-
-// A pixel hourglass: sand on top drains as the cache TTL runs out.
-function hourglassSvg(frac: number): string {
-  const sand = frac > 0 ? (frac > 0.2 ? GREEN : AMBER) : '#555'
-  const glass = '#9a9a9a'
-  let px = ''
-  const r = (x: number, y: number, w: number, h: number, c: string) => {
-    px += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${c}"/>`
+function cacheOf(at: number | null, tNow: number, ttlMs: number) {
+  const left = at === null ? 0 : ttlMs - (tNow - at)
+  const warm = at !== null && left > 0
+  return {
+    warm,
+    label: at === null ? 'cache –' : warm ? `cache ${mmss(left)}` : 'cache cold',
+    color: !warm ? '#59618a' : left < MIN ? LOW : OK,
   }
-  r(0, 0, 7, 1, glass)
-  r(0, 8, 7, 1, glass)
-  r(1, 1, 1, 2, glass); r(5, 1, 1, 2, glass); r(2, 3, 1, 1, glass); r(4, 3, 1, 1, glass)
-  r(3, 4, 1, 1, glass)
-  r(2, 5, 1, 1, glass); r(4, 5, 1, 1, glass); r(1, 6, 1, 2, glass); r(5, 6, 1, 2, glass)
-  const top = Math.ceil(2 * Math.min(1, Math.max(0, frac)))
-  if (top > 0) r(2, 3 - top, 3, top, sand)
-  r(2, 7, 3, 1, sand)
-  if (frac < 1 && frac > 0) r(2, 6, 3, 1, sand)
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 7 9" width="14" height="18" shape-rendering="crispEdges">${px}</svg>`
 }
 
-function ctxBarSvg(percent: number): string {
-  let px = ''
-  const lit = Math.round(percent / 10)
-  for (let i = 0; i < 10; i++) {
-    px += `<rect x="${i * 4}" y="0" width="3" height="8" fill="${i < lit ? levelColor(percent) : '#3a3a3a'}"/>`
-  }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 39 8" width="39" height="8" shape-rendering="crispEdges">${px}</svg>`
-}
+// ---------- moods ----------
 
 async function setMood($: EngineInterface, m: Mood) {
   const t = await $.clock.now()
@@ -143,54 +113,42 @@ async function setMood($: EngineInterface, m: Mood) {
   await update($, mood, () => m)
 }
 
-// Which scene shows `elapsed` seconds into a mood: done hands off to relax, relax to idle,
-// error gives a brief puzzled beat before idling (no relax — nothing to celebrate).
-function sceneFor(m: Mood, elapsed: number): { mood: Mood; t: number } {
-  const relaxS = RELAX_MS / 1000
-  if (m === 'done') {
-    if (elapsed < DONE_SECONDS) return { mood: 'done', t: elapsed }
-    return sceneFor('relax', elapsed - DONE_SECONDS)
-  }
-  if (m === 'error') {
-    if (elapsed < ERROR_SECONDS) return { mood: 'error', t: elapsed }
-    return sceneFor('idle', elapsed - ERROR_SECONDS)
-  }
-  if (m === 'relax' && elapsed >= relaxS) return { mood: 'idle', t: elapsed - relaxS }
-  return { mood: m, t: elapsed }
+// What plays `s` seconds into a stored mood: fireworks, a rest, then idle; or a short storm, then idle.
+function sceneFor(m: Mood, s: number): { mood: Mood; t: number } {
+  if (m === 'done') return s < DONE_SECONDS ? { mood: 'done', t: s } : sceneFor('relax', s - DONE_SECONDS)
+  if (m === 'error') return s < ERROR_SECONDS ? { mood: 'error', t: s } : { mood: 'idle', t: s - ERROR_SECONDS }
+  if (m === 'relax' && s >= RELAX_MS / 1000) return { mood: 'idle', t: s - RELAX_MS / 1000 }
+  return { mood: m, t: s }
 }
 
-const ALT: Partial<Record<Mood, string>> = {
-  done: 'celebrating',
-  relax: 'relaxing',
-  error: 'puzzled',
-  loop: 'going round a roller-coaster loop',
+const ALT: Record<Mood, string> = {
+  idle: 'drifting',
+  working: 'working',
+  loop: 'stuck riding a coaster loop',
+  done: 'setting off fireworks',
+  relax: 'taking it easy',
+  error: 'gone gray under a storm cloud',
 }
 
-const kTokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`)
+// The terminal's spark, as text.
+const SPIN = ['◐', '◓', '◑', '◒']
 
-// Terminal drawing: a text mascot and block bars, since the terminal cannot show the SVGs.
-const ORANGE = '#d97757'
-const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-
-function faceFor(m: Mood, t: number, idea = false): string {
-  const f = Math.floor(t * 1000 / FRAME_MS)
-  if (m === 'working') return `(o_o) ${SPIN[f % SPIN.length]}`
-  if (m === 'loop') return `(@_@) ${['◜', '◝', '◞', '◟'][f % 4]}`
-  if (m === 'done') return (f % 6 < 3 ? '\\(^o^)/' : '/(^o^)\\') + (idea ? ' (!)' : '')
-  if (m === 'relax') return '(-‿-) z'
-  if (m === 'error') return f % 10 < 5 ? '(o_O)?' : '(O_o)?'
-  return f % 40 === 0 ? '(-_-)' : '(o_o)'
+function faceFor(m: Mood, t: number, idea: boolean): string {
+  const f = Math.floor((t * 1000) / FRAME_MS)
+  if (m === 'working') return `✦(•_•) ${SPIN[f % SPIN.length]}`
+  if (m === 'loop') return '✦(@_@) ↻'
+  if (m === 'done') return `✦\\(^o^)/${idea ? ' (!)' : ''}`
+  if (m === 'relax') return '✦(˘_˘) ♪'
+  if (m === 'error') return '✦(;_;) ϟ'
+  return f % 30 === 0 ? '✦(-_-)' : '✦(•_•)'
 }
 
-function bar(percent: number, cells = 10): string {
-  const lit = Math.round((Math.min(100, Math.max(0, percent)) / 100) * cells)
-  return '█'.repeat(lit) + '░'.repeat(cells - lit)
-}
+// ---------- loop detector ----------
 
-function cacheText(at: number | null, tNow: number, ttlMs: number): { label: string; warm: boolean; left: number } {
-  const left = at === null ? 0 : ttlMs - (tNow - at)
-  const warm = at !== null && left > 0
-  return { label: at === null ? 'cache –' : warm ? `cache ${clockText(left)}` : 'cache cold', warm, left }
+function hash(s: string): string {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return (h >>> 0).toString(36)
 }
 
 async function countCall($: EngineInterface, e: { tool: string; agentId?: string }) {
@@ -204,31 +162,19 @@ async function countCall($: EngineInterface, e: { tool: string; agentId?: string
   }
 }
 
-// The plan's windows and cache TTL, from the latest rate-limit reading.
-async function planOf($: EngineInterface, cfg: Cfg) {
-  const rl = await read($, limits)
-  const enterprise = isEnterprise(cfg, rl)
-  return { rl, enterprise, wins: enterprise ? ENTERPRISE : PERSONAL, ttlMs: ttlOf(cfg, enterprise) }
-}
-
 // One line in the status bar with every reading, for surfaces that draw neither band.
 async function refreshStatus($: EngineInterface, cfg: Cfg) {
   const { rl, enterprise, wins, ttlMs } = await planOf($, cfg)
   const c = await read($, ctx)
-  const at = await read($, cacheAt)
   const spent = await read($, cost)
-  const t = await $.clock.now()
-  const pct = (k: string) => {
-    const l = rl.find(x => x.kind === k)
-    return l ? `${Math.round(l.percentUsed)}%` : '–'
-  }
+  const cache = cacheOf(await read($, cacheAt), await $.clock.now(), ttlMs)
   const parts = [
-    ...wins.map(w => `${w.label} ${pct(w.kind)}`),
+    ...wins.map(w => `${w.label} ${leftOf(rl.find(l => l.kind === w.kind)).text}`),
     ...(enterprise && spent !== null ? [usd(spent)] : []),
-    cacheText(at, t, ttlMs).label,
+    cache.label,
     c?.percent === undefined ? 'ctx –' : `ctx ${c.percent}%`,
   ]
-  $.ui.status(`(o_o) ${parts.join(' · ')}`)
+  $.ui.status(`✦ ${parts.join(' · ')}`)
 }
 
 export const register: Register = (on, options) => {
@@ -245,25 +191,25 @@ export const register: Register = (on, options) => {
     await update($, cost, () => u.cost?.usd ?? null)
     const t0 = await $.clock.now()
     await update($, minute, () => t0)
+    await update($, moodAt, () => t0)
 
-    // Keep "resets in" fresh, and tick the cache countdown while it is warm.
-    timers.push($.clock.every(60_000, async () => {
+    // Keep "resets in" fresh.
+    timers.push($.clock.every(MIN, async () => {
       const t = await $.clock.now()
       await update($, minute, () => t)
       await refreshStatus($, cfg)
     }))
-    await update($, moodAt, () => t0)
     timers.push($.clock.every(FRAME_MS, async () => {
       const t = await $.clock.now()
       await update($, frame, () => t)
     }))
+    // Tick the cache countdown while it is warm, and once more after expiry: a late tick
+    // (the machine slept) must still flip the label to "cold" instead of freezing it.
     timers.push($.clock.every(1_000, async () => {
       const at = await read($, cacheAt)
       if (at === null) return
       const t = await $.clock.now()
       const { ttlMs } = await planOf($, cfg)
-      // Tick while warm, and always once more after expiry: a late tick (the machine
-      // slept) must still flip the label to "cold" instead of freezing a stale countdown.
       const shownWarm = (await read($, now)) - at < ttlMs
       if (t - at < ttlMs + 2_000 || shownWarm) {
         await update($, now, () => t)
@@ -297,16 +243,15 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Counts each main-loop tool call by its input; a repeat past LOOP_REPEATS starts the coaster.
-  // tool.call gates every tool, so the counting is best-effort: a failure must never block the call.
+  // tool.call gates every tool, so the loop detector is best-effort: its .catch lets the
+  // call through if counting fails or overruns the hook's budget.
   on('tool.call', async ($, e, next) => {
     await countCall($, e)
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // Task complete: the party plays once, then Claude relaxes, then idles. An error gets
-  // its own puzzled beat instead of silently idling, so a failure is visible at a glance.
-  // The hand-offs are worked out from the clock on each frame (see sceneFor), so no timer can be lost.
+  // A real answer sets off the fireworks (with a bulb after a hard task); anything else but an
+  // interrupt gets the storm. The hand-offs are worked out from the clock on each frame.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId) return next(e)
     const t = await $.clock.now()
@@ -318,11 +263,10 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The band above the prompt: two usage rings on the left, the mascot on the right.
+  // The band above the prompt: the spark on the left, a battery per usage window beside it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const ui = $.ui.resolve(e)
-    const { Box, Text } = ui
+    const { Box, Text } = $.ui.resolve(e)
     const { rl, enterprise, wins } = await planOf($, cfg)
     const spent = enterprise ? await read($, cost) : null
     const t = await read($, minute)
@@ -331,32 +275,31 @@ export const register: Register = (on, options) => {
     const tFrame = await read($, frame)
     // When the band's mood is not the stored one (the UI says "working" before turn.start
     // lands, or the turn ended before turn.complete ran) there is no start time: run a
-    // free clock that stays under HARD_SECONDS, never the raw epoch (which reads as a
-    // turn that has run for decades and jumps straight to the smoke break).
+    // free clock that stays under HARD_SECONDS rather than counting from the epoch.
     const elapsed = m === stored ? (tFrame - (await read($, moodAt))) / 1000 : (tFrame / 1000) % HARD_SECONDS
     const loopAt = await read($, loopSince)
-    const { mood: shownMood, t: sceneT } =
+    const { mood: shown, t: sceneT } =
       e.props.isWorking && loopAt !== null
         ? { mood: 'loop' as Mood, t: Math.max(0, (tFrame - loopAt) / 1000) }
         : sceneFor(m, Math.max(0, elapsed))
-    const idea = shownMood === 'done' && (await read($, eureka))
-    const shown = wins.map(w => {
+    const idea = shown === 'done' && (await read($, eureka))
+
+    const meters = wins.map(w => {
       const lim = rl.find(l => l.kind === w.kind)
       const at = t ? resetAt(w, lim, t) : null
-      return { ...w, lim, resets: lim && at !== null && t ? `resets in ${span(at - t)}` : 'waiting for a reading' }
+      return { ...w, ...leftOf(lim), has: !!lim, resets: lim && at !== null && t ? `resets in ${until(at - t)}` : 'no reading yet' }
     })
-    const pctText = (lim: Limit | undefined) => (lim ? `${Math.round(lim.percentUsed)}%` : '–')
 
     if (e.surface !== 'desktop' && e.surface !== 'vscode') {
       return (
         <Box flexDirection="row" flexWrap="wrap" gap={3}>
-          <Text bold color={ORANGE}>{faceFor(shownMood, sceneT, idea)}</Text>
-          {shown.map(s => (
-            <Box key={s.kind} flexDirection="row" gap={1}>
-              <Text bold>{s.label}</Text>
-              <Text color={s.lim ? levelColor(s.lim.percentUsed) : undefined} dimColor={!s.lim}>{bar(s.lim?.percentUsed ?? 0)}</Text>
-              <Text bold>{pctText(s.lim)}</Text>
-              <Text dimColor>{s.resets}</Text>
+          <Text bold color="#ffb547">{faceFor(shown, sceneT, idea)}</Text>
+          {meters.map(w => (
+            <Box key={w.kind} flexDirection="row" gap={1}>
+              <Text bold>{w.label}</Text>
+              <Text color={w.has ? (w.over ? '#ff5a5a' : charge(w.left)) : undefined} dimColor={!w.has}>{`[${cellsText(w.left, w.over)}]`}</Text>
+              <Text bold>{w.text}</Text>
+              <Text dimColor>{w.resets}</Text>
             </Box>
           ))}
           {spent !== null ? <Text bold>{`${usd(spent)} this session`}</Text> : null}
@@ -366,13 +309,19 @@ export const register: Register = (on, options) => {
     const { Svg } = $.ui.resolve(e as typeof e & { surface: 'desktop' })
 
     return (
-      <Box flexDirection="row" alignItems="center" justifyContent="space-between" paddingX={1}>
-        <Box flexDirection="row" alignItems="center" gap={3}>
-          {shown.map(s => (
-            <Box key={s.kind} flexDirection="row" alignItems="center" gap={1}>
-              <Svg source={ringSvg(s.lim?.percentUsed ?? 0, s.icon)} alt={`${s.label} usage ring`} width={30} height={30} />
-              <Text bold>{pctText(s.lim)}</Text>
-              <Text dimColor>{`${s.label} · ${s.resets}`}</Text>
+      <Box flexDirection="row" alignItems="center" gap={2} paddingX={1}>
+        <Svg
+          source={sceneSvg(shown, sceneT, idea)}
+          alt={`The spark is ${idea ? 'having a eureka moment' : ALT[shown]}`}
+          width={SCENE_WIDTH}
+          height={SCENE_HEIGHT}
+        />
+        <Box flexDirection="row" alignItems="center" flexWrap="wrap" gap={3}>
+          {meters.map(w => (
+            <Box key={w.kind} flexDirection="row" alignItems="center" gap={1}>
+              <Svg source={batterySvg(w.left, w.over)} alt={`${w.label}: ${w.text}`} width={BATTERY.width} height={BATTERY.height} />
+              <Text bold>{`${w.label} ${w.text}`}</Text>
+              <Text dimColor>{w.resets}</Text>
             </Box>
           ))}
           {spent !== null ? (
@@ -382,38 +331,25 @@ export const register: Register = (on, options) => {
             </Box>
           ) : null}
         </Box>
-        <Svg
-          source={sceneSvg(shownMood, sceneT, idea)}
-          alt={`Claude is ${idea ? 'having a eureka moment' : ALT[shownMood] ?? shownMood}`}
-          width={SCENE_WIDTH}
-          height={SCENE_HEIGHT}
-        />
       </Box>
     )
   })
 
-  // Beside the model picker: prompt-cache countdown and context fill.
+  // Beside the model picker: the cache bolt and the context capsule.
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const { Box, Text } = $.ui.resolve(e)
     const { ttlMs } = await planOf($, cfg)
-    const at = await read($, cacheAt)
-    const tNow = await read($, now)
+    const cache = cacheOf(await read($, cacheAt), await read($, now), ttlMs)
     const c = await read($, ctx)
-    const left = at === null ? 0 : ttlMs - (tNow - at)
-    const warm = at !== null && left > 0
-    const cacheLabel = at === null ? 'cache –' : warm ? `cache ${clockText(left)}` : 'cache cold'
-    const cacheColor = !warm ? undefined : left < 60_000 ? AMBER : GREEN
     const pct = c?.percent
-    const ctxLabel =
-      pct === undefined ? 'ctx –' : `ctx ${pct}%${c?.tokens ? ` · ${kTokens(c.tokens)}/${kTokens(c.window)}` : ''}`
+    const ctxLabel = pct === undefined ? 'ctx –' : `ctx ${pct}%${c?.tokens ? ` · ${tok(c.tokens)}/${tok(c.window)}` : ''}`
     const modes = e.props.modes.join(' & ')
 
     if (e.surface !== 'desktop' && e.surface !== 'vscode') {
       return (
         <Box flexDirection="row" gap={1}>
-          <Text color={cacheColor} dimColor={!warm}>{cacheLabel}</Text>
+          <Text color={cache.warm ? cache.color : undefined} dimColor={!cache.warm}>{`ϟ ${cache.label}`}</Text>
           <Text dimColor>·</Text>
-          <Text color={pct === undefined ? undefined : levelColor(pct)} dimColor={pct === undefined}>{bar(pct ?? 0, 8)}</Text>
           <Text dimColor>{ctxLabel}</Text>
           {modes ? <Text dimColor>{`· ${modes}`}</Text> : null}
         </Box>
@@ -423,10 +359,10 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="row" alignItems="center" gap={1}>
-        <Svg source={hourglassSvg(warm ? left / ttlMs : 0)} alt="prompt cache timer" width={14} height={18} />
-        <Text color={cacheColor} dimColor={!warm}>{cacheLabel}</Text>
+        <Svg source={boltSvg(cache.color)} alt="prompt cache" width={BOLT.width} height={BOLT.height} />
+        <Text color={cache.warm ? cache.color : undefined} dimColor={!cache.warm}>{cache.label}</Text>
         <Text dimColor>·</Text>
-        <Svg source={ctxBarSvg(pct ?? 0)} alt="context used" width={39} height={8} />
+        <Svg source={pillSvg(pct ?? 0)} alt="context used" width={PILL.width} height={PILL.height} />
         <Text dimColor>{ctxLabel}</Text>
         {modes ? <Text dimColor>{`· ${modes}`}</Text> : null}
       </Box>

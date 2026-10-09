@@ -20,11 +20,11 @@ function usage(on: On, rateLimits: { kind: string; percentUsed: number }[], usd 
   on('ui.toast', () => ({ value: undefined }) as never)
 }
 
-async function band($: Engine) {
+async function band($: Engine, surface: 'terminal' | 'desktop' = 'terminal') {
   await $.session.start({ cwd: '.' } as never)
   const ui = await $.ui.mount({
     plugin: 'clawd-hud',
-    surface: 'terminal',
+    surface,
     component: 'AbovePrompt',
     props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 160, scroll: { offset: 0, bodyRows: 9 }, view: {} } as never,
   })
@@ -37,9 +37,21 @@ describe('plan', () => {
     const text = await band($)
     expect(text).toMatch(/7d/)
     expect(text).toMatch(/mo/)
-    expect(text).toMatch(/63%/)
+    expect(text).toMatch(/37% left/)
     expect(text).toMatch(/\$1\.50 this session/)
     expect(text).not.toMatch(/5h/)
+  })
+
+  test('a spend cap past 100% reads "over by"', async ($, on) => {
+    usage(on, [{ kind: 'seven_day', percentUsed: 41 }, { kind: 'spend_limit', percentUsed: 112 }])
+    expect(await band($)).toMatch(/over by 12%/)
+  })
+
+  test('the desktop band draws the spark and enterprise batteries', async ($, on) => {
+    usage(on, ENTERPRISE)
+    const text = await band($, 'desktop')
+    expect(text).toMatch(/7d 59% left/)
+    expect(text).toMatch(/mo 37% left/)
   })
 
   test('auto: a personal account keeps 5h + 7d and no cost', async ($, on) => {

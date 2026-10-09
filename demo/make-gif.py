@@ -16,5 +16,5 @@ quantized = [im.quantize(palette=palette, dither=Image.Dither.NONE) for im in im
 
 out = here.parent / "assets" / "clawd-hud.gif"
 out.parent.mkdir(exist_ok=True)
-quantized[0].save(out, save_all=True, append_images=quantized[1:], duration=150, loop=0, optimize=True, disposal=1)
+quantized[0].save(out, save_all=True, append_images=quantized[1:], duration=125, loop=0, optimize=True, disposal=1)
 print(f"{out} — {len(frames)} frames, {out.stat().st_size / 1024:.0f} KB")
