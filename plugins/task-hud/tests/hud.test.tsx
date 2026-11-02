@@ -266,7 +266,7 @@ describe('pane edge cases', () => {
     const clock = engine(on)
     await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true } as never)
     await $.agent.spawn(SPAWN)
-    await clock.advance(10 * 60_000 + 1000)
+    await clock.advance(15 * 60_000 + 1000)
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
     expect(await texts(ui)).toMatch(/Stopped/)
     await ui.unmount()
@@ -279,8 +279,8 @@ describe('pane edge cases', () => {
     const clock = engine(on)
     await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true } as never)
     await $.agent.spawn(SPAWN)
-    // A long build: nothing for over ten minutes, then the agent carries on.
-    await clock.advance(10 * 60_000 + 1000)
+    // A long build: nothing for over fifteen minutes, then the agent carries on.
+    await clock.advance(15 * 60_000 + 1000)
     await $.tool.call({ tool: 'Read', file_path: '/w/build.log', agentId: 'a1' } as never)
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
     const text = await texts(ui)

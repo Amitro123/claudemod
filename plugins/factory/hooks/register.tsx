@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { ChecksIO, DetectedChecks } from './checks'
-import type { Blocked, Check, Finding, Phase, Reviewer, Role, Run } from '../types'
+import type { Blocked, Check, Extra, Finding, Phase, Reviewer, Role, Run } from '../types'
 import { buildRound, DIAGRAM, diagramSvg, pipelineLines } from './art'
 import type { Theme } from './art'
 import {
@@ -13,6 +13,13 @@ import {
   NOTHING_RAN,
   detectSetup,
   isLive,
+  statusOf,
+  waitsOnYou,
+  activityText,
+  isQuiet,
+  progressBar,
+  progressOf,
+  statusReport,
   neverCommit,
   newRun,
   openFindings,
@@ -22,6 +29,13 @@ import {
   planPrompt,
   prPrompt,
   reviewPrompt,
+  extrasFrom,
+  isExtra,
+  LENSES,
+  MAX_EXTRAS,
+  reviewOf,
+  reviewerLabel,
+  skepticPrompt,
   ROLE_PROMPTS,
   ROLES,
   slugOf,
@@ -48,11 +62,15 @@ import {
   progressNote,
   resumePrompt,
 } from './flow'
-import { FACTORY_START_TOOL, factoryArgs, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, toolText } from './texts'
+import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, forbiddenTool, routeReview } from './route'
+import { hasCommand } from './runtime'
+import { FACTORY_START_TOOL, factoryArgs, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, parsePlanResultArgs, toolText } from './texts'
 
 const run = atom({ plugin: 'factory', key: 'run' } as const, null as Run | null)
 const frame = atom({ plugin: 'factory', key: 'frame' } as const, 0)
 const theme = atom({ plugin: 'factory', key: 'theme' } as const, 'dark' as Theme)
+// The time, kept while a check runs, so the band and the pane count its seconds.
+const now = atom({ plugin: 'factory', key: 'now' } as const, 0)
 // The agents of runs that were stopped, newest last: their tool calls stay refused after a new run starts.
 const stoppedAgents = atom({ plugin: 'factory', key: 'stoppedAgents' } as const, [] as string[])
 const MAX_STOPPED = 50
@@ -62,10 +80,13 @@ const PANE_TITLE = 'Factory'
 const PLAN_TOOL = 'mcp__goal-run__plan'
 const MAX_CHECK_ROUNDS = 2
 const MAX_SLUG_TRIES = 5
-const CHECK_TIMEOUT_MS = 600_000
+// How long one check may run before it counts as timed out (the checkTimeout option, in minutes).
+let checkTimeoutMs = 600_000
 const FRAME_MS = 700
 const ACCENT = '#2563eb'
 const START_TOOL = FACTORY_START_TOOL
+const STATUS_TOOL = 'mcp__factory__status'
+const CONTROL_TOOL = 'mcp__factory__control'
 const FROM_CONVERSATION = `Start a factory run on the work this conversation is about: call ${START_TOOL} with the feature (what to build, in a short paragraph, naming the file, issue or to-do item it comes from; a to-do item's id as followupId). If there is no such work yet, ask me what the factory should build. Don't do the work yourself.`
 const STARTED_NOTE = "The factory does the work from here: don't start it yourself or propose a plan. Tell the person in one line, and that its plan comes up for their approval."
 const STOPPED_DENY = 'The factory run was stopped. Stop now and answer with one line.'
@@ -78,7 +99,10 @@ let autoPr = false
 let modelsOption: 'auto' | 'fixed' = 'auto'
 let skillsOption: Partial<Record<Role, string[]>> = {}
 // A role's skills: the option's for it, else the factory's own.
-const skillsOf = (role: Role) => skillsOption[role] ?? [builtinSkill(role)]
+// The skeptic has no skill of the factory's own: only one the skills option names.
+const skillsOf = (role: Role) => skillsOption[role] ?? (role === 'skeptic' || role === 'extra' ? [] : [builtinSkill(role)])
+// Whether a skeptic tries to refute the round's blocker and major findings before the builder goes back.
+let skepticOn = true
 // Transitions run one at a time: two reviewers finishing together must not both start the approver.
 // Every spawn and every agent's completion goes through this queue, so a completion is handled only
 // after the job that spawned its agent has recorded the agent's id.
@@ -90,16 +114,24 @@ function serial(job: () => Promise<void>): Promise<void> {
   return queue
 }
 
+// A move to another phase stamps when it began; a stop to wait keeps where the progress stood.
 async function patch($: EngineInterface, fn: (r: Run) => Run): Promise<Run | null> {
-  return update($, run, cur => (cur ? fn(cur) : cur))
+  const t = await $.clock.now()
+  return update($, run, cur => {
+    if (!cur) return cur
+    const next = fn(cur)
+    if (next.phase === cur.phase) return next
+    const held = next.phase === 'needs-human' || next.phase === 'stopped' ? { lastProgress: progressOf(cur) } : {}
+    return { ...next, ...held, phaseSince: t }
+  })
 }
 
 // A move to a phase the run works in clears what it was blocked on.
-const moveTo = (r: Run, phase: Phase, note: string): Run => ({ ...r, phase, note, blocked: null })
+const moveTo = (r: Run, phase: Phase, note: string): Run => ({ ...r, phase, note, blocked: null, checking: null, isAskingChecks: false })
 
 async function block($: EngineInterface, blocked: Blocked, note: string, fn: (r: Run) => Run = r => r) {
   // A run stopped meanwhile stays stopped.
-  await patch($, r => (isLive(r.phase) ? { ...fn(r), phase: 'needs-human', blocked, note } : r))
+  await patch($, r => (isLive(r.phase) ? { ...fn(r), phase: 'needs-human', blocked, note, checking: null, isAskingChecks: false } : r))
 }
 
 async function git($: EngineInterface, args: string[], cwd?: string) {
@@ -109,31 +141,40 @@ async function git($: EngineInterface, args: string[], cwd?: string) {
 // A command that couldn't start (its program isn't installed) says so: `notStarted`. process.run
 // rejects for that and for a timeout. An exit code the process returned is its own, 127 included:
 // a script (npm, make) passes on the 127 of a command missing inside it, which is a failure.
+// A run that failed at the time limit timed out, however the engine reports it (a rejection naming the
+// timeout, or the killed process's exit).
 async function run$($: EngineInterface, argv: string[], cwd: string) {
-  return $.process.run(argv, { cwd, timeoutMs: CHECK_TIMEOUT_MS }).then(
-    out => ({ ...out, notStarted: false }),
-    err => ({ exitCode: 1, stdout: '', stderr: String(err), notStarted: couldNotStart(err) }),
+  const t0 = await $.clock.now()
+  const atLimit = async () => (await $.clock.now()) - t0 >= checkTimeoutMs - 1_000
+  return $.process.run(argv, { cwd, timeoutMs: checkTimeoutMs }).then(
+    async out => ({ ...out, notStarted: false, timedOut: out.exitCode !== 0 && (await atLimit()) }),
+    async err => {
+      const timedOut = !couldNotStart(err) || (await atLimit())
+      return { exitCode: 1, stdout: '', stderr: String(err), notStarted: !timedOut, timedOut }
+    },
   )
 }
 
 const describe = (role: Role, r: Run) =>
-  role === 'builder' ? `builder, round ${buildRound(r)}` : role === 'spec' ? 'spec-writer' : role === 'approver' ? 'approver' : `${ROLES[role].label} review`
+  role === 'builder' ? `builder, round ${buildRound(r)}` : role === 'spec' ? 'spec-writer' : role === 'approver' ? 'approver' : role === 'skeptic' ? 'skeptic' : `${ROLES[role].label} review`
 
-const goalRunThere = async ($: EngineInterface) => (await $.command.list().catch(() => [])).some(c => c.name === 'session-goal')
+const goalRunThere = ($: EngineInterface) => hasCommand($, 'session-goal')
 
 // Starts one role's agent in the run's worktree. A role type the engine refused to register falls
 // back to a general-purpose agent carrying the role's instructions in its prompt.
 // Each agent's spawn, by id: what a retry needs (the reload of the module forgets them; the step
 // then waits for Retry instead).
-const spawns = new Map<string, { role: Role; prompt: string; hasModel: boolean; isRetry: boolean; asked?: string }>()
+const spawns = new Map<string, { role: Role; prompt: string; hasModel: boolean; isRetry: boolean; asked?: string; review?: string; agentType?: string }>()
 // The models each agent of the run actually ran its requests on (from each step's usage): the
 // record shows them beside the model asked for, so a rewrite on the way (a router) shows after the fact.
 const ranOn = new Map<string, Set<string>>()
 
-async function spawnRole($: EngineInterface, role: Role, prompt: string, { onSessionModel = false } = {}): Promise<boolean> {
+// `review`: the extra reviewer this agent is (its name), and `agentType` the session's agent that runs it.
+async function spawnRole($: EngineInterface, role: Role, prompt: string, { onSessionModel = false, review = '', agentType = '' } = {}): Promise<boolean> {
   const r = await read($, run)
   if (!r || !isLive(r.phase)) return false
   const spec = ROLES[role]
+  const label = review ? `${review} review` : describe(role, r)
   const job = prompt
   // A builder started on a worktree that already has work: told what is there, from git.
   if (role === 'builder') {
@@ -143,28 +184,31 @@ async function spawnRole($: EngineInterface, role: Role, prompt: string, { onSes
   }
   const skills = skillsOf(role)
   if (skills.length) prompt = `${skillsLine(skills)}\n\n${prompt}`
-  const base = { prompt, description: `factory · ${describe(role, r)}`, ...(onSessionModel ? {} : { model: modelOf(r, role) }), cwd: r.worktree }
-  let res = await $.agent.spawn({ ...base, subagentType: `factory:${spec.name}` }).catch(err => ({ deny: String(err) }) as { deny: string })
+  // An agent of the session's own runs on its own model.
+  const base = { prompt, description: `factory · ${label}`, ...(onSessionModel || agentType ? {} : { model: modelOf(r, role) }), cwd: r.worktree }
+  let res = await $.agent.spawn({ ...base, subagentType: agentType || `factory:${spec.name}` }).catch(err => ({ deny: String(err) }) as { deny: string })
   if ('deny' in res && res.deny) {
     res = await $.agent.spawn({ ...base, subagentType: 'general-purpose', prompt: `${ROLE_PROMPTS[role]}\n\n${prompt}` }).catch(err => ({ deny: String(err) }) as { deny: string })
   }
   if ('deny' in res && res.deny) {
-    await block($, { on: 'start', role }, `Could not start the ${describe(role, r)}: ${res.deny}`)
+    await block($, { on: 'start', role }, `Could not start the ${label}: ${res.deny}`)
     return false
   }
   // Without an id in the answer, the agent is found in the session's list by its description.
   const id = (res as { agentId?: string }).agentId ?? (await $.agent.list().catch(() => [])).filter(a => a.description === base.description && !r.agents[a.id]).at(-1)?.id
   if (!id) {
-    await block($, { on: 'start', role }, `Started the ${describe(role, r)}, but can't follow it: no agent id.`)
+    await block($, { on: 'start', role }, `Started the ${label}, but can't follow it: no agent id.`)
     return false
   }
+  const t0 = await $.clock.now()
   await patch($, cur => ({
     ...cur,
     agents: { ...cur.agents, [id]: role },
+    activity: { role, text: 'starting', at: t0, calls: 0 },
     ...(role === 'builder' ? { builderId: id } : {}),
-    reviews: cur.reviews.map(x => (x.role === role ? { ...x, agentId: id } : x)),
+    reviews: cur.reviews.map(x => (x.role === (review || role) ? { ...x, agentId: id } : x)),
   }))
-  spawns.set(id, { role, prompt: job, hasModel: !onSessionModel, isRetry: onSessionModel, asked: onSessionModel ? 'the session model' : modelOf(r, role) })
+  spawns.set(id, { role, prompt: job, hasModel: !onSessionModel && !agentType, isRetry: onSessionModel, asked: onSessionModel ? 'the session model' : agentType ? `${agentType}'s own` : modelOf(r, role), review, agentType })
   return true
 }
 
@@ -189,7 +233,7 @@ async function preflight($: EngineInterface): Promise<{ root: string; head: stri
   return { root, head: head.stdout.trim() }
 }
 
-async function start($: EngineInterface, args: string): Promise<string> {
+async function start($: EngineInterface, args: string, extras: Extra[] = []): Promise<string> {
   const parsed = parseFactoryArgs(args)
   const feature = cleanFeature(parsed.feature)
   const followupId = parsed.followupId
@@ -208,7 +252,16 @@ async function start($: EngineInterface, args: string): Promise<string> {
     else if (!/already exists/i.test(added.stderr)) return `Could not create a worktree for the run: ${tailOf(added.stderr, 3)}`
   }
   if (!r) return `Could not create a worktree for the run: the branches factory/${slug} to factory/${slug}-${MAX_SLUG_TRIES} are all taken.`
-  const created: Run = { ...r, gate: (await goalRunThere($)) ? 'goal-run' : 'factory', ...(followupId ? { followupId } : {}) }
+  // The branch the checkout is on: the PR goes into it. A detached HEAD names none.
+  const onBranch = await git($, ['rev-parse', '--abbrev-ref', 'HEAD'], root)
+  const baseRef = onBranch.exitCode === 0 && onBranch.stdout.trim() !== 'HEAD' ? onBranch.stdout.trim() : ''
+  const created: Run = {
+    ...r,
+    gate: (await goalRunThere($)) ? 'goal-run' : 'factory',
+    ...(followupId ? { followupId } : {}),
+    ...(baseRef ? { baseRef } : {}),
+    ...(extras.length ? { extras, reviews: [...r.reviews, ...extras.map(e => reviewOf(e.name))] } : {}),
+  }
   await keepOutOfGit($, root)
   await readTheme($)
   await update($, run, () => created)
@@ -296,7 +349,7 @@ async function askPlan($: EngineInterface) {
   const tasks = r.tasks.map((t, i) => `${i + 1}. [${t.priority}] ${t.title}`).join('\n')
   let answer = ''
   try {
-    answer = await $.ui.ask(`The factory's plan for "${titleOf(r.feature, 120)}"${r.size ? ` (${r.size})` : ''}, spec in ${r.specFile}:\n${tasks}\n\nApprove it, and the builder starts? To change it, say what under Other.`, { header: 'Factory plan', options: [APPROVE_PLAN, NOT_NOW] })
+    answer = await $.ui.ask(`The factory's plan for "${titleOf(r.feature, 120)}"${r.size ? ` (${r.size})` : ''}, spec in ${r.specFile}:\n${tasks}\n\nReviewers: ${r.reviews.map(x => reviewerLabel(x.role)).join(', ')}.\n\nApprove it, and the builder starts? To change it, say what under Other.`, { header: 'Factory plan', options: [APPROVE_PLAN, NOT_NOW] })
   } catch {
     return
   }
@@ -315,6 +368,8 @@ async function onPlan($: EngineInterface, outcome: { approved: true; goalTasks?:
   }
   // The person has a goal of their own in goal-run: the factory's band asks instead.
   if ('kept' in outcome) {
+    // Heard twice (the hook and goal-run's command): the factory's own question is asked once.
+    if (r.gate === 'factory') return
     await patch($, cur => ({ ...cur, gate: 'factory', note: 'waiting for you to approve the plan (here: goal-run keeps your own goal)' }))
     return void askPlan($)
   }
@@ -373,19 +428,63 @@ async function onBuilt($: EngineInterface) {
     }
     if (skipped.length) await patch($, cur => ({ ...cur, skipped }))
   }
+  if (!(await baseHolds($))) return
+  // The base may have just moved (the person named the branch the work is on).
+  const base = (await read($, run))?.base ?? r.base
   // What the builder committed itself never went through the filter above.
-  const committed = await git($, ['diff', '--name-only', '--diff-filter=A', '-z', r.base, 'HEAD'], r.worktree)
+  const committed = await git($, ['diff', '--name-only', '--diff-filter=A', '-z', base, 'HEAD'], r.worktree)
   const leaked = committed.exitCode === 0 ? committed.stdout.split('\0').filter(p => p && neverCommit(p)) : []
   if (leaked.length) {
     await block($, { on: 'builder' }, `The builder committed files the factory never commits: ${leftOut(leaked).join(', ')}. Take them out of the branch's history, then retry.`)
     return
   }
-  const stat = await git($, ['diff', '--stat', r.base, 'HEAD'], r.worktree)
+  const stat = await git($, ['diff', '--stat', base, 'HEAD'], r.worktree)
   if (stat.exitCode === 0 && stat.stdout.trim()) {
     await patch($, cur => ({ ...cur, stat: lastLines(stat.stdout, 1) }))
     await record($, `changes after builder round ${r.round + 1}`, stat.stdout)
   }
   await runChecks($)
+}
+
+// The run compares the branch with its base: the reviewers' diff, the approver's file list, the PR. A
+// builder that checked out another branch's history (a PR to build on, say) leaves the branch no longer
+// starting from that base, and every comparison counts the whole other tree. The person says which
+// branch the work is on top of: one the branch contains is offered, or any other under Other.
+const NOT_NOW_BASE = 'Not now'
+const mmss = (ms: number) => `${Math.floor(ms / 60_000)}:${String(Math.floor((ms % 60_000) / 1000)).padStart(2, '0')}`
+async function baseHolds($: EngineInterface): Promise<boolean> {
+  const r = await read($, run)
+  if (!r) return false
+  const holds = await git($, ['merge-base', '--is-ancestor', r.base, 'HEAD'], r.worktree)
+  // 1: not an ancestor. Anything else (git couldn't tell) isn't held against the run.
+  if (holds.exitCode !== 1) return true
+  const refs = await git($, ['for-each-ref', '--merged', 'HEAD', '--sort=-committerdate', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'], r.worktree)
+  const offered = (refs.exitCode === 0 ? refs.stdout.split('\n') : []).map(x => x.trim()).filter(x => x && x !== r.branch && !x.endsWith('/HEAD') && x !== 'HEAD').slice(0, 3)
+  let answer = ''
+  try {
+    answer = await $.ui.ask(
+      `The builder's branch ${r.branch} no longer starts from ${r.baseRef || r.base.slice(0, 12)}: its history was replaced, likely by a checkout of another branch to build on. Compared with ${r.baseRef || 'that commit'}, the change would count that branch's whole tree. Which branch is the work on top of? The reviewers, the approver and the PR compare with it.`,
+      { header: 'Factory base', options: [...offered, NOT_NOW_BASE] },
+    )
+  } catch {
+    answer = ''
+  }
+  if (answer.trim() && answer !== NOT_NOW_BASE && (await setBase($, answer.trim())) === '') return true
+  await block($, { on: 'base' }, `The branch no longer starts from ${r.baseRef || r.base.slice(0, 12)}: say which branch the work is on top of with /factory base <branch>, or Retry to be asked again.`)
+  return false
+}
+
+// Moves the run's base to a branch or commit the work is on top of: '' when it did, else why not.
+async function setBase($: EngineInterface, ref: string): Promise<string> {
+  const r = await read($, run)
+  if (!r) return 'No factory run.'
+  const sha = await git($, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], r.worktree)
+  if (sha.exitCode !== 0 || !sha.stdout.trim()) return `No branch or commit "${ref}" in the run's repository.`
+  const under = await git($, ['merge-base', '--is-ancestor', sha.stdout.trim(), 'HEAD'], r.worktree)
+  if (under.exitCode !== 0) return `${ref} isn't under the run's branch ${r.branch}: the work isn't on top of it.`
+  await patch($, cur => ({ ...cur, base: sha.stdout.trim(), baseRef: ref }))
+  await record($, 'base', `The run's base moved to ${ref} (${sha.stdout.trim()}).`)
+  return ''
 }
 
 async function namesIn($: EngineInterface, dir: string) {
@@ -418,17 +517,21 @@ async function checkCommands($: EngineInterface, r: Run): Promise<DetectedChecks
 async function setUp($: EngineInterface, r: Run, files: string[]): Promise<boolean> {
   if (r.setupDone) return true
   const cmds = setupOption.trim() ? splitChecks(setupOption) : [detectSetup(files)].filter((c): c is string[] => c !== null)
-  for (const argv of cmds) {
+  for (const [k, argv] of cmds.entries()) {
     if (!(await stillIn($, 'checks'))) return false
-    await patch($, cur => ({ ...cur, note: `installing: ${argv.join(' ')}` }))
-    const out = await run$($, argv, r.worktree)
+    await nowRunning($, argv, k, cmds.length, true)
+    const out = await runOrSkip($, argv, r.worktree)
+    if (out.isSkipped) {
+      await record($, 'setup', `Skipped by the person: ${argv.join(' ')}`)
+      continue
+    }
     if (out.exitCode !== 0) {
       const check: Check = { cmd: argv.join(' '), ok: false, tail: tailOf(`${out.stdout}\n${out.stderr}`) }
       await block($, { on: 'setup' }, `The setup failed: ${check.cmd}. Fix it (or set the setup option), then Retry.`, cur => ({ ...cur, checks: [check], steps: { ...cur.steps, checks: { ...cur.steps.checks, state: 'fail' } } }))
       return false
     }
   }
-  await patch($, cur => ({ ...cur, setupDone: true }))
+  await patch($, cur => ({ ...cur, setupDone: true, checking: null }))
   return true
 }
 
@@ -468,17 +571,40 @@ async function approveAuto($: EngineInterface, r: Run, cmds: string[][]): Promis
   let answer = ''
   // Asked inside the run's serial queue, so nothing else of the run moves until it's answered: during
   // the checks no agent of the run is working, so nothing waits on it.
+  // The run waits on the person meanwhile: the band says so, in the color of a run waiting for them.
+  await patch($, cur => ({ ...cur, note: 'waiting for your OK to run the checks (a question in the conversation)', isAskingChecks: true }))
   try {
     answer = await $.ui.ask(question, { header: 'Factory checks', options: [RUN_THEM, NOT_NOW] })
   } catch {
     answer = ''
   }
+  await patch($, cur => ({ ...cur, isAskingChecks: false, note: 'running the checks' }))
   if (answer === RUN_THEM) {
     await patch($, cur => ({ ...cur, autoApproved: key }))
     return true
   }
   await block($, { on: 'checks' }, 'The checks wait for your OK to run the commands the factory found: Retry asks again, or set the checks and setup options.', cur => ({ ...cur, steps: { ...cur.steps, checks: { ...cur.steps.checks, state: 'wait' } } }))
   return false
+}
+
+// Ends the wait on the command running now, when the person lets the run go on without it. The process
+// itself can't be killed from here: it runs out under its time limit, and its result is ignored.
+let skipRunning: (() => void) | null = null
+const SKIPPED = { exitCode: -1, stdout: '', stderr: '', notStarted: false, timedOut: false, isSkipped: true }
+async function runOrSkip($: EngineInterface, argv: string[], cwd: string) {
+  const skipped = new Promise<typeof SKIPPED>(resolve => (skipRunning = () => resolve(SKIPPED)))
+  try {
+    return await Promise.race([run$($, argv, cwd).then(out => ({ ...out, isSkipped: false })), skipped])
+  } finally {
+    skipRunning = null
+  }
+}
+
+// The command starting now, for the band and the pane: a long one reads as running, with its seconds.
+async function nowRunning($: EngineInterface, argv: string[], k: number, total: number, isSetup = false) {
+  const t = await $.clock.now()
+  await update($, now, () => t)
+  await patch($, cur => ({ ...cur, note: `${isSetup ? 'installing' : 'running the checks'}: ${argv.join(' ')}`, checking: { cmd: argv.join(' '), index: k + 1, total, since: t, ...(isSetup ? { isSetup } : {}) } }))
 }
 
 async function stillIn($: EngineInterface, phase: Run['phase']) {
@@ -503,39 +629,70 @@ async function runChecks($: EngineInterface) {
   const cmds = found.checks
   await patch($, cur => ({ ...cur, note: 'running the checks' }))
   const results: Check[] = []
-  for (const argv of cmds) {
+  for (const [k, argv] of cmds.entries()) {
     // A Stop meanwhile ends the checks here: the rest don't run for nothing.
     if (!(await stillIn($, 'checks'))) return
-    const out = await run$($, argv, r.worktree)
-    results.push({ cmd: argv.join(' '), ok: out.exitCode === 0, tail: out.exitCode === 0 ? '' : tailOf(`${out.stdout}\n${out.stderr}`), ...(out.notStarted ? { isMissing: true } : {}) })
+    await nowRunning($, argv, k, cmds.length)
+    const out = await runOrSkip($, argv, r.worktree)
+    if (out.isSkipped) {
+      results.push({ cmd: argv.join(' '), ok: false, tail: '', isMissing: true, isSkipped: true })
+      continue
+    }
+    // pytest that found no tests (exit 5), or a python without pytest: nothing ran, so nothing failed.
+    const said = `${out.stdout}\n${out.stderr}`
+    if (argv.includes('pytest') && (out.exitCode === 5 || /No module named pytest/.test(said))) {
+      results.push({ cmd: argv.join(' '), ok: false, tail: '', isMissing: true, why: out.exitCode === 5 ? 'no tests collected' : 'pytest is not installed' })
+      continue
+    }
+    results.push({ cmd: argv.join(' '), ok: out.exitCode === 0, tail: out.exitCode === 0 ? '' : tailOf(`${out.stdout}\n${out.stderr}`), ...(out.notStarted ? { isMissing: true } : {}), ...(out.timedOut ? { isTimedOut: true } : {}) })
   }
+  const timedOut = results.filter(c => c.isTimedOut)
   const failed = results.filter(c => !c.ok && !c.isMissing)
   const missing = results.filter(c => c.isMissing)
   const ran = results.filter(c => !c.isMissing)
-  if (results.length) await record($, 'checks', results.map(c => `${c.isMissing ? '– (not installed)' : c.ok ? '✓' : '✗'} ${c.cmd}${c.tail ? `\n${c.tail}` : ''}`).join('\n'))
+  if (results.length) await record($, 'checks', results.map(c => `${c.isSkipped ? '– (skipped by the person)' : c.why ? `– (${c.why})` : c.isMissing ? '– (not installed)' : c.isTimedOut ? `⏱ (timed out after ${mmss(checkTimeoutMs)})` : c.ok ? '✓' : '✗'} ${c.cmd}${c.tail ? `\n${c.tail}` : ''}`).join('\n'))
   // Why nothing ran, or what detection warned about, or which programs aren't installed: the
   // reviewers and the approver read it.
   const notes = [
-    ...(missing.length ? [`Not installed here, so not run: ${missing.map(c => c.cmd).join(', ')}.`] : []),
+    ...(missing.some(c => c.isSkipped) ? [`Skipped by the person, so not run: ${missing.filter(c => c.isSkipped).map(c => c.cmd).join(', ')}.`] : []),
+    ...(missing.some(c => !c.isSkipped && !c.why) ? [`Not installed here, so not run: ${missing.filter(c => !c.isSkipped && !c.why).map(c => c.cmd).join(', ')}.`] : []),
+    ...(missing.some(c => c.why) ? [`Not run: ${missing.filter(c => c.why).map(c => `${c.cmd} (${c.why})`).join(', ')}.`] : []),
     ...(!ran.length ? [found.reason || NOTHING_RAN] : []),
     ...(ran.length && found.warnings.length ? [found.warnings.join('; ')] : []),
   ]
   const checksNote = notes.join(' ')
   if (!cmds.length) await record($, 'checks', checksNote || NOTHING_RAN)
-  const after = await patch($, cur => ({ ...cur, checks: results, checksNote, steps: { ...cur.steps, checks: { ...cur.steps.checks, state: !ran.length ? 'skip' : failed.length ? 'fail' : 'pass' } } }))
+  const after = await patch($, cur => ({ ...cur, checks: results, checksNote, checking: null, steps: { ...cur.steps, checks: { ...cur.steps.checks, state: !ran.length ? 'skip' : failed.length ? 'fail' : 'pass' } } }))
   if (!after || after.phase !== 'checks') return
+  // A check that ran out of time says nothing about the code: slow, hung or waiting on something. The
+  // builder isn't sent to fix it; the person looks.
+  if (timedOut.length) {
+    return block($, { on: 'checks' }, `${timedOut.map(c => c.cmd).join(', ')} didn't finish in ${mmss(checkTimeoutMs)}. It may be slow or hung: run it yourself in ${r.worktree}, then Retry. A suite that needs longer than that is run as narrower commands with the checks option.`)
+  }
   if (!failed.length) return startReviews($)
   if (after.checkRound < MAX_CHECK_ROUNDS) return startBuild($, [], failed)
   await block($, { on: 'checks' }, `The checks still fail after ${after.checkRound} builder passes: ${failed.map(c => c.cmd).join(', ')}.`)
 }
 
 // Every reviewer looks at every round: a fix for one reviewer is new code for the others too.
+// What the diff calls for: the files and lines it changed, read with git; unreadable, the deepest review.
+async function routeOf($: EngineInterface, r: Run) {
+  const names = await git($, ['diff', '--name-status', '-z', r.base, 'HEAD'], r.worktree)
+  const diff = await git($, ['diff', '-U0', r.base, 'HEAD'], r.worktree)
+  const readable = names.exitCode === 0 && diff.exitCode === 0 && diff.stdout.length < 5_000_000
+  return routeReview(names.exitCode === 0 ? changedOf(names.stdout) : [], readable ? diffLines(diff.stdout) : [], readable)
+}
+
 async function startReviews($: EngineInterface) {
+  const before = await read($, run)
+  const route = before ? await routeOf($, before) : null
+  if (route?.focus.length) await record($, `review route, round ${(before?.round ?? 0) + 1}`, `${route.deep ? 'Deep review (the code reviewer on opus too).\n' : ''}${route.focus.map(f => `- ${f}`).join('\n')}`)
   const r = await patch($, cur => {
     const round = cur.round + 1
     return {
       ...moveTo(cur, 'review', `reviewing, round ${round}`),
       round,
+      ...(route ? { route, ...(route.deep ? { models: { ...cur.models, code: 'opus' } } : {}) } : {}),
       checkRound: 0,
       reviews: cur.reviews.map(x => ({ ...x, state: 'run', findings: [], round, agentId: null })),
     }
@@ -547,13 +704,16 @@ async function startReviews($: EngineInterface) {
 async function spawnReviewers($: EngineInterface, r: Run) {
   const stat = await git($, ['diff', '--stat', r.base, 'HEAD'], r.worktree)
   for (const x of r.reviews.filter(v => v.round === r.round && v.state === 'run' && !v.agentId)) {
-    if (!(await spawnRole($, x.role, reviewPrompt(r, x.role, stat.exitCode === 0 ? stat.stdout.trim() : '')))) return
+    const prompt = reviewPrompt(r, x.role, stat.exitCode === 0 ? stat.stdout.trim() : '')
+    const extra = r.extras?.find(e => e.name === x.role)
+    const ok = isExtra(x.role) ? await spawnRole($, 'extra', prompt, { review: x.role, agentType: extra?.agent ?? '' }) : await spawnRole($, x.role as Role, prompt)
+    if (!ok) return
   }
 }
 
 async function onReview($: EngineInterface, role: Reviewer, agentId: string, answer: string, why: string) {
   const verdict = !why ? parseVerdict(answer) : { state: 'fail' as const, findings: [{ severity: 'major' as const, where: '-', text: `The reviewer stopped: ${why}.` }] }
-  const r = await patch($, cur => ({ ...cur, reviews: cur.reviews.map(x => (x.role === role && x.agentId === agentId ? { ...x, state: verdict.state, findings: verdict.findings } : x)) }))
+  const r = await patch($, cur => ({ ...cur, reviews: cur.reviews.map(x => (x.agentId === agentId ? { ...x, state: verdict.state, findings: verdict.findings } : x)) }))
   if (!r || r.phase !== 'review') return
   const mine = r.reviews.filter(x => x.round === r.round)
   if (mine.some(x => x.state === 'run')) return
@@ -562,7 +722,46 @@ async function onReview($: EngineInterface, role: Reviewer, agentId: string, ans
   const failed = mine.find(x => x.state === 'fail')
   if (failed) return block($, { on: 'start', role: failed.role }, `${failed.findings[0]?.text ?? 'The reviewer stopped.'} The ${failed.role} review didn't run; Retry runs it again.`)
   const changes = mine.filter(x => x.state === 'changes')
-  if (changes.length && r.round < maxRounds) return startBuild($, openFindings(changes), [])
+  if (!changes.length || r.round >= maxRounds) return startApprover($)
+  // Before the builder goes back over the blocker and major findings, a skeptic tries to refute them:
+  // a round spent on a finding that isn't real costs a whole builder pass.
+  const disputed = changes.flatMap(x => disputable(x.findings).map(finding => ({ role: x.role, finding })))
+  if (!skepticOn || !disputed.length) return startBuild($, openFindings(changes), [])
+  const onSecurity = disputed.some(x => x.role === 'security')
+  const next = await patch($, cur => ({ ...cur, disputed, note: `a skeptic checks ${disputed.length} finding${disputed.length === 1 ? '' : 's'}`, models: { ...cur.models, skeptic: onSecurity ? 'opus' : 'sonnet' } }))
+  if (next && !(await spawnRole($, 'skeptic', skepticPrompt(next, disputed)))) {
+    // No skeptic could start: the findings go to the builder as they are.
+    await patch($, cur => ({ ...cur, phase: 'review', blocked: null }))
+    return startBuild($, openFindings(changes), [])
+  }
+}
+
+// The skeptic's rulings: a refuted finding is dropped and a downgraded one is minor, each with its
+// evidence in the record; what stands goes to the builder. Nothing standing: the approver decides.
+// A skeptic that ended without its answer refutes nothing: the findings go as they are.
+async function onSkeptic($: EngineInterface, answer: string, why: string) {
+  const r = await read($, run)
+  if (!r) return
+  const disputed = r.disputed ?? []
+  const { dropped } = why ? { dropped: [] } : applyRulings(disputed.map(x => x.finding), answer, f => disputed.some(x => x.finding === f && x.role === 'security'))
+  const gone = new Map(dropped.map(d => [d.finding, d]))
+  const after = await patch($, cur => ({
+    ...cur,
+    disputed: [],
+    refuted: [...(cur.refuted ?? []), ...dropped.map(d => ({ role: disputed.find(x => x.finding === d.finding)!.role, finding: d.finding, ruling: d.ruling, why: d.why }))],
+    reviews: cur.reviews.map(x => {
+      if (x.round !== cur.round || x.state !== 'changes') return x
+      const findings = x.findings.flatMap(f => {
+        const d = gone.get(disputed.find(y => y.role === x.role && y.finding.where === f.where && y.finding.text === f.text)?.finding as never)
+        return !d ? [f] : d.ruling === 'downgraded' ? [{ ...f, severity: 'minor' as const }] : []
+      })
+      return { ...x, findings, state: findings.some(f => f.severity !== 'minor') ? x.state : 'pass' }
+    }),
+  }))
+  if (dropped.length) await record($, 'skeptic rulings', dropped.map(d => `${d.ruling.toUpperCase()}: [${d.finding.severity}] ${d.finding.where} ${d.finding.text}\n  ${d.why}`).join('\n'))
+  if (!after || after.phase !== 'review') return
+  const changes = after.reviews.filter(x => x.round === after.round && x.state === 'changes')
+  if (changes.length) return startBuild($, openFindings(changes), [])
   await startApprover($)
 }
 
@@ -623,11 +822,11 @@ async function onAgentDone($: EngineInterface, agentId: string, answer: string, 
   // again on the session's model.
   const spawn = spawns.get(agentId)
   if (isApiError && spawn && spawn.hasModel && !spawn.isRetry && !isLimitError(why)) {
-    await patch($, cur => ({ ...cur, note: `the ${describe(role, cur)} failed on ${modelOf(cur, role)} (${why}); trying the session's model` }))
-    if (await spawnRole($, role, spawn.prompt, { onSessionModel: true })) return
+    await patch($, cur => ({ ...cur, note: `the ${spawn.review ? `${spawn.review} review` : describe(role, cur)} failed on ${modelOf(cur, role)} (${why}); trying the session's model` }))
+    if (await spawnRole($, role, spawn.prompt, { onSessionModel: true, review: spawn.review ?? '' })) return
   }
   const models = `Model asked: ${spawn?.asked ?? 'unknown (spawned before a reload)'}; ran on: ${[...(ranOn.get(agentId) ?? [])].join(', ') || 'no step seen'}.`
-  await record($, describe(role, r), `${models}\n\n${why ? `Stopped: ${why}.${answer.trim() ? `\n\n${answer}` : ''}` : answer}`)
+  await record($, spawn?.review ? `${spawn.review} review` : describe(role, r), `${models}\n\n${why ? `Stopped: ${why}.${answer.trim() ? `\n\n${answer}` : ''}` : answer}`)
   if (role === 'spec') return r.phase === 'spec' ? onSpec($, answer, why) : undefined
   if (role === 'builder') {
     if (r.phase !== 'build') return
@@ -636,14 +835,16 @@ async function onAgentDone($: EngineInterface, agentId: string, answer: string, 
     return onBuilt($)
   }
   if (role === 'approver') return r.phase === 'approve' ? onApprover($, answer, why) : undefined
-  return onReview($, role, agentId, answer, why)
+  if (role === 'skeptic') return r.phase === 'review' ? onSkeptic($, answer, why) : undefined
+  return onReview($, r.reviews.find(x => x.agentId === agentId)?.role ?? role, agentId, answer, why)
 }
 
 async function addTokens($: EngineInterface, agentId: string, n: number) {
   await patch($, r => {
     const role = r.agents[agentId]
     if (!role || !n) return r
-    if (role === 'security' || role === 'code') return { ...r, reviews: r.reviews.map(x => (x.role === role ? { ...x, tokens: x.tokens + n } : x)) }
+    if (role === 'security' || role === 'code' || role === 'extra') return { ...r, reviews: r.reviews.map(x => (x.agentId === agentId ? { ...x, tokens: x.tokens + n } : x)) }
+    if (role === 'skeptic') return { ...r, skepticTokens: (r.skepticTokens ?? 0) + n }
     const key = role === 'spec' ? 'spec' : role === 'builder' ? 'builder' : 'approver'
     return { ...r, steps: { ...r.steps, [key]: { ...r.steps[key], tokens: r.steps[key].tokens + n } } }
   })
@@ -654,7 +855,7 @@ async function addTokens($: EngineInterface, agentId: string, n: number) {
 // A plan whose gate is goal-run is approved there (its dialog or Goal pane, which passes the goal's task
 // ids on with /factory plan-approved): approved here, goal-run's goal would stay proposed and refuse
 // every task the builder marks. Only when goal-run is gone meanwhile does the factory approve it itself.
-const PLAN_IN_GOAL_RUN = "The plan waits for your approval in goal-run: its dialog, or Approve in the Goal pane (/session-goal opens it)."
+const PLAN_IN_GOAL_RUN = "The plan waits for your approval in goal-run: its dialog, or Approve in the Goal pane (/session-goal opens it). If goal-run already shows it approved, /factory plan-approved starts the build."
 
 async function approveNow($: EngineInterface, goalTasks?: GoalTask[], fromGoalRun = false): Promise<string> {
   const r = await read($, run)
@@ -681,6 +882,10 @@ async function retryNow($: EngineInterface): Promise<string> {
   const b = r.blocked
   void serial(async () => {
     if (b.on === 'spec') return respec($)
+    if (b.on === 'base') {
+      await patch($, cur => moveTo(cur, 'build', 'checking what the branch is built on'))
+      return onBuilt($)
+    }
     if (b.on === 'builder') return startBuild($, openFindings(r.reviews.filter(x => x.round === r.round)), r.checks.filter(c => !c.ok && !c.isMissing), '', b.why ?? '')
     if (b.on === 'checks' || b.on === 'setup') {
       await patch($, cur => ({ ...cur, checkRound: 0 }))
@@ -695,7 +900,7 @@ async function retryNow($: EngineInterface): Promise<string> {
     }))
     if (now) await spawnReviewers($, now)
   })
-  return `Retrying: ${b.on === 'start' ? `starting the ${describe(b.role, r)}` : b.on === 'setup' ? 'the setup and the checks' : b.on === 'checks' ? 'the checks' : `the ${b.on === 'spec' ? 'spec-writer' : 'builder'}`}.`
+  return `Retrying: ${b.on === 'start' ? `starting the ${describe(b.role, r)}` : b.on === 'setup' ? 'the setup and the checks' : b.on === 'checks' ? 'the checks' : b.on === 'base' ? 'asking which branch the work is on top of' : `the ${b.on === 'spec' ? 'spec-writer' : 'builder'}`}.`
 }
 
 // The person sends the change back to the builder with their own words: once the run waits for
@@ -708,6 +913,88 @@ async function reworkNow($: EngineInterface, said: string): Promise<string> {
   if (r.steps.builder.state === 'wait') return 'Nothing is built yet: /factory retry runs the step that stopped.'
   void serial(() => startBuild($, [], [], said))
   return `Sent back to the builder: ${said}`
+}
+
+// /factory base <branch>: the branch the work is on top of, when the run asked (or to correct it).
+async function baseNow($: EngineInterface, ref: string): Promise<string> {
+  const r = await read($, run)
+  if (!r || !isLive(r.phase)) return 'No factory run.'
+  if (!ref) return `The run is based on ${r.baseRef || r.base.slice(0, 12)}. /factory base <branch> moves it.`
+  const why = await setBase($, ref)
+  if (why) return why
+  if (r.phase === 'needs-human' && r.blocked?.on === 'base') {
+    void serial(async () => {
+      await patch($, cur => moveTo(cur, 'build', 'checking what the branch is built on'))
+      await onBuilt($)
+    })
+  }
+  return `The run is now based on ${ref}: the reviewers, the approver and the PR compare with it.`
+}
+
+// Lets the run go on without the check (or install) running now.
+async function skipNow($: EngineInterface): Promise<string> {
+  const r = await read($, run)
+  if (!r || r.phase !== 'checks' || !r.checking || !skipRunning) return 'No check is running to skip.'
+  const cmd = r.checking.cmd
+  skipRunning()
+  return `Skipped ${cmd}: the run goes on without it, and the reviewers and the approver are told it didn't run. The process ends at its time limit.`
+}
+
+// The agents the run is waiting on now: the step's own, or this round's reviewers still at work.
+function waitingOn(r: Run): string[] {
+  const ids = Object.entries(r.agents)
+  const latest = (role: Role) => ids.filter(([, x]) => x === role).map(([id]) => id).slice(-1)
+  if (r.phase === 'spec') return latest('spec')
+  if (r.phase === 'build') return r.builderId ? [r.builderId] : latest('builder')
+  if (r.phase === 'approve') return latest('approver')
+  if (r.phase === 'review') {
+    const reviewing = r.reviews.filter(x => x.round === r.round && x.state === 'run' && x.agentId).map(x => x.agentId!)
+    return reviewing.length ? reviewing : latest('skeptic')
+  }
+  return []
+}
+
+// Gives up on the agents the step waits on: their tool calls are refused from now on, the step stops
+// for the person, and Retry starts new ones (a builder starts fresh from what is in the worktree).
+async function abandonNow($: EngineInterface, why: string): Promise<string> {
+  const r = await read($, run)
+  if (!r || !isLive(r.phase)) return 'No factory run.'
+  const ids = waitingOn(r)
+  if (!ids.length) return `No agent to abandon: the run is ${r.note}.`
+  const role = r.agents[ids[0]!]!
+  await update($, stoppedAgents, list => [...list.filter(id => !ids.includes(id)), ...ids].slice(-MAX_STOPPED))
+  // A skeptic is optional: given up on, it refutes nothing and the findings go to the builder.
+  if (role === 'skeptic') {
+    void serial(() => onSkeptic($, '', 'abandoned'))
+    return 'Abandoned the skeptic: the findings go to the builder as they are.'
+  }
+  const said = `Abandoned the ${role === 'extra' || role === 'security' || role === 'code' ? 'stuck reviewers' : describe(role, r)}${why ? ` (${why})` : ''}.`
+  await block($, { on: 'start', role: role === 'extra' ? 'code' : role }, `${said} Retry starts a new one.`, cur => ({
+    ...cur,
+    ...(role === 'builder' ? { builderId: undefined } : {}),
+    reviews: cur.reviews.map(x => (ids.includes(x.agentId ?? '') ? { ...x, state: 'fail', agentId: null } : x)),
+    steps: role === 'spec' || role === 'builder' || role === 'approver' ? { ...cur.steps, [role]: { ...cur.steps[role], state: 'fail' } } : cur.steps,
+  }))
+  await record($, 'abandoned', said)
+  return `${said} /factory retry (or the Retry button) starts a new one.`
+}
+
+// More reviewers for a run under way: from its next review round on (the current one, if not begun).
+async function addReviewers($: EngineInterface, raw: unknown): Promise<string> {
+  const r = await read($, run)
+  if (!r || !isLive(r.phase)) return 'No factory run.'
+  const { extras, ignored } = extrasFrom([...(r.extras ?? []), ...(Array.isArray(raw) ? raw : [raw])])
+  const fresh = extras.filter(e => !r.extras?.some(x => x.name === e.name))
+  if (!fresh.length) return `No reviewer added${ignored.length ? `: ${ignored.join(', ')} (unknown with no focus, already there, or past ${MAX_EXTRAS})` : ''}.`
+  await patch($, cur => ({ ...cur, extras: [...(cur.extras ?? []), ...fresh], reviews: [...cur.reviews, ...fresh.map(e => reviewOf(e.name))] }))
+  return `Added ${fresh.map(e => e.name).join(', ')}: they review from the next round on, beside security and code.`
+}
+
+async function statusText($: EngineInterface): Promise<string> {
+  const r = await read($, run)
+  if (!r) return 'No factory run in this session.'
+  const files = r.record ? (await $.fs.list(r.record).catch(() => [])).map(f => f.name).sort() : []
+  return statusReport(r, await $.clock.now(), files)
 }
 
 async function stopNow($: EngineInterface): Promise<string> {
@@ -729,7 +1016,13 @@ function actions($: EngineInterface, r: Run): { key: string; label: string; pres
 async function tick($: EngineInterface) {
   const r = await read($, run)
   if (!r || !isLive(r.phase)) return void timers.splice(0).forEach(t => t.cancel())
-  if (!waitsOnPerson(r.phase)) await update($, frame, f => f + 1)
+  // While a check runs nothing in the diagram moves: only the seconds do, and only when they change.
+  if (!waitsOnPerson(r.phase) && r.phase !== 'checks') await update($, frame, f => f + 1)
+  // The seconds the band counts: a running check's, or since the agent's last action.
+  if ((r.phase === 'checks' && r.checking) || ['spec', 'build', 'review', 'approve'].includes(r.phase)) {
+    const t = await $.clock.now()
+    if (Math.floor(t / 1000) !== Math.floor((await read($, now)) / 1000)) await update($, now, () => t)
+  }
 }
 
 async function ensureTicking($: EngineInterface) {
@@ -739,6 +1032,9 @@ async function ensureTicking($: EngineInterface) {
 
 export const register: Register = (on, options) => {
   maxRounds = Math.max(1, Math.min(3, Number(options.maxRounds ?? 2) || 2))
+  // Claude Code lets a command run 10 minutes at most: the option can only shorten it.
+  skepticOn = String(options.skeptic ?? 'on') !== 'off'
+  checkTimeoutMs = Math.max(1, Math.min(10, Number(options.checkTimeout ?? 10) || 10)) * 60_000
   checksOption = String(options.checks ?? '')
   setupOption = String(options.setup ?? '')
   autoPr = String(options.autoPr ?? 'off') === 'on'
@@ -747,6 +1043,9 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     for (const t of timers.splice(0)) t.cancel()
+    // A job of an earlier session that never settled (a question nobody answered) doesn't hold this one's.
+    queue = Promise.resolve()
+    skipRunning = null
     await $.command.register({ name: 'factory', description: 'Run a feature through the software factory: spec, plan, build, checks, reviews, approval', argumentHint: '<feature> | approve | retry | rework <note> | stop' })
     for (const role of Object.keys(ROLES) as Role[]) {
       const spec = ROLES[role]
@@ -764,11 +1063,45 @@ export const register: Register = (on, options) => {
         properties: {
           feature: { type: 'string', description: 'What to build, in a sentence or a short paragraph, naming the file, issue or to-do item it comes from' },
           followupId: { type: 'string', description: 'Optional: the id of the to-do item this is, from the followups start message' },
+          reviewers: {
+            type: 'array',
+            description: `Optional, and for most features none: extra reviewers beside security and code (which always run), at most ${MAX_EXTRAS}, only where this change needs that look. A lens by name: ${Object.keys(LENSES).join(', ')} (a UI change: frontend; new paid resources or scaling: finops; migrations, config or a risky release: deploy; hot paths: performance; a public API: api; personal or bulk data: data). Or your own: { name, focus, agent } with agent an agent type of this session that reviews.`,
+            items: {
+              anyOf: [
+                { type: 'string', enum: Object.keys(LENSES) },
+                { type: 'object', properties: { name: { type: 'string' }, focus: { type: 'string' }, agent: { type: 'string' } }, required: ['name'] },
+              ],
+            },
+          },
         },
         required: ['feature'],
       },
       isDeferred: false,
     })
+      .catch(() => {})
+    await $.tool
+      .register({
+        name: 'control',
+        description: "Steer the factory run for the person. skip-check: go on without the check (or install) running now. abandon-agent: give up on the agent the step waits on (a stuck one: no activity for long), so Retry starts a new one. add-reviewers: extra reviewers from the next round on (reviewers: lens names or { name, focus, agent }), only when the change needs that look. retry: run again the step that stopped the run. stop: end the run. Use it when the person asks, or when the status tool shows a step stuck, and tell the person what you did and why.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['skip-check', 'abandon-agent', 'add-reviewers', 'retry', 'stop'] },
+            reason: { type: 'string', description: 'Why, in a few words: the run records it' },
+            reviewers: { type: 'array', description: 'For add-reviewers: lens names or { name, focus, agent }', items: {} },
+          },
+          required: ['action'],
+        },
+        isDeferred: false,
+      })
+      .catch(() => {})
+    await $.tool
+      .register({
+        name: 'status',
+        description: "Where the factory run stands: its step and for how long, the agent's last action, the checks with their output, the reviewers' findings, what it waits on, and the folder with each step's own words. Call it when the person asks how the factory run is going or why it seems stuck, before guessing.",
+        inputSchema: { type: 'object', properties: {} },
+        isDeferred: false,
+      })
       .catch(() => {})
     await ensureTicking($)
     return next(e)
@@ -788,9 +1121,46 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) {
       const r = await read($, run)
       if ((r?.agents[e.agentId] && !isLive(r.phase)) || (await read($, stoppedAgents)).includes(e.agentId)) return { deny: STOPPED_DENY }
+      // Pushing, publishing, deploying or deleting outside the worktree is never a run agent's job.
+      // A guard that fails refuses the call, for the run's agents only.
+      if (r?.agents[e.agentId]) {
+        let what = ''
+        try {
+          what = forbiddenTool(e.tool) || (e.tool === 'Bash' || e.tool === 'PowerShell' ? forbiddenCommand(String((e as unknown as { command?: unknown }).command ?? '')) : '')
+        } catch (err) {
+          what = `a command the factory couldn't check (${String(err).slice(0, 80)})`
+        }
+        if (what) return { deny: `The factory's agents don't do this (${what}): the work stays on the run's branch in its worktree, and the person opens the PR once it is approved. Leave it out and go on.` }
+      }
+      // What the run's agent does now: the band shows it, so a working step never reads as stuck.
+      const role = r?.agents[e.agentId]
+      if (role) {
+        const t = await $.clock.now()
+        const text = activityText(e.tool, e as unknown as Record<string, unknown>)
+        await patch($, cur => ({ ...cur, activity: { role, text, at: t, calls: (cur.activity?.role === role ? cur.activity.calls : 0) + 1 } }))
+        await update($, now, () => t)
+      }
     }
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  // The main Claude asks where a run stands: what it waits on, what failed and where to read more.
+  on('tool.call', { tool: STATUS_TOOL }, async $ => ({ result: await statusText($) }))
+
+  // The main Claude steers a run for the person: frees a stuck step, adds reviewers, retries or stops.
+  on('tool.call', { tool: CONTROL_TOOL }, async ($, e) => {
+    if ((e as { agentId?: string }).agentId !== undefined) return { deny: "Only the main conversation steers a factory run." }
+    const input = e as unknown as { action?: unknown; reason?: unknown; reviewers?: unknown }
+    const why = String(input.reason ?? '').trim().slice(0, 200)
+    switch (String(input.action ?? '')) {
+      case 'skip-check': return { result: await skipNow($) }
+      case 'abandon-agent': return { result: await abandonNow($, why) }
+      case 'add-reviewers': return { result: await addReviewers($, input.reviewers) }
+      case 'retry': return { result: await retryNow($) }
+      case 'stop': return { result: await stopNow($) }
+      default: return { deny: 'action is skip-check, abandon-agent, add-reviewers, retry or stop.' }
+    }
+  })
 
   // Claude starts a run itself when the person asks for the factory in words, or after /factory.
   on('tool.call', { tool: START_TOOL }, async ($, e) => {
@@ -799,16 +1169,30 @@ export const register: Register = (on, options) => {
     const feature = String(input.feature ?? '').trim()
     if (!feature) return { deny: 'Name the feature: what to build, and where its details are (a file, an issue, the to-do item).' }
     const id = String(input.followupId ?? '').trim()
-    const said = await start($, factoryArgs(feature, id || undefined))
-    return { result: /^Factory run started/.test(said) ? `${said}\n${STARTED_NOTE}` : said }
+    const { extras, ignored } = extrasFrom((input as { reviewers?: unknown }).reviewers)
+    const said = await start($, factoryArgs(feature, id || undefined), extras)
+    const added = extras.length ? ` Extra reviewers: ${extras.map(x => x.name).join(', ')}.` : ''
+    const left = ignored.length ? ` Not added: ${ignored.join(', ')} (unknown with no focus, a duplicate, or past ${MAX_EXTRAS}).` : ''
+    return { result: /^Factory run started/.test(said) ? `${said}${added}${left}\n${STARTED_NOTE}` : said }
   })
 
   on('command.run', { command: 'factory' }, async ($, e) => {
     const arg = e.args.trim()
+    // goal-run's answer to the plan, sent on as a command: heard whatever order the mods' hooks run in.
+    const told = parsePlanResultArgs(arg)
+    if (told !== undefined) {
+      if (told) void serial(() => onPlan($, told))
+      return { text: told ? "The factory has goal-run's answer to its plan." : "goal-run's answer to the plan couldn't be read." }
+    }
     const approved = parsePlanApprovedArgs(arg)
     if (arg === 'approve' || approved) return { text: await approveNow($, approved?.goalTasks, !!approved) }
     if (arg === 'retry') return { text: await retryNow($) }
     if (arg === 'stop') return { text: await stopNow($) }
+    if (arg === 'status') return { text: await statusText($) }
+    if (arg === 'skip') return { text: await skipNow($) }
+    if (arg === 'abandon') return { text: await abandonNow($, 'by the person') }
+    if (arg.startsWith('reviewers ')) return { text: await addReviewers($, arg.slice(10).split(/[\s,]+/).filter(Boolean)) }
+    if (arg === 'base' || arg.startsWith('base ')) return { text: await baseNow($, arg.slice(4).trim()) }
     if (arg === 'rework' || arg.startsWith('rework ')) return { text: await reworkNow($, arg.slice(6).trim()) }
     if (!arg) {
       await $.ui.open({ id: PANE, title: PANE_TITLE })
@@ -818,6 +1202,11 @@ export const register: Register = (on, options) => {
       // From a timer: a prompt submitted while the command's own hook still runs is refused.
       $.clock.after(1, () => void $.prompt.submit({ text: FROM_CONVERSATION }).catch(() => $.ui.toast('/factory <feature> starts a run')))
       return { text: 'Asked Claude to start a run from what this conversation is working on.' }
+    }
+    // A run going and one word that isn't a subcommand: a mistyped one (plan-approve), not a feature.
+    const cur = await read($, run)
+    if (cur && isLive(cur.phase) && /^[\w-]+$/.test(arg)) {
+      return { text: `"/factory ${arg}" isn't a factory command. While a run goes: /factory approve, plan-approved (the plan goal-run approved), retry, rework <what to change>, stop.` }
     }
     return { text: await start($, arg) }
   })
@@ -837,7 +1226,7 @@ export const register: Register = (on, options) => {
     const r = yield* next(e)
     const u = r.usage
     if (e.agentId !== undefined && u && (await read($, run))?.agents[e.agentId]) {
-      await addTokens($, e.agentId, u.input_tokens + u.output_tokens + u.cache_creation_input_tokens)
+      await addTokens($, e.agentId, (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0))
       if (u.model) ranOn.set(e.agentId, (ranOn.get(e.agentId) ?? new Set()).add(u.model))
     }
     return r
@@ -868,12 +1257,14 @@ export const register: Register = (on, options) => {
     const r = await read($, run)
     if (e.props.hasSurvey || !r || !isLive(r.phase)) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
+    const t = await read($, now)
     const below = await next(e)
     return (
       <Box flexDirection="column">
         <Box flexDirection="row" gap={1} paddingX={1} alignItems="center">
-          <Text bold color={waitsOnPerson(r.phase) ? '#d97706' : ACCENT} wrap="truncate-end">{`🏭 ${titleOf(r.feature)}`}</Text>
-          <Text dimColor wrap="truncate-end">{`· ${r.note} · ${tok(tokensOf(r))} tokens`}</Text>
+          <Text bold color={waitsOnYou(r) ? '#d97706' : ACCENT} wrap="truncate-end">{`🏭 ${titleOf(r.feature)}`}</Text>
+          <Text color={waitsOnYou(r) ? '#d97706' : ACCENT}>{`${progressBar(progressOf(r), 10)} ${progressOf(r)}%`}</Text>
+          <Text color={isQuiet(r, t) ? '#d97706' : undefined} dimColor={!isQuiet(r, t)} wrap="truncate-end">{`· ${statusOf(r, t)} · ${tok(tokensOf(r))} tokens`}</Text>
           {r.phase === 'plan' && r.gate === 'factory' ? <Button key="f-approve-plan" label="Approve plan" variant="primary" onPress={() => approveNow($)} /> : null}
           {actions($, r).map(a => <Button key={`f-${a.key}`} label={a.label} variant="primary" onPress={a.press} />)}
           <Button key="f-open" label="Open" onPress={() => $.ui.open({ id: PANE, title: PANE_TITLE })} />
@@ -888,7 +1279,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const Svg = e.surface === 'terminal' ? null : $.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
     const r = await read($, run)
     if (!r) {
       return (
@@ -899,6 +1290,7 @@ export const register: Register = (on, options) => {
       )
     }
     const f = await read($, frame)
+    const t = await read($, now)
     const findings = r.reviews.filter(x => x.round === r.round && x.findings.length)
     const failed = r.checks.filter(c => !c.ok && !c.isMissing)
     return (
@@ -906,7 +1298,9 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column">
           <Text bold color={ACCENT} wrap="truncate-end">{`🏭 ${titleOf(r.feature)}`}</Text>
           {titleOf(r.feature) !== r.feature.trim() ? <Text dimColor wrap="wrap">{r.feature.trim()}</Text> : null}
-          <Text dimColor wrap="truncate-end">{`${r.note} · ${tok(tokensOf(r))} tokens · spec ${r.specFile}`}</Text>
+          <Text color={waitsOnYou(r) ? '#d97706' : ACCENT}>{`${progressBar(progressOf(r), 24)} ${progressOf(r)}%${r.phaseSince ? ` · this step ${mmss(Math.max(0, t - r.phaseSince))}` : ''}`}</Text>
+          <Text color={waitsOnYou(r) || isQuiet(r, t) ? '#d97706' : undefined} dimColor={!(waitsOnYou(r) || isQuiet(r, t))} wrap="truncate-end">{`${statusOf(r, t)} · ${tok(tokensOf(r))} tokens · spec ${r.specFile}`}</Text>
+          <Text dimColor wrap="truncate-end">{`Based on ${r.baseRef || r.base.slice(0, 12)} · ask Claude "how is the factory run going?" for the details`}</Text>
           {r.stat || r.summary ? <Text wrap="wrap">{`Changed: ${[r.stat, r.summary].filter(Boolean).join(' · ')}`}</Text> : null}
           {r.recorded ? <Text dimColor wrap="truncate-end">{`What each step said: ${r.record}/`}</Text> : null}
         </Box>

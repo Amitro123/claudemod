@@ -61,7 +61,8 @@ const ttlOf = (cfg: Cfg, enterprise: boolean) =>
 
 // When the window resets: the API's own time, or for a spend cap without one, the 1st of next month.
 function resetAt(win: Win, lim: Limit | undefined, t: number): number | null {
-  if (lim?.resetsAt) return Date.parse(lim.resetsAt)
+  // An unreadable reset time reads as no reading, not "resets in –".
+  if (lim?.resetsAt) return Number.isFinite(Date.parse(lim.resetsAt)) ? Date.parse(lim.resetsAt) : null
   if (win.kind !== 'spend_limit') return null
   const d = new Date(t)
   return new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime()
@@ -371,7 +372,7 @@ export const register: Register = (on, options) => {
     const cache = cacheOf(await read($, cacheAt), await read($, now), ttlMs)
     const c = await read($, ctx)
     const pct = c?.percent
-    const ctxLabel = pct === undefined ? 'ctx –' : `ctx ${pct}%${c?.tokens ? ` · ${tok(c.tokens)}/${tok(c.window)}` : ''}`
+    const ctxLabel = pct === undefined ? 'ctx –' : `ctx ${pct}%${c?.tokens && Number.isFinite(c.window) ? ` · ${tok(c.tokens)}/${tok(c.window)}` : ''}`
     // The engine's own drawing here (the mode labels, or another mod's take on them) stays beside ours.
     const below = await next(e)
 

@@ -2,8 +2,10 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenTool, routeReview } from '../hooks/route'
+import { extrasFrom, LENSES } from '../hooks/flow'
 import { cleanFeature, couldNotStart, detectChecks, detectSetup, leftOut, neverCommit, slugOf, untrackedOf, modelsFor, parseDecision, parseSize, parseSkills, progressNote, titleOf, parseTasks, parseVerdict, planPrompt, specPrompt, splitChecks } from '../hooks/flow'
-import { factoryArgs, goalPrompt, startLine, factoryPlanApprovedArgs, PLAN_APPROVED_FOR_FACTORY, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, planChangesForFactory } from '../hooks/texts'
+import { factoryArgs, goalPrompt, startLine, factoryPlanApprovedArgs, factoryPlanResultArgs, PLAN_APPROVED_FOR_FACTORY, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, planChangesForFactory } from '../hooks/texts'
 
 const PLAN = 'mcp__goal-run__plan'
 
@@ -29,9 +31,10 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[] } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }> } = {}) {
   const spawned: Spawned[] = []
   const ran: string[] = []
+  const limits: Record<string, number> = {}
   // The last commit of the files that define the checks: a test moves it to change them.
   let configCommit = 'c0'
   const sent: string[] = []
@@ -74,6 +77,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
   on('process.run', async (_, e) => {
     const cmd = e.argv.join(' ')
     ran.push(cmd)
+    limits[cmd] = (e as { init?: { timeoutMs?: number } }).init?.timeoutMs ?? 0
     if (cmd === hold) await held
     if (cmd === 'git rev-parse --show-toplevel') return noRepo ? ({ value: { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' } } as never) : ok('/repo\n')
     if (cmd === 'git rev-parse HEAD') return ok('abc123\n')
@@ -93,7 +97,18 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (cmd === 'git diff --cached --quiet') return { value: { exitCode: dirty ? 1 : 0, stdout: '', stderr: '' } } as never
     if (cmd === 'git rev-parse --git-path info/exclude') return ok('.git/info/exclude\n')
     if (cmd.startsWith('git commit') && commitFails) return { value: { exitCode: 1, stdout: '', stderr: 'Please tell me who you are.' } } as never
+    // The checkout's branch, and a builder that replaced the branch's history (`baseGone`): its base is no
+    // longer under HEAD; origin/pr-106 is, at def456.
+    if (cmd === 'git rev-parse --abbrev-ref HEAD') return ok(`${branch || 'HEAD'}\n`)
+    if (cmd === 'git merge-base --is-ancestor abc123 HEAD') return { value: { exitCode: baseGone ? 1 : 0, stdout: '', stderr: '' } } as never
+    if (cmd.startsWith('git for-each-ref')) return ok('origin/pr-106\nfactory/rate-limiter\norigin/HEAD\nmain\n')
+    if (cmd === 'git rev-parse --verify --quiet origin/pr-106^{commit}') return ok('def456\n')
+    if (cmd.startsWith('git rev-parse --verify')) return { value: { exitCode: 1, stdout: '', stderr: '' } } as never
+    // The branch's changed files for the review route (`changedFiles`, name-status -z).
+    if (cmd.startsWith('git diff --name-status -z')) return ok(changedFiles)
     if (cmd.startsWith('git ')) return ok()
+    // `outputs`: what a command answers, as given.
+    if (outputs[cmd]) return { value: outputs[cmd] } as never
     if (missing.includes(cmd)) throw new Error(`spawn ${e.argv[0]} ENOENT`)
     if (cmd === 'sh-missing') return { value: { exitCode: 127, stdout: '', stderr: 'sh: vitest: not found' } } as never
     if (failing > 0) {
@@ -134,11 +149,14 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
   on('tool.call', { tool: 'Edit' }, () => ({ result: 'edited' }) as never)
   // The engine's question dialog: the next answer, or dismissed when none is left.
   const asked: string[] = []
-  on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+  on('tool.call', { tool: 'AskUserQuestion' }, async (_, e) => {
     const q = (e as unknown as { questions: { question: string }[] }).questions[0]!.question
     asked.push(q)
     // The checks question has its own answer, so the other dialogs' answers stay in order.
-    const a = q.startsWith('Before the factory runs the checks') ? (checksOk ?? undefined) : answers.shift()
+    const isChecks = q.startsWith('Before the factory runs the checks')
+    // `holdAsk`: the checks question stays open until the test releases it.
+    if (isChecks && holdAsk) await held
+    const a = isChecks ? (checksOk ?? undefined) : answers.shift()
     if (a === undefined) throw new Error('dismissed')
     return { result: { questions: (e as unknown as { questions: unknown }).questions, answers: { [q]: a } } } as never
   })
@@ -146,7 +164,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     const { Box } = $.ui.resolve(e)
     return <Box />
   })
-  return { spawned, ran, sent, toasts, written, release, asked, clock, sends, registered, setConfig: (c: string) => void (configCommit = c) }
+  return { limits, spawned, ran, sent, toasts, written, release, asked, clock, sends, registered, setConfig: (c: string) => void (configCommit = c) }
 }
 
 const texts = async (ui: { findAll: (q: { type: 'Text' }) => Promise<unknown[]> }) =>
@@ -258,7 +276,8 @@ describe('a run from the feature to the PR', () => {
     await pane.unmount()
   })
 
-  test('changes send the builder back with the findings, and every reviewer looks again', async ($, on) => {
+  // Without the skeptic: what the builder gets back. (The skeptic's own tests are below.)
+  test('changes send the builder back with the findings, and every reviewer looks again', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on)
     await startRun($)
     await answer($, 'a1', SPEC_ANSWER)
@@ -288,7 +307,8 @@ describe('a run from the feature to the PR', () => {
     expect(last(w).subagentType).toBe('factory:approver')
   })
 
-  test('at the round limit the approver decides on what it has', async ($, on) => {
+  // Without the skeptic: what the builder gets back. (The skeptic's own tests are below.)
+  test('at the round limit the approver decides on what it has', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on)
     await toReviews($)
     await answer($, 'a3', PASS)
@@ -545,6 +565,40 @@ describe('the person decides', () => {
     expect(await bandText($)).not.toMatch(/🏭/)
   })
 
+  test('a check that runs long shows which one, its place and its time, in the band and the pane', async ($, on) => {
+    const w = engine(on, { hold: 'npm run lint', pkg: '{"scripts":{"test":"x","lint":"y","typecheck":"z"}}' })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    expect(w.ran.at(-1)).toBe('npm run lint')
+    expect(await bandText($)).toMatch(/checks 2\/3 · npm run lint · 0:00/)
+    await w.clock.advance(65_000)
+    expect(await bandText($)).toMatch(/checks 2\/3 · npm run lint · 1:0\d/)
+    const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
+    expect(await texts(pane)).toMatch(/checks 2\/3 · npm run lint · 1:0\d/)
+    expect(await texts(pane)).toMatch(/2\/3 npm run lint/)
+    await pane.unmount()
+    w.release()
+    await settled()
+    expect(await bandText($)).not.toMatch(/checks \d\/\d/)
+  })
+
+  test('while the question before the checks is open, the run reads as waiting for you', async ($, on) => {
+    const w = engine(on, { holdAsk: true })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    expect(w.asked.at(-1)).toMatch(/^Before the factory runs the checks/)
+    expect(await bandText($)).toMatch(/waiting for your OK to run the checks/)
+    expect(w.ran.filter(c => c.startsWith('npm'))).toEqual([])
+    w.release()
+    await settled()
+    expect(await bandText($)).not.toMatch(/waiting for your OK/)
+    expect(w.ran).toContain('npm test')
+  })
+
   test('a Stop during the checks ends them: the commands left are not run', async ($, on) => {
     const w = engine(on, { hold: 'npm test', pkg: '{"scripts":{"test":"x","lint":"y","typecheck":"z"}}' })
     await startRun($)
@@ -699,6 +753,398 @@ describe("a plan goal-run approves isn't approved past it", () => {
   })
 })
 
+describe('a run that seems stuck says where it is', () => {
+  const toBuild = async ($: Engine) => {
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+  }
+
+  // A 2-minute limit keeps the clock's frame ticks few: 10 minutes of them made this test slow on some
+  // machines (code review 2, F2).
+  test('a check that runs out of time stops the run for the person: the builder is not sent to fix it', { options: { checkTimeout: '2' } } as never, async ($: Engine, on: On) => {
+    // npm test runs to the limit and fails there: killed at the timeout.
+    const w = engine(on, { hold: 'npm test', fails: 1 })
+    await toBuild($)
+    await answer($, 'a2', 'built')
+    expect(w.limits['npm test']).toBe(120_000)
+    await w.clock.advance(120_000)
+    w.release()
+    await settled()
+    expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(1)
+    expect(await bandText($)).toMatch(/npm test didn't finish in 2:00\. It may be slow or hung/)
+    expect(Object.entries(w.written).find(([k]) => /checks\.md$/.test(k))?.[1]).toMatch(/⏱ \(timed out after 2:00\) npm test/)
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/TIMED OUT: npm test/)
+  })
+
+  test('a question nobody answers holds no later session: a new run starts after session.start (code review 2, F2)', async ($, on) => {
+    const w = engine(on, { holdAsk: true })
+    await toBuild($)
+    await answer($, 'a2', 'built')
+    expect(w.asked.at(-1)).toMatch(/^Before the factory runs the checks/)
+    // The question stays open; the session restarts and the run is stopped, then a new one starts.
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'stop')
+    await command($, 'Add a cache')
+    await settled()
+    expect(last(w)).toMatchObject({ subagentType: 'factory:spec-writer' })
+    expect(last(w).prompt).toContain('Feature: Add a cache')
+  })
+
+  test('the checkTimeout option shortens the limit; Claude Code allows 10 minutes at most', { options: { checkTimeout: '5' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on)
+    await toBuild($)
+    await answer($, 'a2', 'built')
+    await settled()
+    await w.clock.advance(10)
+    await settled()
+    expect(w.limits['npm test']).toBe(300_000)
+  })
+
+  test('a refusal that names timeoutMs is no timeout', () => {
+    expect(couldNotStart('init.timeoutMs is a whole number of ms, 1 to 600000')).toBe(true)
+    expect(couldNotStart('Command timed out after 600000 ms')).toBe(false)
+  })
+
+  test("a builder that replaced the branch's history: the person says which branch it is on, and everything compares with it", async ($, on) => {
+    const w = engine(on, { baseGone: true, branch: 'main', answers: ['origin/pr-106'] })
+    await toBuild($)
+    await answer($, 'a2', 'built')
+    await settled()
+    expect(w.asked.find(q => /no longer starts from main/.test(q))).toBeTruthy()
+    expect(w.ran).toContain('git diff --stat def456 HEAD')
+    expect(w.ran).not.toContain('git diff --stat abc123 HEAD')
+    expect(w.spawned.find(a => a.subagentType === 'factory:security-reviewer')?.prompt).toContain('since def456')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    await answer($, 'a5', 'DECISION: APPROVE\nREASON: ok')
+    await command($, 'approve')
+    expect(w.sent.at(-1)).toMatch(/open a pull request from it into pr-106 \(the branch it is built on/)
+  })
+
+  test("unanswered, the run waits; /factory base <branch> moves it and the run goes on", async ($, on) => {
+    const w = engine(on, { baseGone: true, answers: ['Not now'] })
+    await toBuild($)
+    await answer($, 'a2', 'built')
+    await settled()
+    expect(await bandText($)).toMatch(/no longer starts from abc123/)
+    expect(await command($, 'base nope')).toMatch(/No branch or commit "nope"/)
+    expect(await command($, 'base origin/pr-106')).toMatch(/now based on origin\/pr-106/)
+    await settled()
+    expect(w.spawned.find(a => a.subagentType === 'factory:security-reviewer')?.prompt).toContain('since def456')
+  })
+
+  test("the PR goes into the branch the run started from", async ($, on) => {
+    const w = engine(on, { branch: 'feature/router' })
+    await toBuild($)
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    await answer($, 'a5', 'DECISION: APPROVE\nREASON: ok')
+    await command($, 'approve')
+    expect(w.sent.at(-1)).toMatch(/into feature\/router/)
+  })
+
+  test("the band has a progress bar and the agent's last action; a quiet agent shows in orange how long", async ($, on) => {
+    const w = engine(on)
+    await toBuild($)
+    await $.tool.call({ tool: 'Edit', file_path: '/repo/.factory/rate-limiter/src/mw.ts', old_string: 'a', new_string: 'b', agentId: 'a2' } as never)
+    let t = await bandText($)
+    expect(t).toMatch(/▰+▱+ \d+%/)
+    expect(t).toMatch(/building · editing mw\.ts · 0:00 ago/)
+    await w.clock.advance(6 * 60_000 + 1_000)
+    t = await bandText($)
+    expect(t).toMatch(/building · no activity for 6:0\d/)
+    const status = String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)
+    expect(status).toMatch(/^Factory run: Rate limiter/)
+    expect(status).toMatch(/Phase: build · \d+% · building · no activity/)
+    expect(status).toMatch(/Last agent action: builder editing mw\.ts, 6:0\d ago \(1 tool calls this step\)/)
+    expect(await command($, 'status')).toBe(status)
+  })
+
+  test('the progress only grows through a run that passes', async ($, on) => {
+    const w = engine(on)
+    const seen: number[] = []
+    const pct = async () => seen.push(Number(/(\d+)%/.exec(await bandText($))?.[1]))
+    await startRun($)
+    await pct()
+    await answer($, 'a1', SPEC_ANSWER)
+    await pct()
+    await command($, 'plan-approved')
+    await pct()
+    await answer($, 'a2', 'built')
+    await pct()
+    await answer($, 'a3', PASS)
+    await pct()
+    await answer($, 'a4', PASS)
+    await pct()
+    expect(seen).toEqual([...seen].sort((a, b) => a - b))
+    expect(seen.at(-1)).toBeGreaterThanOrEqual(85)
+    void w
+  })
+})
+
+describe('reviewers by the diff, a guard on what agents run, and a skeptic', () => {
+  test('the route reads the files and lines a diff changed, and only ever adds review', () => {
+    expect(routeReview([{ path: 'src/mw.ts', status: 'M' }], ['const x = 1'])).toEqual({ deep: false, focus: [] })
+    const agentFile = routeReview([{ path: 'plugins/x/CLAUDE.md', status: 'M' }], [])
+    expect(agentFile.deep).toBe(true)
+    expect(agentFile.focus[0]).toMatch(/prompt injection/)
+    const deps = routeReview([{ path: 'package.json', status: 'M' }], [])
+    expect([deps.deep, deps.focus.length]).toEqual([false, 1])
+    expect(routeReview([{ path: 'db/migrations/0042_users.sql', status: 'A' }], []).deep).toBe(true)
+    expect(routeReview([{ path: 'src/limit.ts', status: 'M' }], ['  if (!user.isAdmin) throw new Error()']).focus.join(' ')).toMatch(/Authentication/)
+    expect(routeReview([{ path: 'tests/test_limit.py', status: 'D' }], []).focus.join(' ')).toMatch(/Tests were deleted/)
+    expect(routeReview([{ path: 'tests/__snapshots__/a.snap', status: 'M' }], []).focus.join(' ')).toMatch(/Expected test output changed/)
+    expect(routeReview([{ path: '.github/workflows/ci.yml', status: 'M' }], []).deep).toBe(true)
+    const unread = routeReview([], [], false)
+    expect([unread.deep, unread.focus[0]]).toEqual([true, expect.stringMatching(/couldn't read the whole diff/)])
+    expect(changedOf('M\0src/a.ts\0R100\0old.ts\0new.ts\0D\0gone.ts\0')).toEqual([{ status: 'M', path: 'src/a.ts' }, { status: 'R100', path: 'new.ts' }, { status: 'D', path: 'gone.ts' }])
+    expect(diffLines('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new')).toEqual(['old', 'new'])
+  })
+
+  test("pushing, publishing, deploying or deleting outside the worktree is refused; quoted text isn't a command", () => {
+    for (const c of ['git push origin factory/x', 'cd sub && git push', 'FOO=1 git push', 'git -C /w push', 'gh pr create --fill', 'npm publish', 'docker push img', 'terraform apply', 'kubectl apply -f x.yaml', 'vercel deploy --prod', 'rm -rf /', 'rm -rf ../other', 'rm -rf ~/x', 'git remote set-url origin x']) {
+      expect([c, forbiddenCommand(c) !== '']).toEqual([c, true])
+    }
+    for (const c of ['npm test', 'git commit -m "never git push here"', 'rm -rf node_modules dist', 'git status', 'gh --version', 'git fetch origin', 'echo "npm publish"']) {
+      expect([c, forbiddenCommand(c)]).toEqual([c, ''])
+    }
+  })
+
+  test('wrappers, paths, subshells, git options and a shell\'s -c string are seen through (code review 2, F1)', () => {
+    for (const c of [
+      'git -c foo=bar push', 'git --no-pager push', '/usr/bin/git push', 'env git push', 'env -i HOME=/x git push',
+      'bash -c "git push"', "sh -c 'git push'", 'eval git push', 'eval "git push origin x"', '(git push)', 'echo $(git push)',
+      'echo `git push`', 'xargs git push', 'time git push', 'nohup git push', 'npx vercel deploy', 'npx -y vercel deploy --prod',
+      'pnpm dlx netlify deploy', 'npm exec -- wrangler deploy', 'timeout 30 git push', 'git --git-dir=/r/.git --work-tree /w push',
+      'powershell -Command "git push"', 'C:\\Program` Files\\Git\\bin\\git.exe push',
+    ]) {
+      expect([c, forbiddenCommand(c) !== '']).toEqual([c, true])
+    }
+    for (const c of ['bash -c "npm test"', 'git -c core.pager=cat log', 'npx vitest run', 'xargs rm -f a.tmp', 'time npm run build']) {
+      expect([c, forbiddenCommand(c)]).toEqual([c, ''])
+    }
+  })
+
+  test('MCP tools that change a remote are refused to the run\'s agents; reading ones are not', () => {
+    for (const t of ['mcp__github__push_files', 'mcp__github__create_or_update_file', 'mcp__github__create_pull_request', 'mcp__github__merge_pull_request', 'mcp__github__create_branch', 'mcp__github__delete_file', 'mcp__vercel__deploy']) {
+      expect([t, forbiddenTool(t) !== '']).toEqual([t, true])
+    }
+    for (const t of ['mcp__github__get_file_contents', 'mcp__github__pull_request_read', 'mcp__github__list_branches', 'Read', 'Bash']) {
+      expect([t, forbiddenTool(t)]).toEqual([t, ''])
+    }
+  })
+
+  test("a run's agent is refused a git push; the main conversation isn't", async ($, on) => {
+    on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }) as never)
+    engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    const denied = await $.tool.call({ tool: 'Bash', command: 'git push -u origin factory/rate-limiter', agentId: 'a2' } as never)
+    expect(String((denied as { deny?: string }).deny)).toMatch(/don't do this \(git push\).*the person opens the PR/)
+    const tests = await $.tool.call({ tool: 'Bash', command: 'npm test', agentId: 'a2' } as never)
+    expect((tests as { deny?: string }).deny).toBeFalsy()
+    const main = await $.tool.call({ tool: 'Bash', command: 'git push -u origin factory/rate-limiter' } as never)
+    expect((main as { deny?: string }).deny).toBeFalsy()
+    const pwsh = await $.tool.call({ tool: 'PowerShell', command: 'git push origin HEAD', agentId: 'a2' } as never)
+    expect(String((pwsh as { deny?: string }).deny)).toMatch(/git push/)
+    const mcp = await $.tool.call({ tool: 'mcp__github__create_pull_request', title: 'x', agentId: 'a2' } as never)
+    expect(String((mcp as { deny?: string }).deny)).toMatch(/through an MCP tool/)
+  })
+
+  test("a diff that changes an agent's instructions: both reviewers are told to look, and the code reviewer runs on opus", async ($, on) => {
+    const w = engine(on, { changedFiles: 'M\0CLAUDE.md\0M\0src/mw.ts\0' })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    const code = w.spawned.find(a => a.subagentType === 'factory:code-reviewer')!
+    const security = w.spawned.find(a => a.subagentType === 'factory:security-reviewer')!
+    expect(code.model).toBe('opus')
+    for (const a of [code, security]) expect(a.prompt).toMatch(/What this diff calls for[\s\S]*prompt injection/)
+  })
+
+  test('the rulings: refuted needs evidence, a security blocker always stands, downgraded is minor, unruled stands', () => {
+    const f = [
+      { severity: 'major' as const, where: 'a.ts:1', text: 'x' },
+      { severity: 'blocker' as const, where: 'b.ts:2', text: 'y' },
+      { severity: 'major' as const, where: 'c.ts:3', text: 'z' },
+      { severity: 'major' as const, where: 'd.ts:4', text: 'w' },
+    ]
+    const { kept, dropped } = applyRulings(f, 'F1: REFUTED a.ts:1 already checks it\nF2: REFUTED nope\nF3: DOWNGRADED only a log line, c.ts:3\nF4: REFUTED', x => x === f[1])
+    expect(kept).toEqual([f[1], { ...f[2], severity: 'minor' }, f[3]])
+    expect(dropped.map(d => d.ruling)).toEqual(['refuted', 'downgraded'])
+  })
+
+  test('changes asked for: a skeptic checks the findings first; refuted, the approver decides and is told why', async ($, on) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', CHANGES)
+    expect(last(w)).toMatchObject({ id: 'a5', subagentType: 'factory:skeptic', model: 'sonnet' })
+    expect(last(w).prompt).toContain('F1. code [major] src/mw.ts:12 Retry-After is in ms, not seconds')
+    expect(await bandText($)).toMatch(/a skeptic checks 1 finding/)
+    await answer($, 'a5', 'Read mw.ts.\nF1: REFUTED src/mw.ts:12 divides by 1000 before it sets the header')
+    expect(last(w)).toMatchObject({ id: 'a6', subagentType: 'factory:approver' })
+    expect(last(w).prompt).toMatch(/refuted or downgraded with evidence[\s\S]*Retry-After is in ms, not seconds: refuted, src\/mw\.ts:12 divides by 1000/)
+    expect(Object.entries(w.written).find(([k]) => /skeptic-rulings\.md$/.test(k))?.[1]).toMatch(/REFUTED: \[major\] src\/mw\.ts:12/)
+    expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(1)
+  })
+
+  test('a finding that stands goes to the builder; a skeptic that fails refutes nothing', async ($, on) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', CHANGES)
+    await answer($, 'a5', 'F1: STANDS')
+    expect(w.sends.at(-1)?.text ?? last(w).prompt).toContain('Retry-After is in ms, not seconds')
+  })
+
+  test('with the skeptic option off, the findings go straight to the builder', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', CHANGES)
+    expect(w.spawned.some(a => a.subagentType === 'factory:skeptic')).toBe(false)
+  })
+})
+
+describe('extra reviewers the main Claude adds, and steering a run', () => {
+  const START = 'mcp__factory__start'
+  const CONTROL = 'mcp__factory__control'
+  const toReview = async ($: Engine, reviewers?: unknown) => {
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    const r = await $.tool.call({ tool: START, feature: 'Rate limiter', ...(reviewers ? { reviewers } : {}) } as never)
+    await settled()
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    return String(r.result)
+  }
+
+  test('a lens by name, one of its own with an agent; unknown, core, duplicate and past three are left out', () => {
+    const { extras, ignored } = extrasFrom(['frontend', { name: 'A11y', focus: 'screen readers', agent: 'my-ux' }, 'nope', 'security', 'frontend', 'finops', 'deploy'])
+    expect(extras).toEqual([{ name: 'frontend', focus: LENSES.frontend }, { name: 'a11y', focus: 'screen readers', agent: 'my-ux' }, { name: 'finops', focus: LENSES.finops }])
+    expect(ignored).toEqual(['nope', 'security', 'frontend', 'deploy'])
+  })
+
+  test('the extras review beside security and code, each through its lens; all are waited for', async ($, on) => {
+    const w = engine(on)
+    const said = await toReview($, ['frontend', { name: 'a11y', focus: 'screen readers and focus order', agent: 'my-ux' }])
+    expect(said).toMatch(/Extra reviewers: frontend, a11y\./)
+    const types = w.spawned.slice(2).map(a => a.subagentType)
+    expect(types).toEqual(['factory:security-reviewer', 'factory:code-reviewer', 'factory:reviewer', 'my-ux'])
+    const front = w.spawned.find(a => a.subagentType === 'factory:reviewer')!
+    expect(front).toMatchObject({ description: 'factory · frontend review', model: 'sonnet' })
+    expect(front.prompt).toContain(`You are the frontend reviewer: look at ${LENSES.frontend}`)
+    const own = w.spawned.find(a => a.subagentType === 'my-ux')!
+    expect(own.model).toBeUndefined()
+    expect(own.prompt).toContain('screen readers and focus order')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    await answer($, 'a5', PASS)
+    expect(w.spawned.some(a => a.subagentType === 'factory:approver')).toBe(false)
+    await answer($, 'a6', PASS)
+    expect(last(w)).toMatchObject({ subagentType: 'factory:approver' })
+    const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
+    const t = await texts(pane)
+    expect(t).toMatch(/frontend \(sonnet\)/)
+    expect(t).toMatch(/a11y \(its own\)/)
+    await pane.unmount()
+  })
+
+  test("without reviewers asked for, a run has security and code only", async ($, on) => {
+    const w = engine(on)
+    await toReview($)
+    expect(w.spawned.slice(2).map(a => a.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
+  })
+
+  test('an extra that asks for changes sends the builder back like any reviewer', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on, { delivers: true })
+    await toReview($, ['finops'])
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    await answer($, 'a5', 'VERDICT: CHANGES\nFINDINGS:\n- [major] infra/db.tf:3 a db.r6g.4xlarge for a cron job')
+    expect(w.sends.at(-1)?.text).toContain('db.r6g.4xlarge')
+  })
+
+  test('the main Claude skips a check that hangs: the run goes on, and says it didn\'t run', async ($, on) => {
+    const w = engine(on, { hold: 'npm test' })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    expect(w.ran.at(-1)).toBe('npm test')
+    const r = await $.tool.call({ tool: CONTROL, action: 'skip-check', reason: 'hung on a prompt' } as never)
+    expect(String(r.result)).toMatch(/^Skipped npm test: the run goes on/)
+    await settled()
+    expect(last(w)).toMatchObject({ subagentType: 'factory:code-reviewer' })
+    expect(Object.entries(w.written).find(([k]) => /checks\.md$/.test(k))?.[1]).toMatch(/– \(skipped by the person\) npm test/)
+    expect(w.spawned.find(a => a.subagentType === 'factory:security-reviewer')?.prompt).toMatch(/No checks ran|Skipped by the person/)
+    w.release()
+    await settled()
+    expect(String((await $.tool.call({ tool: CONTROL, action: 'skip-check' } as never)).result)).toBe('No check is running to skip.')
+  })
+
+  test('a stuck builder is abandoned: its calls are refused, and Retry starts a new one', async ($, on) => {
+    const w = engine(on, { delivers: true })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    const r = await $.tool.call({ tool: CONTROL, action: 'abandon-agent', reason: 'no activity for 20 minutes' } as never)
+    expect(String(r.result)).toMatch(/^Abandoned the builder, round 1 \(no activity for 20 minutes\)/)
+    expect(await bandText($)).toMatch(/Abandoned the builder/)
+    const denied = await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'a', new_string: 'b', agentId: 'a2' } as never)
+    expect((denied as { deny?: string }).deny).toBeTruthy()
+    await command($, 'retry')
+    await settled()
+    expect(w.spawned.filter(a => a.subagentType === 'factory:builder').map(a => a.id)).toEqual(['a2', 'a3'])
+  })
+
+  test('reviewers added mid-run review from the next round; the sub-agents can\'t steer the run', async ($, on) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    const added = await $.tool.call({ tool: CONTROL, action: 'add-reviewers', reviewers: ['deploy'] } as never)
+    expect(String(added.result)).toMatch(/^Added deploy/)
+    expect((await $.tool.call({ tool: CONTROL, action: 'stop', agentId: 'a1' } as never) as { deny?: string }).deny).toMatch(/Only the main conversation/)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    expect(w.spawned.slice(2).map(a => a.description)).toEqual(['factory · security review', 'factory · code review', 'factory · deploy review'])
+  })
+})
+
+describe('pytest that found nothing, or no pytest at all, is not a failure (code review 2, F3)', () => {
+  for (const [name, out, why] of [
+    ['collected no tests (exit 5)', { exitCode: 5, stdout: 'no tests ran in 0.01s', stderr: '' }, 'no tests collected'],
+    ['a python without pytest', { exitCode: 1, stdout: '', stderr: '/usr/bin/python3: No module named pytest' }, 'pytest is not installed'],
+  ] as const) {
+    test(`pytest ${name}: recorded as not run, the builder is not sent back`, async ($, on) => {
+      const w = engine(on, { files: ['package.json', 'node_modules', 'conftest.py'], outputs: { 'python -m pytest -q': { ...out } } })
+      await startRun($)
+      await answer($, 'a1', SPEC_ANSWER)
+      await command($, 'plan-approved')
+      await answer($, 'a2', 'built')
+      await settled()
+      expect(w.ran).toContain('python -m pytest -q')
+      expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(1)
+      expect(Object.entries(w.written).find(([k]) => /checks\.md$/.test(k))?.[1]).toContain(`– (${why}) python -m pytest -q`)
+      expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toContain(`not run (${why}): python -m pytest -q`)
+    })
+  }
+})
+
 describe('the parsers', () => {
   test('tasks, with priorities and what they need', () => {
     expect(parseTasks(SPEC_ANSWER)).toEqual([
@@ -771,7 +1217,7 @@ describe('the models follow the size of the feature', () => {
   })
 
   test('auto: sonnet builds unless the feature is large; opus reviews security and approves; fixed ignores the size', () => {
-    expect(modelsFor('medium', 'auto')).toEqual({ spec: 'sonnet', builder: 'sonnet', security: 'opus', code: 'sonnet', approver: 'opus' })
+    expect(modelsFor('medium', 'auto')).toEqual({ spec: 'sonnet', builder: 'sonnet', security: 'opus', code: 'sonnet', approver: 'opus', skeptic: 'sonnet', extra: 'sonnet' })
     expect(modelsFor(null, 'auto').builder).toBe('sonnet')
     expect(modelsFor('large', 'auto').builder).toBe('opus')
     expect(modelsFor('large', 'fixed').builder).toBe('sonnet')
@@ -897,7 +1343,8 @@ describe('a reviewer or the approver that fails is retried, never approved past'
 })
 
 describe('later rounds, the person sending it back, and role skills', () => {
-  test('round 2 goes back to the builder that built it, with only what to fix', async ($, on) => {
+  // Without the skeptic: what the builder gets back. (The skeptic's own tests are below.)
+  test('round 2 goes back to the builder that built it, with only what to fix', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on, { delivers: true })
     await toReviews($)
     await answer($, 'a3', CHANGES)
@@ -912,7 +1359,8 @@ describe('later rounds, the person sending it back, and role skills', () => {
     expect(w.spawned.slice(-2).map(s => s.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
   })
 
-  test('a builder that cannot take the message: a new one gets the whole job', async ($, on) => {
+  // Without the skeptic: what the builder gets back. (The skeptic's own tests are below.)
+  test('a builder that cannot take the message: a new one gets the whole job', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on)
     await toReviews($)
     await answer($, 'a3', CHANGES)
@@ -1004,7 +1452,7 @@ describe('a long feature reads as a short title', () => {
     await $.command.run({ command: 'factory', args: LONG } as never)
     await settled()
     const t = await bandText($)
-    expect(t).toMatch(/^🏭 Fix the 9 model-router issues in ROUTER_ISSUES\.md, in both… \| · writing the spec/)
+    expect(t).toMatch(/^🏭 Fix the 9 model-router issues in ROUTER_ISSUES\.md, in both… \| ▱+ \d+% \| · writing the spec/)
     expect(t).not.toContain('Do not commit')
     const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
     expect(await texts(pane)).toContain('Do not commit or push.')
@@ -1036,6 +1484,50 @@ describe("the builder marks goal-run's tasks only when they are the factory's", 
     await settled()
     expect(last(w)).toMatchObject({ subagentType: 'factory:builder' })
     expect(last(w).prompt).toContain('then done):\n- t1: Core\n- t2: Write docs')
+  })
+
+  test("goal-run's answer sent as a command reaches the factory when its own hook doesn't (the mods' order), once", async ($, on) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', OUT_OF_ORDER)
+    // No plan tool call reaches the factory's hook here: only goal-run's command.
+    expect(await command($, factoryPlanResultArgs(planApprovedForFactory(IDS)))).toMatch(/has goal-run's answer/)
+    await settled()
+    expect(last(w)).toMatchObject({ subagentType: 'factory:builder' })
+    expect(last(w).prompt).toContain('then done):\n- t1: Core\n- t2: Write docs')
+    // The hook heard it too, or the command came twice: one builder.
+    await command($, factoryPlanResultArgs(planApprovedForFactory(IDS)))
+    await settled()
+    expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(1)
+  })
+
+  test("goal-run's changes and its kept goal, sent as commands: the spec is revised; the factory asks once", async ($, on) => {
+    const w = engine(on, { answers: [''] })
+    await startRun($)
+    await answer($, 'a1', OUT_OF_ORDER)
+    await command($, factoryPlanResultArgs(PLAN_KEPT_FOR_FACTORY))
+    await command($, factoryPlanResultArgs(PLAN_KEPT_FOR_FACTORY))
+    await settled()
+    expect(w.asked.filter(q => /^The factory's plan for/.test(q))).toHaveLength(1)
+    await command($, factoryPlanResultArgs(planChangesForFactory('Split the core task')))
+    await settled()
+    expect(last(w)).toMatchObject({ subagentType: 'factory:spec-writer' })
+    expect(last(w).prompt).toContain('Split the core task')
+  })
+
+  test('a mistyped subcommand while a run goes is named as one, not taken for a new feature', async ($, on) => {
+    engine(on)
+    await startRun($)
+    await answer($, 'a1', OUT_OF_ORDER)
+    expect(await command($, 'plan-approve')).toMatch(/^"\/factory plan-approve" isn't a factory command\. .*plan-approved/)
+    expect(await command($, 'Add a cache to the API')).toMatch(/^A factory run is already going/)
+  })
+
+  test('/factory approve on a plan goal-run holds says how to start it if goal-run already approved it', async ($, on) => {
+    engine(on)
+    await startRun($)
+    await answer($, 'a1', OUT_OF_ORDER)
+    expect(await command($, 'approve')).toMatch(/If goal-run already shows it approved, \/factory plan-approved starts the build/)
   })
 
   test("approved in the Goal pane: /factory plan-approved carries goal-run's ids", async ($, on) => {
@@ -1187,7 +1679,8 @@ describe('commands the factory found run only once you let them', () => {
     expect(w.ran).toContain('npm test')
   })
 
-  test('the question says it runs the code the builder wrote; .npmrc or a jest config changed asks again', async ($, on) => {
+  // Without the skeptic: what the builder gets back. (The skeptic's own tests are below.)
+  test('the question says it runs the code the builder wrote; .npmrc or a jest config changed asks again', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on, { delivers: true })
     await toReviews($)
     expect(w.asked.find(q => q.startsWith('Before the factory runs'))).toMatch(/They run the code the builder wrote, its tests and config included, outside your permission prompts/)

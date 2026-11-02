@@ -4,7 +4,8 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Asking, Goal, Pace, Priority, Side, Task, TaskStatus } from '../types'
 import { TRACK_SIZE, trackSvg, trackText } from './art'
 import type { Pose } from './art'
-import { FACTORY_SOURCE, FACTORY_START_TOOL, factoryChosenForGoal, factoryPlanApprovedArgs, GOAL_REACHED, goalClosedNote, goalPrompt, goalReachedToast, parseDoneResult, parseStartPrompt, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, PLAN_WAITING_FOR_FACTORY, planChangesForFactory, projectFrom, toolText } from './texts'
+import { hasCommand, pick, projectOf } from './runtime'
+import { FACTORY_SOURCE, FACTORY_START_TOOL, factoryChosenForGoal, factoryPlanApprovedArgs, factoryPlanResultArgs, GOAL_REACHED, goalClosedNote, goalPrompt, goalReachedToast, parseDoneResult, parseStartPrompt, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, PLAN_WAITING_FOR_FACTORY, planChangesForFactory, toolText } from './texts'
 // The goal-run tests import the start-prompt parser from here, as before it was shared.
 export { parseStartPrompt }
 
@@ -118,8 +119,9 @@ export function orderPlan(items: PlanItem[]): Task[] {
 
 // What a request added: its output, the input it wrote to the cache, and uncached input. Cache reads
 // are the context earlier requests already counted; adding them would count it again on every step.
-export function stepTokens(u: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }): number {
-  return u.input_tokens + u.output_tokens + u.cache_creation_input_tokens
+// A field the step didn't report counts as 0, so a missing one never turns the count into NaN.
+export function stepTokens(u: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }): number {
+  return (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
 }
 
 // Everything a task needs, directly or through another task.
@@ -223,17 +225,8 @@ export function reminder(g: Goal): string {
 
 // ---------- updates ----------
 
-// Per project: the main repository, so a goal carries over between sessions in different worktrees.
-const projects = new Map<string, string>()
-async function projectOf($: EngineInterface): Promise<string> {
-  const root = await $.session.root()
-  const known = projects.get(root)
-  if (known) return known
-  const out = await $.process.run(['git', 'rev-parse', '--git-common-dir'], { cwd: root, timeoutMs: 5_000 }).catch(() => null)
-  const project = projectFrom(root, out && out.exitCode === 0 ? out.stdout : '')
-  projects.set(root, project)
-  return project
-}
+// Per project (projectOf, shared): the main repository, so a goal carries over between sessions in
+// different worktrees.
 
 const storeKey = async ($: EngineInterface) => `goal:${await projectOf($)}`
 // Where a goal was saved before the key was the repository: the session's own root.
@@ -244,8 +237,6 @@ const legacyKey = async ($: EngineInterface) => `goal:${await $.session.root()}`
 // both sides' growth. A task one side added is kept; one a side dropped since the base stays dropped.
 export function mergeGoal(base: Goal | null, mine: Goal, theirs: Goal): Goal {
   const b = base && (base.setAt ?? 0) === (mine.setAt ?? 0) ? base : theirs
-  const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y)
-  const pick = <T,>(m: T, bb: T, t: T): T => (same(m, bb) ? t : m)
   const sum = (m = 0, bb = 0, t = 0) => Math.max(m, t, m + t - bb)
   const byId = (g: Goal) => new Map(g.tasks.map(x => [x.id, x]))
   const bt = byId(b)
@@ -331,7 +322,7 @@ const hasFactory = atom({ plugin: 'goal-run', key: 'hasFactory' } as const, fals
 
 async function checkFactory($: EngineInterface): Promise<boolean> {
   if (await read($, hasFactory)) return true
-  const found = (await $.command.list().catch(() => [])).some(c => c.name === 'factory')
+  const found = await hasCommand($, 'factory')
   if (found) await update($, hasFactory, () => true)
   return found
 }
@@ -422,6 +413,13 @@ async function approve($: EngineInterface, pace: Pace) {
     return
   }
   void $.prompt.submit({ text: `The plan is approved (${PACE_TEXT[pace]}). Start with the first pending task.` }).catch(() => {})
+}
+
+// The plan tool's answer to a factory plan, also sent to the factory as a command once the tool call is
+// over: the factory hears the answer itself only from a hook that may run beneath this mod's.
+function tellFactory($: EngineInterface, result: string): string {
+  $.clock.after(0, () => void $.command.run({ command: 'factory', args: factoryPlanResultArgs(result) }).catch(() => {}))
+  return result
 }
 
 // The to-do items a followups Start prompt names, from its lines "- id <id>: <title>[ (bug)][ — detail][ [where: …]]".
@@ -678,7 +676,7 @@ export const register: Register = (on, options) => {
     const canFactory = !isFactory && isNew && (e as { agentId?: string }).agentId === undefined && (await checkFactory($))
     // A factory plan never takes over the person's own goal under way, and doesn't inherit its done
     // tasks. A goal still being planned (no plan approved yet) is the one the factory took over.
-    if (isFactory && before && before.source !== FACTORY_SOURCE && before.status !== 'done' && before.status !== 'planning') return { result: PLAN_KEPT_FOR_FACTORY }
+    if (isFactory && before && before.source !== FACTORY_SOURCE && before.status !== 'done' && before.status !== 'planning') return { result: tellFactory($, PLAN_KEPT_FOR_FACTORY) }
     const text = clip(String(input.goal ?? '').trim() || before?.text || 'Session goal', 200)
     // A plan with no goal set before it is a new goal, set now.
     const now = await $.clock.now()
@@ -698,10 +696,10 @@ export const register: Register = (on, options) => {
     if (isFactory) {
       if (answer === APPROVE_BUILD) {
         await setGoal($, g => (g ? { ...g, status: 'active', pace: 'run' } : g))
-        return { result: planApprovedForFactory(goalTasksOf(await read($, goal))) }
+        return { result: tellFactory($, planApprovedForFactory(goalTasksOf(await read($, goal)))) }
       }
       if (!answer.trim()) return { result: PLAN_WAITING_FOR_FACTORY }
-      return { result: planChangesForFactory(answer === CHANGE ? '' : answer) }
+      return { result: tellFactory($, planChangesForFactory(answer === CHANGE ? '' : answer)) }
     }
     if (canFactory && answer === RUN_FACTORY) {
       // A command can't run from inside a tool call, so Claude starts the run with the factory's tool.
@@ -859,12 +857,14 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   // Running through: a turn that ends with pending tasks left is sent on once, to the next one. Claude
-  // may still stop when it is blocked or needs the person; the second stop of a turn always passes.
+  // may still stop when it is blocked or needs the person; the second stop of goal-run's own always
+  // passes. Once a turn (isNudged), not "never after a block": followups' stop check blocking first
+  // (stop_hook_active on the next Stop) doesn't cancel the nudge.
   on('classic.Stop', async ($, e, next) => {
     const r = await next(e)
     const g = await read($, goal)
     const next1 = g?.tasks.find(t => t.status === 'pending')
-    if (!isInteractive || !isOurs || isNudged || e.stop_hook_active || r.block || !g || g.status !== 'active' || g.source === FACTORY_SOURCE || paceOf(g) !== 'run' || !next1) return r
+    if (!isInteractive || !isOurs || isNudged || r.block || !g || g.status !== 'active' || g.source === FACTORY_SOURCE || paceOf(g) !== 'run' || !next1) return r
     if ((await read($, side))?.isLive) return r
     isNudged = true
     const left = g.tasks.filter(t => t.status !== 'done').length
@@ -947,7 +947,7 @@ export const register: Register = (on, options) => {
     const g = await read($, goal)
     const canRunAsFactory = await read($, hasFactory)
     const frame = Math.floor((await read($, tick)) / FRAME_MS)
-    const Svg = e.surface === 'terminal' ? null : $.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
 
     if (!g) {
       return (

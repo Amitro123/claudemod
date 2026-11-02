@@ -2,7 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Flag, Item, Status } from '../types'
-import { doneResult, factoryArgs, projectFrom, startLine } from './texts'
+import { hasCommand, mergeLists, projectOf } from './runtime'
+import { doneResult, factoryArgs, startLine } from './texts'
+// The followups tests import the list merge from here, as before it was shared.
+export { mergeLists }
 
 // ---------- state ----------
 
@@ -37,9 +40,11 @@ When a message says it started a to-do item and gives its id, do that work, and 
 export const STOP_PHRASES = [
   'not verified', 'unverified', 'not tested', 'untested', 'no coverage', 'left open', 'still open', 'known gap',
   'open question', 'open questions', 'unsure about', 'unsure-about',
-  'לא אומת', 'לא נבדק', 'לא נבדקו', 'פער', 'פריט המשך', 'שאלה פתוחה', 'שאלות פתוחות',
+  'לא אומת', 'לא נבדק', 'לא נבדקו', 'פער ידוע', 'פער פתוח', 'פריט המשך', 'שאלה פתוחה', 'שאלות פתוחות',
 ]
 export const STOP_MESSAGE = 'You mentioned items that need follow-up. Call mcp__followups__flag for each, or say there are none.'
+// The same, when a sub-agent's open questions were already offered above the prompt this turn.
+export const STOP_MESSAGE_OFFERED = "You mentioned items that need follow-up. A sub-agent's open questions are already offered above the prompt: call mcp__followups__flag only for the others, or say there are none."
 
 // What the after-answer check asks a small model: what in this answer was left open.
 export const SWEEP_RULES = `You read the final reply an AI coding assistant just gave, with any reports its sub-agents handed it this turn, and list the follow-ups in them: problems or loose ends mentioned but left open, which the person could lose track of.
@@ -71,7 +76,10 @@ export const isStatus = (s: unknown): s is Status => s === 'open' || s === 'in_p
 // Items saved before statuses existed carry isDone; map them to a status.
 export function migrate(saved: unknown): Item[] {
   if (!Array.isArray(saved)) return []
-  return saved.map((raw: Record<string, unknown>) => {
+  // An entry that isn't an item (null, a string, one with no id or title) is dropped, not thrown on.
+  const isItem = (x: unknown): x is Record<string, unknown> =>
+    !!x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string' && typeof (x as { title?: unknown }).title === 'string'
+  return saved.filter(isItem).map(raw => {
     const { isDone, ...rest } = raw
     const status: Status = isStatus(raw.status) ? raw.status : isDone === true ? 'done' : 'open'
     return { ...rest, status, kind: raw.kind === 'bug' ? 'bug' : 'task' } as Item
@@ -220,32 +228,37 @@ async function sweep($: EngineInterface, answer: string, reports: string[]) {
 
 // A sub-agent's report that names open questions has them offered in the band at once: read
 // straight from its section, no model, so it works where the after-answer look can't run.
-// Resolves how many it offered.
-async function offerOpenItems($: EngineInterface, report: string): Promise<number> {
+// Resolves the titles it offered.
+async function offerOpenItems($: EngineInterface, report: string): Promise<string[]> {
   const known = await knownTitles($)
   const fresh = openItems(report).filter(t => !known.has(norm(clip(t, 120))))
-  if (!fresh.length) return 0
+  if (!fresh.length) return []
   const at = await $.clock.now()
   const flags: Flag[] = fresh.map(t => ({ id: newId(at), kind: 'task', title: clip(t, 120), detail: "From a sub-agent's open questions", where: '', at }))
   await update($, pending, l => [...l, ...flags])
   $.ui.toast(fresh.length === 1 ? 'A sub-agent left an open question: see above the prompt' : `A sub-agent left ${fresh.length} open questions: see above the prompt`)
-  return fresh.length
+  return flags.map(f => f.title)
+}
+
+// The reply without the sentences that restate an item already offered: what is left open besides them.
+export function withoutOffered(reply: string, offered: string[]): string {
+  // An item's words of four letters or more; a sentence that holds most of them restates it.
+  const wordsOf = (t: string) => norm(t).split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 4)
+  const items = offered.map(wordsOf).filter(w => w.length >= 2)
+  if (!items.length) return reply
+  return reply
+    .split(/(?<=[.!?])\s+|\n/)
+    .filter(sentence => {
+      const has = new Set(wordsOf(sentence))
+      return !items.some(w => w.filter(x => has.has(x)).length >= Math.ceil(w.length * 0.6))
+    })
+    .join('\n')
 }
 
 const newId = (at: number) => `${at.toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 
-// The saved list belongs to the project: the main repository, the same for each of its git
-// worktrees (a session in a worktree has a root of its own), else the session's root.
-const projects = new Map<string, string>()
-async function projectOf($: EngineInterface): Promise<string> {
-  const root = await $.session.root()
-  const known = projects.get(root)
-  if (known) return known
-  const out = await $.process.run(['git', 'rev-parse', '--git-common-dir'], { cwd: root, timeoutMs: 5_000 }).catch(() => null)
-  const project = projectFrom(root, out && out.exitCode === 0 ? out.stdout : '')
-  projects.set(root, project)
-  return project
-}
+// The saved list belongs to the project (projectOf, shared): the main repository, the same for each
+// of its git worktrees.
 
 const storeKey = async ($: EngineInterface) => `items:${await projectOf($)}`
 
@@ -256,21 +269,6 @@ async function migrateKey($: EngineInterface, prefix: string) {
   if (key === legacy || (await $.store.get(key)) !== undefined) return
   const old = await $.store.get(legacy)
   if (old !== undefined && old !== null) await $.store.set(key, old)
-}
-
-// A three-way merge with what another session in the same project saved meanwhile. `base` is the
-// list as this session last loaded or saved it: what changed here since wins, what changed only
-// there is taken, and an item either side deleted stays deleted.
-export function mergeLists<T extends { id: string }>(base: T[], mine: T[], stored: T[]): T[] {
-  const was = new Map(base.map(i => [i.id, JSON.stringify(i)]))
-  const there = new Map(stored.map(i => [i.id, i]))
-  const held = new Set(mine.map(i => i.id))
-  const kept = mine.flatMap(i => {
-    if (was.get(i.id) !== JSON.stringify(i)) return [i]
-    const other = there.get(i.id)
-    return other ? [other] : []
-  })
-  return [...kept, ...stored.filter(i => !held.has(i.id) && !was.has(i.id))]
 }
 
 // What another session saved since this one last loaded or saved comes in: an item it finished or
@@ -285,12 +283,17 @@ async function sync($: EngineInterface) {
   await update($, base, () => stored)
 }
 
+// The store has no lock: another session saving between this one's read and write would lose its change.
+// So the store is read once more just before the write, and merged again if it moved meanwhile. That
+// leaves only the moment between that read and the write, not the whole merge.
 async function save($: EngineInterface) {
   const key = await storeKey($)
-  const saved = await $.store.get(key)
+  const listOf = (v: unknown, or: Item[]) => (Array.isArray(v) ? migrate(v) : or)
   const from = await read($, base)
-  const stored = Array.isArray(saved) ? migrate(saved) : from
-  const merged = await update($, items, mine => mergeLists(from, mine, stored))
+  const first = listOf(await $.store.get(key), from)
+  let merged = await update($, items, mine => mergeLists(from, mine, first))
+  const again = listOf(await $.store.get(key), first)
+  if (JSON.stringify(again) !== JSON.stringify(first)) merged = await update($, items, mine => mergeLists(first, mine, again))
   await $.store.set(key, merged)
   await update($, base, () => merged)
 }
@@ -379,8 +382,7 @@ async function start($: EngineInterface, which: Item[]) {
 const hasFactory = atom({ plugin: 'followups', key: 'hasFactory' } as const, false)
 
 async function checkFactory($: EngineInterface) {
-  if (await read($, hasFactory)) return
-  if ((await $.command.list().catch(() => [])).some(c => c.name === 'factory')) await update($, hasFactory, () => true)
+  if (!(await read($, hasFactory)) && (await hasCommand($, 'factory'))) await update($, hasFactory, () => true)
 }
 
 // An item run through the factory: /factory with what the item says, its id carried along so the
@@ -403,11 +405,12 @@ const quoted = (s: string) => `\`${s.replace(/\s+/g, ' ').replace(/`/g, "'").tri
 
 export function section(target: Target, list: Item[]): string {
   const t = TARGETS[target]
-  const asCode = target === 'memory'
+  // Every export quotes: Claude reads the README and docs too, and an item's words may come from the
+  // after-answer look or a sub-agent's report (a web page it read), never meant as instructions.
   const lines = list.map(i => {
-    const extra = [i.detail && (asCode ? quoted(i.detail) : i.detail), i.where && quoted(i.where)].filter(Boolean).join(' · ')
+    const extra = [i.detail && quoted(i.detail), i.where && quoted(i.where)].filter(Boolean).join(' · ')
     const tags = `${i.kind === 'bug' ? ' _(bug)_' : ''}${i.status === 'in_progress' ? ' _(in progress)_' : ''}`
-    return `- [${i.status === 'done' ? 'x' : ' '}] ${asCode ? quoted(i.title) : i.title}${tags}${extra ? ` — ${extra}` : ''}`
+    return `- [${i.status === 'done' ? 'x' : ' '}] ${quoted(i.title)}${tags}${extra ? ` — ${extra}` : ''}`
   })
   return [START, t.heading, '', ...(t.note ? [`_${t.note}_`, ''] : []), ...lines, END].join('\n')
 }
@@ -444,6 +447,9 @@ export const register: Register = (on, options) => {
   // The module's own, per turn: a person is at the prompt, flag was called, the check already stopped once.
   let isInteractive = false
   let isFlagged = false
+  // A sub-agent's open questions offered in the band this turn: the stop check still runs, for the
+  // reply's other loose ends, leaving out the sentences that restate these, and says they are taken care of.
+  let offered: string[] = []
   let isBlocked = false
   // Sub-agents' final reports since the main loop's last answer: the work, and its loose ends, is often there.
   let reports: string[] = []
@@ -511,6 +517,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) await checkFactory($)
     if (e.agentId === undefined && e.text !== '') {
       isFlagged = false
+      offered = []
       isBlocked = false
       // Another session open beside this one may have changed the list since.
       await sync($).catch(() => {})
@@ -546,9 +553,11 @@ export const register: Register = (on, options) => {
     const input = e as unknown as { id?: unknown; note?: unknown }
     const ref = String(input.id ?? '').trim()
     const list = await read($, items)
-    const item = list.find(i => i.id === ref) ?? list.find(i => ref && norm(i.title) === norm(ref))
+    // By id; by title only among the items under way, so it can't close an item nobody started.
+    const item = list.find(i => i.id === ref) ?? list.find(i => ref && i.status === 'in_progress' && norm(i.title) === norm(ref))
     if (!item) return { deny: `No to-do item with id "${ref}". Use the id from the start message.` }
     if (item.status === 'done') return { result: `"${item.title}" is already done. Nothing to change.` }
+    if (item.status !== 'in_progress') return { deny: `"${item.title}" wasn't started from the to-do list, so it isn't yours to mark done. Call this only for an item a start message gave you.` }
     await setStatus($, new Set([item.id]), 'done')
     const note = clip(String(input.note ?? '').trim(), 200)
     $.ui.toast(`Done: ${item.title}`)
@@ -563,7 +572,7 @@ export const register: Register = (on, options) => {
       if (e.reason === 'answer' && e.answer.trim()) {
         reports = [...reports, e.answer.trim()].slice(-4)
         // Offered in the band: the stop check needn't send Claude back to flag them again.
-        if (await offerOpenItems($, e.answer)) isFlagged = true
+        offered = [...offered, ...(await offerOpenItems($, e.answer))]
       }
       return r
     }
@@ -582,12 +591,14 @@ export const register: Register = (on, options) => {
   // The end of the main loop's turn: when the reply names something left open and flag wasn't called,
   // stop it once with a nudge. classic.Stop is the one event that can send Claude back to work
   // (`block`); turn.complete only reads. Without a person at the prompt, nobody could answer, so no check.
+  // At most once a turn (isBlocked), so another hook's block before it (stop_hook_active on the next
+  // Stop: goal-run's nudge, say) doesn't keep this one from its own once.
   on('classic.Stop', async ($, e, next) => {
     const r = await next(e)
-    if (!stopCheck || !isInteractive || isFlagged || isBlocked || e.stop_hook_active || r.block) return r
-    if (!leftOpen(e.last_assistant_message ?? '').length) return r
+    if (!stopCheck || !isInteractive || isFlagged || isBlocked || r.block) return r
+    if (!leftOpen(withoutOffered(e.last_assistant_message ?? '', offered)).length) return r
     isBlocked = true
-    return { ...r, block: STOP_MESSAGE }
+    return { ...r, block: offered.length ? STOP_MESSAGE_OFFERED : STOP_MESSAGE }
   }).catch(($, e, next) => (next.called ? next(e) : {}))
 
   on('command.run', { command: 'followups' }, async $ => {

@@ -9,6 +9,7 @@ import { diffBrain, FOLDERS, SKILL, lessonCount, logPrompt, paraStats, parseMemo
 import type { ParaFile } from './brain'
 import { clockTime, contextLine, HANDOFF_TITLE, hasLoose, handoffEntry, insertBelowMarker, journalDoc, journalFile, JOURNAL_DIR, JOURNAL_LAST, journalText, looseEnds, stampOf, workerEntry } from './journal'
 import type { JournalEntry, JournalKind } from './journal'
+import { hasCommand } from './runtime'
 import { GOAL_REACHED, parseDoneResult, parseGoalClosedNote, parseGoalPrompt, parseStartPrompt, toolText } from './texts'
 
 const brain = atom({ plugin: 'brain-hud', key: 'brain' } as const, null as Brain | null)
@@ -41,6 +42,11 @@ const PARA_ROOT = '.agent-brain/shared'
 const POLL_MS = 4_000
 // In a project with no memory yet, the poll looks this often instead: a turn's end checks too.
 const IDLE_POLL_MS = 32_000
+// Polls in a row with nothing changed before the poll slows to every QUIET_EVERY-th tick (16 seconds),
+// until a change or the person's next prompt.
+const QUIET_AFTER = 15
+const QUIET_EVERY = 4
+let quiet = 0
 const PULSE_MS = 6_000
 const FRAME_MS = 160
 const INBOX_SHOWN = 3
@@ -336,9 +342,7 @@ async function toFollowup($: EngineInterface, title: string) {
 }
 
 async function checkFollow($: EngineInterface) {
-  if (await read($, canFollow)) return
-  const names = (await $.command.list().catch(() => [])).map(c => c.name)
-  if (names.includes('followup')) await update($, canFollow, () => true)
+  if (!(await read($, canFollow)) && (await hasCommand($, 'followup'))) await update($, canFollow, () => true)
 }
 
 // The graph's palette follows the theme set in /config; dark when it can't be read.
@@ -378,9 +382,14 @@ export const register: Register = (on, options) => {
     await readTheme($)
     await refresh($)
     let ticks = 0
+    quiet = 0
     timers.push($.clock.every(POLL_MS, async () => {
       if (!(await read($, brain)) && ++ticks % (IDLE_POLL_MS / POLL_MS)) return
-      if ((await stamp($)) !== mtimes) await refresh($)
+      if (quiet >= QUIET_AFTER && ++ticks % QUIET_EVERY) return
+      if ((await stamp($)) !== mtimes) {
+        quiet = 0
+        await refresh($)
+      } else quiet++
     }))
     return next(e)
   })
@@ -403,6 +412,8 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     // A sub-agent's turn changes neither: no need to ask on each one.
     if (e.agentId !== undefined) return next(e)
+    // The person is back: the memory may change again soon, so the poll goes back to every 4 seconds.
+    quiet = 0
     await checkFollow($)
     // A theme changed in /config mid-session reaches the graph from the next prompt on.
     await readTheme($)
@@ -504,7 +515,7 @@ export const register: Register = (on, options) => {
     const remind = toRoute >= ROUTE_AT && toRoute > (await read($, routeLater))
     if (e.props.hasSurvey || (!p && !pending.length && !remind)) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    const Svg = e.surface === 'terminal' ? null : $.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
     const t = await read($, frame)
     const below = await next(e)
     const o = pending[0]
@@ -553,7 +564,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const Svg = e.surface === 'terminal' ? null : $.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
     const b = await read($, brain)
     if (!b) {
       return (

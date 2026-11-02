@@ -1,16 +1,25 @@
 // A step's state, as the pane draws it.
 export type StepState = 'wait' | 'run' | 'pass' | 'changes' | 'fail' | 'skip'
-export type Role = 'spec' | 'builder' | 'security' | 'code' | 'approver'
+// skeptic: before the builder is sent back, it tries to refute the round's blocker and major findings.
+// extra: a reviewer the main Claude added for this run (a lens of the factory's, or an agent of its own).
+export type Role = 'spec' | 'builder' | 'security' | 'code' | 'approver' | 'skeptic' | 'extra'
 // How big the spec-writer judged the feature: what the models of the later roles follow.
 export type Size = 'small' | 'medium' | 'large'
-export type Reviewer = 'security' | 'code'
+// security and code always review; an extra reviewer is named by the main Claude (frontend, finops...).
+export type Reviewer = string
+// An extra reviewer: its name, what it looks at, and the agent type that runs it (the factory's own
+// generic reviewer when none is named).
+export type Extra = { name: string; focus: string; agent?: string }
 export type Severity = 'blocker' | 'major' | 'minor'
 export type Finding = { severity: Severity; where: string; text: string }
 // A task of the spec's breakdown: what goes to goal-run's plan.
 export type SpecTask = { title: string; priority: 'high' | 'medium' | 'low'; dependsOn: number[] }
 // isMissing: the command couldn't start here (its program isn't installed): skipped, not failed, so the
 // builder isn't sent to fix what it can't.
-export type Check = { cmd: string; ok: boolean; tail: string; isMissing?: boolean }
+// isTimedOut: it ran past the checks' time limit: the person decides, not the builder.
+// isSkipped: the person (or the main Claude for them) let the run go on without waiting for it.
+// why: what a check that didn't run said instead (pytest that collected no tests, say).
+export type Check = { cmd: string; ok: boolean; tail: string; isMissing?: boolean; isTimedOut?: boolean; isSkipped?: boolean; why?: string }
 // agentId: the reviewer's agent this round (null until started), so a late answer from an earlier one is ignored.
 export type Review = { role: Reviewer; state: StepState; findings: Finding[]; tokens: number; round: number; agentId: string | null }
 // Where the run is: each phase waits on one thing (an agent, the checks, the person).
@@ -26,6 +35,8 @@ export type Blocked =
   | { on: 'checks' }
   | { on: 'setup' }
   | { on: 'start'; role: Role }
+  // The builder's branch no longer starts from the run's base: which branch it is on top of is asked.
+  | { on: 'base' }
 
 export type Run = {
   feature: string
@@ -78,6 +89,28 @@ export type Run = {
   skipped?: string[]
   // The followups to-do item the run came from: marked done once the PR is open.
   followupId?: string
+  // The command the checks (or the setup before them) are running now, its place among them and when
+  // it started: what the band and the pane show, so a long check reads as running, not stuck.
+  checking?: { cmd: string; index: number; total: number; since: number; isSetup?: boolean } | null
+  // The factory's question before it runs the checks it found is open: the run waits on the person.
+  isAskingChecks?: boolean
+  // The branch the run started from (the checkout's), and the one the PR goes into; base may move to
+  // another branch's commit when the builder built on top of it.
+  baseRef?: string
+  // When the run entered its current phase, and what its agents did last: the band shows the step's
+  // time and the latest action, so a run that is working never reads as stuck.
+  phaseSince?: number
+  activity?: { role: Role; text: string; at: number; calls: number }
+  // Where the progress stood when the run stopped to wait (needs-human) or was stopped.
+  lastProgress?: number
+  // What this round's diff calls for (its review route), and the skeptic's round: the findings it was
+  // asked to refute, with the reviewer each came from, and what its rulings dropped.
+  route?: { deep: boolean; focus: string[] }
+  disputed?: { role: Reviewer; finding: Finding }[]
+  refuted?: { role: Reviewer; finding: Finding; ruling: string; why: string }[]
+  skepticTokens?: number
+  // Reviewers the main Claude added for this run, beside security and code.
+  extras?: Extra[]
 }
 
 declare module 'claude-code' {
@@ -86,6 +119,7 @@ declare module 'claude-code' {
       run: Run | null
       frame: number
       theme: 'dark' | 'light'
+      now: number
       stoppedAgents: string[]
     }
   }

@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { RLM, toRtl, wrapLineIfNeeded } from './rtl'
+import { cacheStats, RLM, toRtl, wrapLineIfNeeded } from './rtl'
 
 const HEBREW_LEADING = '## \u05DB\u05D5\u05EA\u05E8\u05EA' // "## <Hebrew word>"
 const MIXED = 'Mixed \u05E2\u05D1\u05E8\u05D9\u05EA \u05DE\u05D0\u05D5\u05D3 \u05E9\u05DC\u05D5\u05DD text' // 3 Hebrew words vs 2 English
@@ -27,6 +27,23 @@ const LABEL_OFF = '\u05E2\u05D1\u05E8\u05D9\u05EA: \u05DB\u05D1\u05D5\u05D9'
 const LABEL_ON = '\u05E2\u05D1\u05E8\u05D9\u05EA: \u05E4\u05E2\u05D9\u05DC'
 
 // --- pure functions -------------------------------------------------------
+
+test('a streamed message keeps one cache entry, not one per chunk; the size counts the results (code review 2, RT1)', () => {
+  const tableCells = true
+  const before = cacheStats(tableCells).entries
+  let text = ''
+  for (let i = 0; i < 40; i++) {
+    text += `line ${i} עם קצת עברית כאן ושם\n`
+    toRtl(text, { tableCells })
+  }
+  const after = cacheStats(tableCells)
+  expect(after.entries - before).toBe(1)
+  expect(after.size).toBeGreaterThanOrEqual(text.length * 2)
+  // The finished message is still a hit, and a different message is its own entry.
+  expect(toRtl(text, { tableCells })).toBe(toRtl(text, { tableCells }))
+  toRtl('another message, עם עברית ועוד עברית', { tableCells })
+  expect(cacheStats(tableCells).entries - before).toBe(2)
+})
 
 test('wrapLineIfNeeded: Hebrew-dominant English-leading line gets a leading RLM', () => {
   expect(wrapLineIfNeeded(MIXED)).toBe(`${RLM}${MIXED}`)

@@ -1,6 +1,6 @@
 {
   "name": "factory",
-  "version": "0.12.0",
+  "version": "0.15.2",
   "description": "A software factory: /factory <feature> writes a spec, has you approve its plan (in goal-run when it's installed), builds it on a branch, runs the checks and parallel reviews, and has an approver agent decide; you then press Open PR and Claude opens it. Its pane draws where the run is",
   "author": {
     "name": "Amit Rosen",
@@ -42,6 +42,20 @@
         "off",
         "on"
       ]
+    },
+    "skeptic": {
+      "type": "string",
+      "title": "Skeptic before a fix round",
+      "description": "on: before the builder is sent back over blocker and major findings, a read-only skeptic tries to refute each with evidence; refuted findings are dropped (and named to the approver), so no round is spent on a finding that isn't real. A security blocker always stands",
+      "default": "on",
+      "options": ["on", "off"]
+    },
+    "checkTimeout": {
+      "type": "string",
+      "title": "Check time limit (minutes)",
+      "description": "How long one check may run before it counts as timed out: the run then stops for you instead of sending the builder to fix it. Claude Code allows a command 10 minutes at most",
+      "default": "10",
+      "options": ["2", "5", "10"]
     },
     "models": {
       "type": "string",

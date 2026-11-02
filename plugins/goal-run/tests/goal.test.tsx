@@ -5,7 +5,7 @@ import type { On } from 'claude-code'
 import { runnerX, trackText } from '../hooks/art'
 import { addSide, insertTask, mergeGoal, movePending, orderPlan, parseStartPrompt, planItems, poseOf, reminder, replan, stepTokens } from '../hooks/register'
 import type { Goal } from '../types'
-import { doneResult, factoryChosenForGoal, parsePlanApprovedArgs, parsePlanOutcome, PLAN_APPROVED_FOR_FACTORY, PLAN_KEPT_FOR_FACTORY, planChangesForFactory, projectFrom } from '../hooks/texts'
+import { doneResult, factoryChosenForGoal, parsePlanResultArgs, parsePlanApprovedArgs, parsePlanOutcome, PLAN_APPROVED_FOR_FACTORY, PLAN_KEPT_FOR_FACTORY, planChangesForFactory, projectFrom } from '../hooks/texts'
 
 const PLAN = 'mcp__goal-run__plan'
 const UPDATE = 'mcp__goal-run__update'
@@ -579,6 +579,8 @@ describe('the order of the plan', () => {
 
   test("a step's tokens are the new ones: cache reads, the context already counted, are left out", () => {
     expect(stepTokens({ input_tokens: 1_000, output_tokens: 500, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 2_000 })).toBe(3_500)
+    // A field the step didn't report is 0, never NaN (code review 2, G1).
+    expect(stepTokens({ input_tokens: 1_000, output_tokens: 500 })).toBe(1_500)
   })
 
   test('↑ and ↓ move a task among the pending ones, never past one in progress or done', () => {
@@ -722,8 +724,9 @@ describe('after approval: run through, or ask between tasks', () => {
     // The person's next prompt allows one more nudge.
     await $.prompt.submit({ text: 'next', wait: false, origin: { kind: 'composer' } } as never)
     await $.turn.start({ text: 'next', turnId: 't2' } as never)
-    expect((await $.classic.Stop({ stop_hook_active: true, last_assistant_message: '' } as never)).block).toBeUndefined()
-    expect((await $.classic.Stop(stop)).block).toMatch(/Go on with t2/)
+    // Another hook's block came first (stop_hook_active): goal-run's own once still stands (code review 2, R4).
+    expect((await $.classic.Stop({ stop_hook_active: true, last_assistant_message: '' } as never)).block).toMatch(/Go on with t2/)
+    expect((await $.classic.Stop(stop)).block).toBeUndefined()
   })
 
   test("another mod's prompt gets no goal reminder, and the stop after it isn't sent on", async ($, on) => {
@@ -814,6 +817,28 @@ describe('a plan from a factory run', () => {
     const r = await $.tool.call({ tool: PLAN, goal: 'Rate limiter', source: 'factory', tasks } as never)
     expect(String(r.result).startsWith(PLAN_APPROVED_FOR_FACTORY)).toBe(true)
     expect((w.saved['goal:/repo'] as Goal).source).toBe('factory')
+  })
+
+  test("the answer to a factory plan is also sent to the factory as a command, after the tool call", async ($, on) => {
+    const ran: string[] = []
+    on('command.run', (_, e) => {
+      ran.push(`${e.command} ${e.args ?? ''}`.trim())
+      return { text: '' } as never
+    })
+    const w = engine(on, { answers: ['Approve, start building', 'Split it'] })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    const r = await $.tool.call({ tool: PLAN, goal: 'Rate limiter', source: 'factory', tasks } as never)
+    expect(ran.filter(c => c.startsWith('factory'))).toEqual([])
+    await w.clock.advance(10)
+    const sent = ran.filter(c => c.startsWith('factory plan-result '))
+    expect(sent).toHaveLength(1)
+    // The factory reads it with the same parser as the tool's answer: the approval and goal-run's ids.
+    expect(parsePlanResultArgs(sent[0]!.slice('factory '.length))).toEqual(parsePlanOutcome(String(r.result)))
+    expect((parsePlanOutcome(String(r.result)) as { goalTasks?: { id: string }[] }).goalTasks?.map(t => t.id)).toEqual(['t1', 't2'])
+    // Changes asked for go the same way.
+    await $.tool.call({ tool: PLAN, goal: 'Rate limiter', source: 'factory', tasks } as never)
+    await w.clock.advance(10)
+    expect(parsePlanResultArgs(ran.at(-1)!.slice('factory '.length))).toEqual({ changes: 'Split it' })
   })
 
   test("a regular plan's answers are not the factory's", async ($, on) => {
