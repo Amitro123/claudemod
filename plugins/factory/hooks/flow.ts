@@ -292,7 +292,7 @@ export const couldNotStart = (err: unknown) => !/time(d)?\s*out(?!ms)/i.test(Str
 
 // The checks that actually ran: one whose program isn't installed here was skipped, not run.
 export const ranChecks = (run: Pick<Run, 'checks'>) => run.checks.filter(c => !c.isMissing)
-const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' : c.isMissing ? 'not installed, not run' : c.ok ? 'passed' : 'FAILED')
+const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' : c.why ? `not run (${c.why})` : c.isMissing ? 'not installed, not run' : c.ok ? 'passed' : 'FAILED')
 
 export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
   return [
@@ -549,7 +549,7 @@ export function statusReport(run: Run, now: number, recordFiles: string[] = []):
     ...(run.activity ? [`Last agent action: ${run.activity.role} ${run.activity.text}, ${mmss(now - run.activity.at)} ago (${run.activity.calls} tool calls this step).`] : []),
     `Steps: ${(Object.keys(run.steps) as (keyof Run['steps'])[]).map(k => `${k} ${run.steps[k].state}`).join(', ')}; reviews round ${run.round}: ${run.reviews.map(x => `${x.role} ${x.state}`).join(', ')}.`,
     ...(run.stat ? [`Changed: ${run.stat}`] : []),
-    ...(run.checks.length ? ['Checks:', ...run.checks.map(c => `- ${c.isSkipped ? 'skipped' : c.isMissing ? 'not installed' : c.isTimedOut ? 'TIMED OUT' : c.ok ? 'passed' : 'FAILED'}: ${c.cmd}${c.tail ? `\n${c.tail.split('\n').slice(-10).map(l => `    ${l}`).join('\n')}` : ''}`)] : []),
+    ...(run.checks.length ? ['Checks:', ...run.checks.map(c => `- ${c.isSkipped ? 'skipped' : c.why ? `not run (${c.why})` : c.isMissing ? 'not installed' : c.isTimedOut ? 'TIMED OUT' : c.ok ? 'passed' : 'FAILED'}: ${c.cmd}${c.tail ? `\n${c.tail.split('\n').slice(-10).map(l => `    ${l}`).join('\n')}` : ''}`)] : []),
     ...(run.checksNote ? [`Checks note: ${run.checksNote}`] : []),
     ...(findings.length ? ['Findings this round:', ...findings.flatMap(x => x.findings.map(f => `- ${x.role} [${f.severity}] ${f.where} ${f.text}`))] : []),
     ...(waitsOnYou(run) ? [`Waits on the person: ${run.note}`] : []),

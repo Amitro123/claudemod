@@ -31,7 +31,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '' } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }> } = {}) {
   const spawned: Spawned[] = []
   const ran: string[] = []
   const limits: Record<string, number> = {}
@@ -107,6 +107,8 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     // The branch's changed files for the review route (`changedFiles`, name-status -z).
     if (cmd.startsWith('git diff --name-status -z')) return ok(changedFiles)
     if (cmd.startsWith('git ')) return ok()
+    // `outputs`: what a command answers, as given.
+    if (outputs[cmd]) return { value: outputs[cmd] } as never
     if (missing.includes(cmd)) throw new Error(`spawn ${e.argv[0]} ENOENT`)
     if (cmd === 'sh-missing') return { value: { exitCode: 127, stdout: '', stderr: 'sh: vitest: not found' } } as never
     if (failing > 0) {
@@ -1105,6 +1107,26 @@ describe('extra reviewers the main Claude adds, and steering a run', () => {
     await answer($, 'a2', 'built')
     expect(w.spawned.slice(2).map(a => a.description)).toEqual(['factory · security review', 'factory · code review', 'factory · deploy review'])
   })
+})
+
+describe('pytest that found nothing, or no pytest at all, is not a failure (code review 2, F3)', () => {
+  for (const [name, out, why] of [
+    ['collected no tests (exit 5)', { exitCode: 5, stdout: 'no tests ran in 0.01s', stderr: '' }, 'no tests collected'],
+    ['a python without pytest', { exitCode: 1, stdout: '', stderr: '/usr/bin/python3: No module named pytest' }, 'pytest is not installed'],
+  ] as const) {
+    test(`pytest ${name}: recorded as not run, the builder is not sent back`, async ($, on) => {
+      const w = engine(on, { files: ['package.json', 'node_modules', 'conftest.py'], outputs: { 'python -m pytest -q': { ...out } } })
+      await startRun($)
+      await answer($, 'a1', SPEC_ANSWER)
+      await command($, 'plan-approved')
+      await answer($, 'a2', 'built')
+      await settled()
+      expect(w.ran).toContain('python -m pytest -q')
+      expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(1)
+      expect(Object.entries(w.written).find(([k]) => /checks\.md$/.test(k))?.[1]).toContain(`– (${why}) python -m pytest -q`)
+      expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toContain(`not run (${why}): python -m pytest -q`)
+    })
+  }
 })
 
 describe('the parsers', () => {

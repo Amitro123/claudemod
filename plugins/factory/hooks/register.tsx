@@ -637,18 +637,25 @@ async function runChecks($: EngineInterface) {
       results.push({ cmd: argv.join(' '), ok: false, tail: '', isMissing: true, isSkipped: true })
       continue
     }
+    // pytest that found no tests (exit 5), or a python without pytest: nothing ran, so nothing failed.
+    const said = `${out.stdout}\n${out.stderr}`
+    if (argv.includes('pytest') && (out.exitCode === 5 || /No module named pytest/.test(said))) {
+      results.push({ cmd: argv.join(' '), ok: false, tail: '', isMissing: true, why: out.exitCode === 5 ? 'no tests collected' : 'pytest is not installed' })
+      continue
+    }
     results.push({ cmd: argv.join(' '), ok: out.exitCode === 0, tail: out.exitCode === 0 ? '' : tailOf(`${out.stdout}\n${out.stderr}`), ...(out.notStarted ? { isMissing: true } : {}), ...(out.timedOut ? { isTimedOut: true } : {}) })
   }
   const timedOut = results.filter(c => c.isTimedOut)
   const failed = results.filter(c => !c.ok && !c.isMissing)
   const missing = results.filter(c => c.isMissing)
   const ran = results.filter(c => !c.isMissing)
-  if (results.length) await record($, 'checks', results.map(c => `${c.isSkipped ? '– (skipped by the person)' : c.isMissing ? '– (not installed)' : c.isTimedOut ? `⏱ (timed out after ${mmss(checkTimeoutMs)})` : c.ok ? '✓' : '✗'} ${c.cmd}${c.tail ? `\n${c.tail}` : ''}`).join('\n'))
+  if (results.length) await record($, 'checks', results.map(c => `${c.isSkipped ? '– (skipped by the person)' : c.why ? `– (${c.why})` : c.isMissing ? '– (not installed)' : c.isTimedOut ? `⏱ (timed out after ${mmss(checkTimeoutMs)})` : c.ok ? '✓' : '✗'} ${c.cmd}${c.tail ? `\n${c.tail}` : ''}`).join('\n'))
   // Why nothing ran, or what detection warned about, or which programs aren't installed: the
   // reviewers and the approver read it.
   const notes = [
     ...(missing.some(c => c.isSkipped) ? [`Skipped by the person, so not run: ${missing.filter(c => c.isSkipped).map(c => c.cmd).join(', ')}.`] : []),
-    ...(missing.some(c => !c.isSkipped) ? [`Not installed here, so not run: ${missing.filter(c => !c.isSkipped).map(c => c.cmd).join(', ')}.`] : []),
+    ...(missing.some(c => !c.isSkipped && !c.why) ? [`Not installed here, so not run: ${missing.filter(c => !c.isSkipped && !c.why).map(c => c.cmd).join(', ')}.`] : []),
+    ...(missing.some(c => c.why) ? [`Not run: ${missing.filter(c => c.why).map(c => `${c.cmd} (${c.why})`).join(', ')}.`] : []),
     ...(!ran.length ? [found.reason || NOTHING_RAN] : []),
     ...(ran.length && found.warnings.length ? [found.warnings.join('; ')] : []),
   ]

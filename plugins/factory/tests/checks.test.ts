@@ -38,6 +38,18 @@ const argvs = (r: { checks: string[][] }) => r.checks.map(c => c.join(' '))
 const run = (files: Record<string, string>, opts = {}, io?: ChecksIO) => detectProjectChecks(io ?? repo(files), '/r', opts)
 
 describe('detectChecks: generic and failure-proof', () => {
+  test('a tests/ folder means pytest only when it holds python tests; an unread pyproject is a warning (code review 2, F3, F4)', async () => {
+    const node = await run({ 'package.json': '{"scripts":{"test":"vitest"}}', 'tests/limit.test.ts': 'x' })
+    expect(argvs(node)).toEqual(['npm test'])
+    const py = await run({ 'package.json': '{"scripts":{"test":"vitest"}}', 'tests/test_limit.py': 'x' })
+    expect(argvs(py)).toContain('python -m pytest -q')
+    const io = repo({ 'pyproject.toml': '[tool.pytest.ini_options]' })
+    const unread = await detectProjectChecks({ ...io, read: async () => null }, '/r')
+    expect(argvs(unread)).toEqual([])
+    expect(unread.warnings.join(' ')).toMatch(/pyproject\.toml couldn't be read, so pytest isn't assumed/)
+    expect(detectChecks(['package.json', 'tests'], '{"scripts":{"test":"x"}}')).toEqual([['npm', 'test']])
+  })
+
   test('only azure-pipelines.yml (and other CI files): nothing required, nothing thrown, a reason', async () => {
     const r = await run({ 'azure-pipelines.yml': 'trigger: [\n  not: yaml', Jenkinsfile: 'pipeline {', '.github/workflows/ci.yml': '{{{' })
     expect(r.checks).toEqual([])
