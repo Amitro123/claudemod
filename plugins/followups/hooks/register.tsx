@@ -2,7 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Flag, Item, Status } from '../types'
-import { doneResult, factoryArgs, projectFrom, startLine } from './texts'
+import { hasCommand, mergeLists, projectOf } from './runtime'
+import { doneResult, factoryArgs, startLine } from './texts'
+// The followups tests import the list merge from here, as before it was shared.
+export { mergeLists }
 
 // ---------- state ----------
 
@@ -237,18 +240,8 @@ async function offerOpenItems($: EngineInterface, report: string): Promise<numbe
 
 const newId = (at: number) => `${at.toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 
-// The saved list belongs to the project: the main repository, the same for each of its git
-// worktrees (a session in a worktree has a root of its own), else the session's root.
-const projects = new Map<string, string>()
-async function projectOf($: EngineInterface): Promise<string> {
-  const root = await $.session.root()
-  const known = projects.get(root)
-  if (known) return known
-  const out = await $.process.run(['git', 'rev-parse', '--git-common-dir'], { cwd: root, timeoutMs: 5_000 }).catch(() => null)
-  const project = projectFrom(root, out && out.exitCode === 0 ? out.stdout : '')
-  projects.set(root, project)
-  return project
-}
+// The saved list belongs to the project (projectOf, shared): the main repository, the same for each
+// of its git worktrees.
 
 const storeKey = async ($: EngineInterface) => `items:${await projectOf($)}`
 
@@ -259,21 +252,6 @@ async function migrateKey($: EngineInterface, prefix: string) {
   if (key === legacy || (await $.store.get(key)) !== undefined) return
   const old = await $.store.get(legacy)
   if (old !== undefined && old !== null) await $.store.set(key, old)
-}
-
-// A three-way merge with what another session in the same project saved meanwhile. `base` is the
-// list as this session last loaded or saved it: what changed here since wins, what changed only
-// there is taken, and an item either side deleted stays deleted.
-export function mergeLists<T extends { id: string }>(base: T[], mine: T[], stored: T[]): T[] {
-  const was = new Map(base.map(i => [i.id, JSON.stringify(i)]))
-  const there = new Map(stored.map(i => [i.id, i]))
-  const held = new Set(mine.map(i => i.id))
-  const kept = mine.flatMap(i => {
-    if (was.get(i.id) !== JSON.stringify(i)) return [i]
-    const other = there.get(i.id)
-    return other ? [other] : []
-  })
-  return [...kept, ...stored.filter(i => !held.has(i.id) && !was.has(i.id))]
 }
 
 // What another session saved since this one last loaded or saved comes in: an item it finished or
@@ -382,8 +360,7 @@ async function start($: EngineInterface, which: Item[]) {
 const hasFactory = atom({ plugin: 'followups', key: 'hasFactory' } as const, false)
 
 async function checkFactory($: EngineInterface) {
-  if (await read($, hasFactory)) return
-  if ((await $.command.list().catch(() => [])).some(c => c.name === 'factory')) await update($, hasFactory, () => true)
+  if (!(await read($, hasFactory)) && (await hasCommand($, 'factory'))) await update($, hasFactory, () => true)
 }
 
 // An item run through the factory: /factory with what the item says, its id carried along so the

@@ -63,6 +63,7 @@ import {
   resumePrompt,
 } from './flow'
 import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, forbiddenTool, routeReview } from './route'
+import { hasCommand } from './runtime'
 import { FACTORY_START_TOOL, factoryArgs, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, parsePlanResultArgs, toolText } from './texts'
 
 const run = atom({ plugin: 'factory', key: 'run' } as const, null as Run | null)
@@ -157,7 +158,7 @@ async function run$($: EngineInterface, argv: string[], cwd: string) {
 const describe = (role: Role, r: Run) =>
   role === 'builder' ? `builder, round ${buildRound(r)}` : role === 'spec' ? 'spec-writer' : role === 'approver' ? 'approver' : role === 'skeptic' ? 'skeptic' : `${ROLES[role].label} review`
 
-const goalRunThere = async ($: EngineInterface) => (await $.command.list().catch(() => [])).some(c => c.name === 'session-goal')
+const goalRunThere = ($: EngineInterface) => hasCommand($, 'session-goal')
 
 // Starts one role's agent in the run's worktree. A role type the engine refused to register falls
 // back to a general-purpose agent carrying the role's instructions in its prompt.

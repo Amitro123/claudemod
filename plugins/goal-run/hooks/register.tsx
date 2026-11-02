@@ -4,7 +4,8 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Asking, Goal, Pace, Priority, Side, Task, TaskStatus } from '../types'
 import { TRACK_SIZE, trackSvg, trackText } from './art'
 import type { Pose } from './art'
-import { FACTORY_SOURCE, FACTORY_START_TOOL, factoryChosenForGoal, factoryPlanApprovedArgs, factoryPlanResultArgs, GOAL_REACHED, goalClosedNote, goalPrompt, goalReachedToast, parseDoneResult, parseStartPrompt, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, PLAN_WAITING_FOR_FACTORY, planChangesForFactory, projectFrom, toolText } from './texts'
+import { hasCommand, pick, projectOf } from './runtime'
+import { FACTORY_SOURCE, FACTORY_START_TOOL, factoryChosenForGoal, factoryPlanApprovedArgs, factoryPlanResultArgs, GOAL_REACHED, goalClosedNote, goalPrompt, goalReachedToast, parseDoneResult, parseStartPrompt, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, PLAN_WAITING_FOR_FACTORY, planChangesForFactory, toolText } from './texts'
 // The goal-run tests import the start-prompt parser from here, as before it was shared.
 export { parseStartPrompt }
 
@@ -224,17 +225,8 @@ export function reminder(g: Goal): string {
 
 // ---------- updates ----------
 
-// Per project: the main repository, so a goal carries over between sessions in different worktrees.
-const projects = new Map<string, string>()
-async function projectOf($: EngineInterface): Promise<string> {
-  const root = await $.session.root()
-  const known = projects.get(root)
-  if (known) return known
-  const out = await $.process.run(['git', 'rev-parse', '--git-common-dir'], { cwd: root, timeoutMs: 5_000 }).catch(() => null)
-  const project = projectFrom(root, out && out.exitCode === 0 ? out.stdout : '')
-  projects.set(root, project)
-  return project
-}
+// Per project (projectOf, shared): the main repository, so a goal carries over between sessions in
+// different worktrees.
 
 const storeKey = async ($: EngineInterface) => `goal:${await projectOf($)}`
 // Where a goal was saved before the key was the repository: the session's own root.
@@ -245,8 +237,6 @@ const legacyKey = async ($: EngineInterface) => `goal:${await $.session.root()}`
 // both sides' growth. A task one side added is kept; one a side dropped since the base stays dropped.
 export function mergeGoal(base: Goal | null, mine: Goal, theirs: Goal): Goal {
   const b = base && (base.setAt ?? 0) === (mine.setAt ?? 0) ? base : theirs
-  const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y)
-  const pick = <T,>(m: T, bb: T, t: T): T => (same(m, bb) ? t : m)
   const sum = (m = 0, bb = 0, t = 0) => Math.max(m, t, m + t - bb)
   const byId = (g: Goal) => new Map(g.tasks.map(x => [x.id, x]))
   const bt = byId(b)
@@ -332,7 +322,7 @@ const hasFactory = atom({ plugin: 'goal-run', key: 'hasFactory' } as const, fals
 
 async function checkFactory($: EngineInterface): Promise<boolean> {
   if (await read($, hasFactory)) return true
-  const found = (await $.command.list().catch(() => [])).some(c => c.name === 'factory')
+  const found = await hasCommand($, 'factory')
   if (found) await update($, hasFactory, () => true)
   return found
 }

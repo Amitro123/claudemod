@@ -9,6 +9,7 @@ import { diffBrain, FOLDERS, SKILL, lessonCount, logPrompt, paraStats, parseMemo
 import type { ParaFile } from './brain'
 import { clockTime, contextLine, HANDOFF_TITLE, hasLoose, handoffEntry, insertBelowMarker, journalDoc, journalFile, JOURNAL_DIR, JOURNAL_LAST, journalText, looseEnds, stampOf, workerEntry } from './journal'
 import type { JournalEntry, JournalKind } from './journal'
+import { hasCommand } from './runtime'
 import { GOAL_REACHED, parseDoneResult, parseGoalClosedNote, parseGoalPrompt, parseStartPrompt, toolText } from './texts'
 
 const brain = atom({ plugin: 'brain-hud', key: 'brain' } as const, null as Brain | null)
@@ -336,9 +337,7 @@ async function toFollowup($: EngineInterface, title: string) {
 }
 
 async function checkFollow($: EngineInterface) {
-  if (await read($, canFollow)) return
-  const names = (await $.command.list().catch(() => [])).map(c => c.name)
-  if (names.includes('followup')) await update($, canFollow, () => true)
+  if (!(await read($, canFollow)) && (await hasCommand($, 'followup'))) await update($, canFollow, () => true)
 }
 
 // The graph's palette follows the theme set in /config; dark when it can't be read.
