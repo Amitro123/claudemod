@@ -29,6 +29,7 @@ import {
   planPrompt,
   prPrompt,
   reviewPrompt,
+  skepticPrompt,
   ROLE_PROMPTS,
   ROLES,
   slugOf,
@@ -55,6 +56,7 @@ import {
   progressNote,
   resumePrompt,
 } from './flow'
+import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, routeReview } from './route'
 import { FACTORY_START_TOOL, factoryArgs, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, parsePlanResultArgs, toolText } from './texts'
 
 const run = atom({ plugin: 'factory', key: 'run' } as const, null as Run | null)
@@ -89,7 +91,10 @@ let autoPr = false
 let modelsOption: 'auto' | 'fixed' = 'auto'
 let skillsOption: Partial<Record<Role, string[]>> = {}
 // A role's skills: the option's for it, else the factory's own.
-const skillsOf = (role: Role) => skillsOption[role] ?? [builtinSkill(role)]
+// The skeptic has no skill of the factory's own: only one the skills option names.
+const skillsOf = (role: Role) => skillsOption[role] ?? (role === 'skeptic' ? [] : [builtinSkill(role)])
+// Whether a skeptic tries to refute the round's blocker and major findings before the builder goes back.
+let skepticOn = true
 // Transitions run one at a time: two reviewers finishing together must not both start the approver.
 // Every spawn and every agent's completion goes through this queue, so a completion is handled only
 // after the job that spawned its agent has recorded the agent's id.
@@ -143,7 +148,7 @@ async function run$($: EngineInterface, argv: string[], cwd: string) {
 }
 
 const describe = (role: Role, r: Run) =>
-  role === 'builder' ? `builder, round ${buildRound(r)}` : role === 'spec' ? 'spec-writer' : role === 'approver' ? 'approver' : `${ROLES[role].label} review`
+  role === 'builder' ? `builder, round ${buildRound(r)}` : role === 'spec' ? 'spec-writer' : role === 'approver' ? 'approver' : role === 'skeptic' ? 'skeptic' : `${ROLES[role].label} review`
 
 const goalRunThere = async ($: EngineInterface) => (await $.command.list().catch(() => [])).some(c => c.name === 'session-goal')
 
@@ -624,12 +629,24 @@ async function runChecks($: EngineInterface) {
 }
 
 // Every reviewer looks at every round: a fix for one reviewer is new code for the others too.
+// What the diff calls for: the files and lines it changed, read with git; unreadable, the deepest review.
+async function routeOf($: EngineInterface, r: Run) {
+  const names = await git($, ['diff', '--name-status', '-z', r.base, 'HEAD'], r.worktree)
+  const diff = await git($, ['diff', '-U0', r.base, 'HEAD'], r.worktree)
+  const readable = names.exitCode === 0 && diff.exitCode === 0 && diff.stdout.length < 5_000_000
+  return routeReview(names.exitCode === 0 ? changedOf(names.stdout) : [], readable ? diffLines(diff.stdout) : [], readable)
+}
+
 async function startReviews($: EngineInterface) {
+  const before = await read($, run)
+  const route = before ? await routeOf($, before) : null
+  if (route?.focus.length) await record($, `review route, round ${(before?.round ?? 0) + 1}`, `${route.deep ? 'Deep review (the code reviewer on opus too).\n' : ''}${route.focus.map(f => `- ${f}`).join('\n')}`)
   const r = await patch($, cur => {
     const round = cur.round + 1
     return {
       ...moveTo(cur, 'review', `reviewing, round ${round}`),
       round,
+      ...(route ? { route, ...(route.deep ? { models: { ...cur.models, code: 'opus' } } : {}) } : {}),
       checkRound: 0,
       reviews: cur.reviews.map(x => ({ ...x, state: 'run', findings: [], round, agentId: null })),
     }
@@ -656,7 +673,46 @@ async function onReview($: EngineInterface, role: Reviewer, agentId: string, ans
   const failed = mine.find(x => x.state === 'fail')
   if (failed) return block($, { on: 'start', role: failed.role }, `${failed.findings[0]?.text ?? 'The reviewer stopped.'} The ${failed.role} review didn't run; Retry runs it again.`)
   const changes = mine.filter(x => x.state === 'changes')
-  if (changes.length && r.round < maxRounds) return startBuild($, openFindings(changes), [])
+  if (!changes.length || r.round >= maxRounds) return startApprover($)
+  // Before the builder goes back over the blocker and major findings, a skeptic tries to refute them:
+  // a round spent on a finding that isn't real costs a whole builder pass.
+  const disputed = changes.flatMap(x => disputable(x.findings).map(finding => ({ role: x.role, finding })))
+  if (!skepticOn || !disputed.length) return startBuild($, openFindings(changes), [])
+  const onSecurity = disputed.some(x => x.role === 'security')
+  const next = await patch($, cur => ({ ...cur, disputed, note: `a skeptic checks ${disputed.length} finding${disputed.length === 1 ? '' : 's'}`, models: { ...cur.models, skeptic: onSecurity ? 'opus' : 'sonnet' } }))
+  if (next && !(await spawnRole($, 'skeptic', skepticPrompt(next, disputed)))) {
+    // No skeptic could start: the findings go to the builder as they are.
+    await patch($, cur => ({ ...cur, phase: 'review', blocked: null }))
+    return startBuild($, openFindings(changes), [])
+  }
+}
+
+// The skeptic's rulings: a refuted finding is dropped and a downgraded one is minor, each with its
+// evidence in the record; what stands goes to the builder. Nothing standing: the approver decides.
+// A skeptic that ended without its answer refutes nothing: the findings go as they are.
+async function onSkeptic($: EngineInterface, answer: string, why: string) {
+  const r = await read($, run)
+  if (!r) return
+  const disputed = r.disputed ?? []
+  const { dropped } = why ? { dropped: [] } : applyRulings(disputed.map(x => x.finding), answer, f => disputed.some(x => x.finding === f && x.role === 'security'))
+  const gone = new Map(dropped.map(d => [d.finding, d]))
+  const after = await patch($, cur => ({
+    ...cur,
+    disputed: [],
+    refuted: [...(cur.refuted ?? []), ...dropped.map(d => ({ role: disputed.find(x => x.finding === d.finding)!.role, finding: d.finding, ruling: d.ruling, why: d.why }))],
+    reviews: cur.reviews.map(x => {
+      if (x.round !== cur.round || x.state !== 'changes') return x
+      const findings = x.findings.flatMap(f => {
+        const d = gone.get(disputed.find(y => y.role === x.role && y.finding.where === f.where && y.finding.text === f.text)?.finding as never)
+        return !d ? [f] : d.ruling === 'downgraded' ? [{ ...f, severity: 'minor' as const }] : []
+      })
+      return { ...x, findings, state: findings.some(f => f.severity !== 'minor') ? x.state : 'pass' }
+    }),
+  }))
+  if (dropped.length) await record($, 'skeptic rulings', dropped.map(d => `${d.ruling.toUpperCase()}: [${d.finding.severity}] ${d.finding.where} ${d.finding.text}\n  ${d.why}`).join('\n'))
+  if (!after || after.phase !== 'review') return
+  const changes = after.reviews.filter(x => x.round === after.round && x.state === 'changes')
+  if (changes.length) return startBuild($, openFindings(changes), [])
   await startApprover($)
 }
 
@@ -730,6 +786,7 @@ async function onAgentDone($: EngineInterface, agentId: string, answer: string, 
     return onBuilt($)
   }
   if (role === 'approver') return r.phase === 'approve' ? onApprover($, answer, why) : undefined
+  if (role === 'skeptic') return r.phase === 'review' ? onSkeptic($, answer, why) : undefined
   return onReview($, role, agentId, answer, why)
 }
 
@@ -738,6 +795,7 @@ async function addTokens($: EngineInterface, agentId: string, n: number) {
     const role = r.agents[agentId]
     if (!role || !n) return r
     if (role === 'security' || role === 'code') return { ...r, reviews: r.reviews.map(x => (x.role === role ? { ...x, tokens: x.tokens + n } : x)) }
+    if (role === 'skeptic') return { ...r, skepticTokens: (r.skepticTokens ?? 0) + n }
     const key = role === 'spec' ? 'spec' : role === 'builder' ? 'builder' : 'approver'
     return { ...r, steps: { ...r.steps, [key]: { ...r.steps[key], tokens: r.steps[key].tokens + n } } }
   })
@@ -866,6 +924,7 @@ async function ensureTicking($: EngineInterface) {
 export const register: Register = (on, options) => {
   maxRounds = Math.max(1, Math.min(3, Number(options.maxRounds ?? 2) || 2))
   // Claude Code lets a command run 10 minutes at most: the option can only shorten it.
+  skepticOn = String(options.skeptic ?? 'on') !== 'off'
   checkTimeoutMs = Math.max(1, Math.min(10, Number(options.checkTimeout ?? 10) || 10)) * 60_000
   checksOption = String(options.checks ?? '')
   setupOption = String(options.setup ?? '')
@@ -924,6 +983,11 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) {
       const r = await read($, run)
       if ((r?.agents[e.agentId] && !isLive(r.phase)) || (await read($, stoppedAgents)).includes(e.agentId)) return { deny: STOPPED_DENY }
+      // Pushing, publishing, deploying or deleting outside the worktree is never a run agent's job.
+      if (r?.agents[e.agentId] && e.tool === 'Bash') {
+        const what = forbiddenCommand(String((e as unknown as { command?: unknown }).command ?? ''))
+        if (what) return { deny: `The factory's agents don't do this (${what}): the work stays on the run's branch in its worktree, and the person opens the PR once it is approved. Leave it out and go on.` }
+      }
       // What the run's agent does now: the band shows it, so a working step never reads as stuck.
       const role = r?.agents[e.agentId]
       if (role) {

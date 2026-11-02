@@ -15,6 +15,7 @@ export const ROLES: Record<Role, { name: string; model: string; label: string; t
   security: { name: 'security-reviewer', model: 'opus', label: 'security', tools: ['Read', 'Grep', 'Glob', 'Bash'] },
   code: { name: 'code-reviewer', model: 'sonnet', label: 'code', tools: ['Read', 'Grep', 'Glob', 'Bash'] },
   approver: { name: 'approver', model: 'opus', label: 'approver', tools: ['Read', 'Grep', 'Glob'] },
+  skeptic: { name: 'skeptic', model: 'sonnet', label: 'skeptic', tools: ['Read', 'Grep', 'Glob', 'Bash'] },
 }
 
 // The roles' standing instructions, short defaults; a project's own skills can say more.
@@ -23,6 +24,7 @@ export const ROLE_PROMPTS: Record<Role, string> = {
   builder: `You are the builder of a software factory. You implement exactly what the spec asks, in the repository you are started in, with tests for each acceptance criterion. Keep the change focused; don't refactor beyond it. Commit your work to the current branch when you are done.`,
   security: `You are the security reviewer of a software factory. Review the change against the spec for: injection and unsafe input handling, authentication and authorization, secrets in code or logs, unsafe defaults, dependency risk, and data exposure. Report only real, specific problems.`,
   code: `You are the code reviewer of a software factory. Review the change against the spec for: correctness against each acceptance criterion, missing or weak tests, error handling, clarity, layering and design, and performance traps. Report only real, specific problems.`,
+  skeptic: `You are the skeptic of a software factory. Reviewers found problems in a change; before the builder is sent to fix them, you try to refute each one with evidence: the code at file:line, a definition, or a command's output. You change no file. A finding you can't refute stands: never refute one on opinion.`,
   approver: `You are the approver of a software factory. You decide whether a change that went through review can go to a pull request. You don't review the code again: you weigh the spec, the check results and the reviewers' verdicts and findings.`,
 }
 
@@ -253,6 +255,7 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
     ...(!ranChecks(run).length && run.checksNote ? [`No checks ran for this change: ${run.checksNote} Nothing was verified by running it, so weigh the tests you read accordingly.`] : []),
     `Start from the diff and the spec's "Code map". Read a changed file whole when it is short (under about 400 lines), else around the changed lines; search before reading anything else.`,
     'Check every API field, input or type the change, or an acceptance criterion, relies on against its real definition (search for it and read the definition), not against the spec\'s wording: a criterion built on a field that doesn\'t exist is a blocker, and a test that only feeds a made-up fixture doesn\'t prove it.',
+    ...(run.route?.focus.length ? ['What this diff calls for (from its files and lines, checked by the factory): look at each of these closely.', ...run.route.focus.map(f => `- ${f}`)] : []),
     `Look only at what a ${role} review covers. Don't change any file.`,
     'End your answer with exactly:',
     'VERDICT: PASS or VERDICT: CHANGES',
@@ -262,12 +265,26 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
   ].filter(Boolean).join('\n')
 }
 
+// To the skeptic: the round's blocker and major findings, numbered, and the answer format it ends with.
+export function skepticPrompt(run: Run, findings: { role: Reviewer; finding: Finding }[]): string {
+  return [
+    `A change for: ${run.feature}`,
+    `The spec is ${run.specFile}. The change is on branch ${run.branch}, since ${run.base.slice(0, 12)} (git diff ${run.base.slice(0, 12)}..HEAD), in the repository you are started in.`,
+    'The reviewers asked for changes over these findings. For each, try to refute it: read the code it names, the definitions it relies on, run a read-only command if that settles it. Refute only with evidence.',
+    ...findings.map((x, i) => `F${i + 1}. ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}`),
+    'End your answer with one line per finding, exactly:',
+    'F<n>: STANDS | REFUTED <evidence: file:line or command output> | DOWNGRADED <why it is only minor, with evidence>',
+  ].join('\n')
+}
+
 // `stat`: git's list of the files the change touched, so the approver can hold them against the spec.
 export function approvePrompt(run: Run, stat = ''): string {
   const reviews = run.reviews.map(r => `- ${r.role}: ${r.state === 'pass' ? 'PASS' : 'CHANGES'}${r.findings.length ? `\n${r.findings.map(f => `  - [${f.severity}] ${f.where} ${f.text}`).join('\n')}` : ''}`)
   return [
     `Decide on the change for: ${run.feature}`,
     `The spec is ${run.specFile}; the change is on branch ${run.branch}.`,
+    ...(run.route?.focus.length ? ['What this diff called for:', ...run.route.focus.map(f => `- ${f}`)] : []),
+    ...(run.refuted?.length ? ['Findings a skeptic refuted or downgraded with evidence (not fixed, on purpose):', ...run.refuted.map(x => `- ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}: ${x.ruling}, ${x.why}`)] : []),
     `Checks: ${ranChecks(run).length ? run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ') : `NONE RAN. ${run.checksNote || 'none configured'}`}.`,
     ...(ranChecks(run).length && run.checksNote ? [`Check notes: ${run.checksNote}`] : []),
     ...(stat ? [`Files the change touched:\n${stat}`, "Hold them against the spec's Design and Code map: a file, dependency or public interface the spec doesn't name is scope it didn't ask for. Name it in your reason, and ESCALATE unless it is plainly needed to meet a criterion."] : []),
@@ -490,7 +507,7 @@ export function statusReport(run: Run, now: number, recordFiles: string[] = []):
   ].join('\n')
 }
 
-export const tokensOf = (run: Run) => Object.values(run.steps).reduce((n, s) => n + s.tokens, 0) + run.reviews.reduce((n, r) => n + r.tokens, 0)
+export const tokensOf = (run: Run) => Object.values(run.steps).reduce((n, s) => n + s.tokens, 0) + run.reviews.reduce((n, r) => n + r.tokens, 0) + (run.skepticTokens ?? 0)
 export const tok = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`)
 
 // The findings the builder must still address: every finding of the reviewers that asked for changes.

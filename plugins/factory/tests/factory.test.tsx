@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { applyRulings, changedOf, diffLines, forbiddenCommand, routeReview } from '../hooks/route'
 import { cleanFeature, couldNotStart, detectChecks, detectSetup, leftOut, neverCommit, slugOf, untrackedOf, modelsFor, parseDecision, parseSize, parseSkills, progressNote, titleOf, parseTasks, parseVerdict, planPrompt, specPrompt, splitChecks } from '../hooks/flow'
 import { factoryArgs, goalPrompt, startLine, factoryPlanApprovedArgs, factoryPlanResultArgs, PLAN_APPROVED_FOR_FACTORY, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, planChangesForFactory } from '../hooks/texts'
 
@@ -29,7 +30,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '' } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '' } = {}) {
   const spawned: Spawned[] = []
   const ran: string[] = []
   const limits: Record<string, number> = {}
@@ -102,6 +103,8 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (cmd.startsWith('git for-each-ref')) return ok('origin/pr-106\nfactory/rate-limiter\norigin/HEAD\nmain\n')
     if (cmd === 'git rev-parse --verify --quiet origin/pr-106^{commit}') return ok('def456\n')
     if (cmd.startsWith('git rev-parse --verify')) return { value: { exitCode: 1, stdout: '', stderr: '' } } as never
+    // The branch's changed files for the review route (`changedFiles`, name-status -z).
+    if (cmd.startsWith('git diff --name-status -z')) return ok(changedFiles)
     if (cmd.startsWith('git ')) return ok()
     if (missing.includes(cmd)) throw new Error(`spawn ${e.argv[0]} ENOENT`)
     if (cmd === 'sh-missing') return { value: { exitCode: 127, stdout: '', stderr: 'sh: vitest: not found' } } as never
@@ -270,7 +273,8 @@ describe('a run from the feature to the PR', () => {
     await pane.unmount()
   })
 
-  test('changes send the builder back with the findings, and every reviewer looks again', async ($, on) => {
+  // Without the skeptic: what the builder gets back. (The skeptic's own tests are below.)
+  test('changes send the builder back with the findings, and every reviewer looks again', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on)
     await startRun($)
     await answer($, 'a1', SPEC_ANSWER)
@@ -300,7 +304,8 @@ describe('a run from the feature to the PR', () => {
     expect(last(w).subagentType).toBe('factory:approver')
   })
 
-  test('at the round limit the approver decides on what it has', async ($, on) => {
+  // Without the skeptic: what the builder gets back. (The skeptic's own tests are below.)
+  test('at the round limit the approver decides on what it has', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on)
     await toReviews($)
     await answer($, 'a3', PASS)
@@ -860,6 +865,114 @@ describe('a run that seems stuck says where it is', () => {
   })
 })
 
+describe('reviewers by the diff, a guard on what agents run, and a skeptic', () => {
+  test('the route reads the files and lines a diff changed, and only ever adds review', () => {
+    expect(routeReview([{ path: 'src/mw.ts', status: 'M' }], ['const x = 1'])).toEqual({ deep: false, focus: [] })
+    const agentFile = routeReview([{ path: 'plugins/x/CLAUDE.md', status: 'M' }], [])
+    expect(agentFile.deep).toBe(true)
+    expect(agentFile.focus[0]).toMatch(/prompt injection/)
+    const deps = routeReview([{ path: 'package.json', status: 'M' }], [])
+    expect([deps.deep, deps.focus.length]).toEqual([false, 1])
+    expect(routeReview([{ path: 'db/migrations/0042_users.sql', status: 'A' }], []).deep).toBe(true)
+    expect(routeReview([{ path: 'src/limit.ts', status: 'M' }], ['  if (!user.isAdmin) throw new Error()']).focus.join(' ')).toMatch(/Authentication/)
+    expect(routeReview([{ path: 'tests/test_limit.py', status: 'D' }], []).focus.join(' ')).toMatch(/Tests were deleted/)
+    expect(routeReview([{ path: 'tests/__snapshots__/a.snap', status: 'M' }], []).focus.join(' ')).toMatch(/Expected test output changed/)
+    expect(routeReview([{ path: '.github/workflows/ci.yml', status: 'M' }], []).deep).toBe(true)
+    const unread = routeReview([], [], false)
+    expect([unread.deep, unread.focus[0]]).toEqual([true, expect.stringMatching(/couldn't read the whole diff/)])
+    expect(changedOf('M\0src/a.ts\0R100\0old.ts\0new.ts\0D\0gone.ts\0')).toEqual([{ status: 'M', path: 'src/a.ts' }, { status: 'R100', path: 'new.ts' }, { status: 'D', path: 'gone.ts' }])
+    expect(diffLines('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new')).toEqual(['old', 'new'])
+  })
+
+  test("pushing, publishing, deploying or deleting outside the worktree is refused; quoted text isn't a command", () => {
+    for (const c of ['git push origin factory/x', 'cd sub && git push', 'FOO=1 git push', 'git -C /w push', 'gh pr create --fill', 'npm publish', 'docker push img', 'terraform apply', 'kubectl apply -f x.yaml', 'vercel deploy --prod', 'rm -rf /', 'rm -rf ../other', 'rm -rf ~/x', 'git remote set-url origin x']) {
+      expect([c, forbiddenCommand(c) !== '']).toEqual([c, true])
+    }
+    for (const c of ['npm test', 'git commit -m "never git push here"', 'rm -rf node_modules dist', 'git status', 'gh --version', 'git fetch origin', 'echo "npm publish"']) {
+      expect([c, forbiddenCommand(c)]).toEqual([c, ''])
+    }
+  })
+
+  test("a run's agent is refused a git push; the main conversation isn't", async ($, on) => {
+    on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }) as never)
+    engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    const denied = await $.tool.call({ tool: 'Bash', command: 'git push -u origin factory/rate-limiter', agentId: 'a2' } as never)
+    expect(String((denied as { deny?: string }).deny)).toMatch(/don't do this \(git push\).*the person opens the PR/)
+    const tests = await $.tool.call({ tool: 'Bash', command: 'npm test', agentId: 'a2' } as never)
+    expect((tests as { deny?: string }).deny).toBeFalsy()
+    const main = await $.tool.call({ tool: 'Bash', command: 'git push -u origin factory/rate-limiter' } as never)
+    expect((main as { deny?: string }).deny).toBeFalsy()
+  })
+
+  test("a diff that changes an agent's instructions: both reviewers are told to look, and the code reviewer runs on opus", async ($, on) => {
+    const w = engine(on, { changedFiles: 'M\0CLAUDE.md\0M\0src/mw.ts\0' })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    const code = w.spawned.find(a => a.subagentType === 'factory:code-reviewer')!
+    const security = w.spawned.find(a => a.subagentType === 'factory:security-reviewer')!
+    expect(code.model).toBe('opus')
+    for (const a of [code, security]) expect(a.prompt).toMatch(/What this diff calls for[\s\S]*prompt injection/)
+  })
+
+  test('the rulings: refuted needs evidence, a security blocker always stands, downgraded is minor, unruled stands', () => {
+    const f = [
+      { severity: 'major' as const, where: 'a.ts:1', text: 'x' },
+      { severity: 'blocker' as const, where: 'b.ts:2', text: 'y' },
+      { severity: 'major' as const, where: 'c.ts:3', text: 'z' },
+      { severity: 'major' as const, where: 'd.ts:4', text: 'w' },
+    ]
+    const { kept, dropped } = applyRulings(f, 'F1: REFUTED a.ts:1 already checks it\nF2: REFUTED nope\nF3: DOWNGRADED only a log line, c.ts:3\nF4: REFUTED', x => x === f[1])
+    expect(kept).toEqual([f[1], { ...f[2], severity: 'minor' }, f[3]])
+    expect(dropped.map(d => d.ruling)).toEqual(['refuted', 'downgraded'])
+  })
+
+  test('changes asked for: a skeptic checks the findings first; refuted, the approver decides and is told why', async ($, on) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', CHANGES)
+    expect(last(w)).toMatchObject({ id: 'a5', subagentType: 'factory:skeptic', model: 'sonnet' })
+    expect(last(w).prompt).toContain('F1. code [major] src/mw.ts:12 Retry-After is in ms, not seconds')
+    expect(await bandText($)).toMatch(/a skeptic checks 1 finding/)
+    await answer($, 'a5', 'Read mw.ts.\nF1: REFUTED src/mw.ts:12 divides by 1000 before it sets the header')
+    expect(last(w)).toMatchObject({ id: 'a6', subagentType: 'factory:approver' })
+    expect(last(w).prompt).toMatch(/refuted or downgraded with evidence[\s\S]*Retry-After is in ms, not seconds: refuted, src\/mw\.ts:12 divides by 1000/)
+    expect(Object.entries(w.written).find(([k]) => /skeptic-rulings\.md$/.test(k))?.[1]).toMatch(/REFUTED: \[major\] src\/mw\.ts:12/)
+    expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(1)
+  })
+
+  test('a finding that stands goes to the builder; a skeptic that fails refutes nothing', async ($, on) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', CHANGES)
+    await answer($, 'a5', 'F1: STANDS')
+    expect(w.sends.at(-1)?.text ?? last(w).prompt).toContain('Retry-After is in ms, not seconds')
+  })
+
+  test('with the skeptic option off, the findings go straight to the builder', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', CHANGES)
+    expect(w.spawned.some(a => a.subagentType === 'factory:skeptic')).toBe(false)
+  })
+})
+
 describe('the parsers', () => {
   test('tasks, with priorities and what they need', () => {
     expect(parseTasks(SPEC_ANSWER)).toEqual([
@@ -932,7 +1045,7 @@ describe('the models follow the size of the feature', () => {
   })
 
   test('auto: sonnet builds unless the feature is large; opus reviews security and approves; fixed ignores the size', () => {
-    expect(modelsFor('medium', 'auto')).toEqual({ spec: 'sonnet', builder: 'sonnet', security: 'opus', code: 'sonnet', approver: 'opus' })
+    expect(modelsFor('medium', 'auto')).toEqual({ spec: 'sonnet', builder: 'sonnet', security: 'opus', code: 'sonnet', approver: 'opus', skeptic: 'sonnet' })
     expect(modelsFor(null, 'auto').builder).toBe('sonnet')
     expect(modelsFor('large', 'auto').builder).toBe('opus')
     expect(modelsFor('large', 'fixed').builder).toBe('sonnet')
@@ -1058,7 +1171,8 @@ describe('a reviewer or the approver that fails is retried, never approved past'
 })
 
 describe('later rounds, the person sending it back, and role skills', () => {
-  test('round 2 goes back to the builder that built it, with only what to fix', async ($, on) => {
+  // Without the skeptic: what the builder gets back. (The skeptic's own tests are below.)
+  test('round 2 goes back to the builder that built it, with only what to fix', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on, { delivers: true })
     await toReviews($)
     await answer($, 'a3', CHANGES)
@@ -1073,7 +1187,8 @@ describe('later rounds, the person sending it back, and role skills', () => {
     expect(w.spawned.slice(-2).map(s => s.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
   })
 
-  test('a builder that cannot take the message: a new one gets the whole job', async ($, on) => {
+  // Without the skeptic: what the builder gets back. (The skeptic's own tests are below.)
+  test('a builder that cannot take the message: a new one gets the whole job', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on)
     await toReviews($)
     await answer($, 'a3', CHANGES)
@@ -1392,7 +1507,8 @@ describe('commands the factory found run only once you let them', () => {
     expect(w.ran).toContain('npm test')
   })
 
-  test('the question says it runs the code the builder wrote; .npmrc or a jest config changed asks again', async ($, on) => {
+  // Without the skeptic: what the builder gets back. (The skeptic's own tests are below.)
+  test('the question says it runs the code the builder wrote; .npmrc or a jest config changed asks again', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on, { delivers: true })
     await toReviews($)
     expect(w.asked.find(q => q.startsWith('Before the factory runs'))).toMatch(/They run the code the builder wrote, its tests and config included, outside your permission prompts/)

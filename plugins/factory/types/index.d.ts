@@ -1,6 +1,7 @@
 // A step's state, as the pane draws it.
 export type StepState = 'wait' | 'run' | 'pass' | 'changes' | 'fail' | 'skip'
-export type Role = 'spec' | 'builder' | 'security' | 'code' | 'approver'
+// skeptic: before the builder is sent back, it tries to refute the round's blocker and major findings.
+export type Role = 'spec' | 'builder' | 'security' | 'code' | 'approver' | 'skeptic'
 // How big the spec-writer judged the feature: what the models of the later roles follow.
 export type Size = 'small' | 'medium' | 'large'
 export type Reviewer = 'security' | 'code'
@@ -95,6 +96,12 @@ export type Run = {
   activity?: { role: Role; text: string; at: number; calls: number }
   // Where the progress stood when the run stopped to wait (needs-human) or was stopped.
   lastProgress?: number
+  // What this round's diff calls for (its review route), and the skeptic's round: the findings it was
+  // asked to refute, with the reviewer each came from, and what its rulings dropped.
+  route?: { deep: boolean; focus: string[] }
+  disputed?: { role: Reviewer; finding: Finding }[]
+  refuted?: { role: Reviewer; finding: Finding; ruling: string; why: string }[]
+  skepticTokens?: number
 }
 
 declare module 'claude-code' {
