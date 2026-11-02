@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: build-02-stays-in-scope-and-skips-large-files
+runs: 1
+context:
+  scaffold_script: scaffold.sh
