@@ -1015,11 +1015,12 @@ function actions($: EngineInterface, r: Run): { key: string; label: string; pres
 async function tick($: EngineInterface) {
   const r = await read($, run)
   if (!r || !isLive(r.phase)) return void timers.splice(0).forEach(t => t.cancel())
-  if (!waitsOnPerson(r.phase)) await update($, frame, f => f + 1)
+  // While a check runs nothing in the diagram moves: only the seconds do, and only when they change.
+  if (!waitsOnPerson(r.phase) && r.phase !== 'checks') await update($, frame, f => f + 1)
   // The seconds the band counts: a running check's, or since the agent's last action.
   if ((r.phase === 'checks' && r.checking) || ['spec', 'build', 'review', 'approve'].includes(r.phase)) {
     const t = await $.clock.now()
-    await update($, now, () => t)
+    if (Math.floor(t / 1000) !== Math.floor((await read($, now)) / 1000)) await update($, now, () => t)
   }
 }
 
@@ -1041,6 +1042,9 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     for (const t of timers.splice(0)) t.cancel()
+    // A job of an earlier session that never settled (a question nobody answered) doesn't hold this one's.
+    queue = Promise.resolve()
+    skipRunning = null
     await $.command.register({ name: 'factory', description: 'Run a feature through the software factory: spec, plan, build, checks, reviews, approval', argumentHint: '<feature> | approve | retry | rework <note> | stop' })
     for (const role of Object.keys(ROLES) as Role[]) {
       const spec = ROLES[role]

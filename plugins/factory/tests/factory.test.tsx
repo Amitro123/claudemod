@@ -760,19 +760,35 @@ describe('a run that seems stuck says where it is', () => {
     await command($, 'plan-approved')
   }
 
-  test('a check that runs out of time stops the run for the person: the builder is not sent to fix it', async ($, on) => {
+  // A 2-minute limit keeps the clock's frame ticks few: 10 minutes of them made this test slow on some
+  // machines (code review 2, F2).
+  test('a check that runs out of time stops the run for the person: the builder is not sent to fix it', { options: { checkTimeout: '2' } } as never, async ($: Engine, on: On) => {
     // npm test runs to the limit and fails there: killed at the timeout.
     const w = engine(on, { hold: 'npm test', fails: 1 })
     await toBuild($)
     await answer($, 'a2', 'built')
-    expect(w.limits['npm test']).toBe(600_000)
-    await w.clock.advance(600_000)
+    expect(w.limits['npm test']).toBe(120_000)
+    await w.clock.advance(120_000)
     w.release()
     await settled()
     expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(1)
-    expect(await bandText($)).toMatch(/npm test didn't finish in 10:00\. It may be slow or hung/)
-    expect(Object.entries(w.written).find(([k]) => /checks\.md$/.test(k))?.[1]).toMatch(/⏱ \(timed out after 10:00\) npm test/)
+    expect(await bandText($)).toMatch(/npm test didn't finish in 2:00\. It may be slow or hung/)
+    expect(Object.entries(w.written).find(([k]) => /checks\.md$/.test(k))?.[1]).toMatch(/⏱ \(timed out after 2:00\) npm test/)
     expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/TIMED OUT: npm test/)
+  })
+
+  test('a question nobody answers holds no later session: a new run starts after session.start (code review 2, F2)', async ($, on) => {
+    const w = engine(on, { holdAsk: true })
+    await toBuild($)
+    await answer($, 'a2', 'built')
+    expect(w.asked.at(-1)).toMatch(/^Before the factory runs the checks/)
+    // The question stays open; the session restarts and the run is stopped, then a new one starts.
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'stop')
+    await command($, 'Add a cache')
+    await settled()
+    expect(last(w)).toMatchObject({ subagentType: 'factory:spec-writer' })
+    expect(last(w).prompt).toContain('Feature: Add a cache')
   })
 
   test('the checkTimeout option shortens the limit; Claude Code allows 10 minutes at most', { options: { checkTimeout: '5' } } as never, async ($: Engine, on: On) => {
