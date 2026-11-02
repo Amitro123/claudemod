@@ -3,6 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, routeReview } from '../hooks/route'
+import { extrasFrom, LENSES } from '../hooks/flow'
 import { cleanFeature, couldNotStart, detectChecks, detectSetup, leftOut, neverCommit, slugOf, untrackedOf, modelsFor, parseDecision, parseSize, parseSkills, progressNote, titleOf, parseTasks, parseVerdict, planPrompt, specPrompt, splitChecks } from '../hooks/flow'
 import { factoryArgs, goalPrompt, startLine, factoryPlanApprovedArgs, factoryPlanResultArgs, PLAN_APPROVED_FOR_FACTORY, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, planChangesForFactory } from '../hooks/texts'
 
@@ -973,6 +974,111 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
   })
 })
 
+describe('extra reviewers the main Claude adds, and steering a run', () => {
+  const START = 'mcp__factory__start'
+  const CONTROL = 'mcp__factory__control'
+  const toReview = async ($: Engine, reviewers?: unknown) => {
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    const r = await $.tool.call({ tool: START, feature: 'Rate limiter', ...(reviewers ? { reviewers } : {}) } as never)
+    await settled()
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    return String(r.result)
+  }
+
+  test('a lens by name, one of its own with an agent; unknown, core, duplicate and past three are left out', () => {
+    const { extras, ignored } = extrasFrom(['frontend', { name: 'A11y', focus: 'screen readers', agent: 'my-ux' }, 'nope', 'security', 'frontend', 'finops', 'deploy'])
+    expect(extras).toEqual([{ name: 'frontend', focus: LENSES.frontend }, { name: 'a11y', focus: 'screen readers', agent: 'my-ux' }, { name: 'finops', focus: LENSES.finops }])
+    expect(ignored).toEqual(['nope', 'security', 'frontend', 'deploy'])
+  })
+
+  test('the extras review beside security and code, each through its lens; all are waited for', async ($, on) => {
+    const w = engine(on)
+    const said = await toReview($, ['frontend', { name: 'a11y', focus: 'screen readers and focus order', agent: 'my-ux' }])
+    expect(said).toMatch(/Extra reviewers: frontend, a11y\./)
+    const types = w.spawned.slice(2).map(a => a.subagentType)
+    expect(types).toEqual(['factory:security-reviewer', 'factory:code-reviewer', 'factory:reviewer', 'my-ux'])
+    const front = w.spawned.find(a => a.subagentType === 'factory:reviewer')!
+    expect(front).toMatchObject({ description: 'factory · frontend review', model: 'sonnet' })
+    expect(front.prompt).toContain(`You are the frontend reviewer: look at ${LENSES.frontend}`)
+    const own = w.spawned.find(a => a.subagentType === 'my-ux')!
+    expect(own.model).toBeUndefined()
+    expect(own.prompt).toContain('screen readers and focus order')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    await answer($, 'a5', PASS)
+    expect(w.spawned.some(a => a.subagentType === 'factory:approver')).toBe(false)
+    await answer($, 'a6', PASS)
+    expect(last(w)).toMatchObject({ subagentType: 'factory:approver' })
+    const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
+    const t = await texts(pane)
+    expect(t).toMatch(/frontend \(sonnet\)/)
+    expect(t).toMatch(/a11y \(its own\)/)
+    await pane.unmount()
+  })
+
+  test("without reviewers asked for, a run has security and code only", async ($, on) => {
+    const w = engine(on)
+    await toReview($)
+    expect(w.spawned.slice(2).map(a => a.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
+  })
+
+  test('an extra that asks for changes sends the builder back like any reviewer', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on, { delivers: true })
+    await toReview($, ['finops'])
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    await answer($, 'a5', 'VERDICT: CHANGES\nFINDINGS:\n- [major] infra/db.tf:3 a db.r6g.4xlarge for a cron job')
+    expect(w.sends.at(-1)?.text).toContain('db.r6g.4xlarge')
+  })
+
+  test('the main Claude skips a check that hangs: the run goes on, and says it didn\'t run', async ($, on) => {
+    const w = engine(on, { hold: 'npm test' })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    expect(w.ran.at(-1)).toBe('npm test')
+    const r = await $.tool.call({ tool: CONTROL, action: 'skip-check', reason: 'hung on a prompt' } as never)
+    expect(String(r.result)).toMatch(/^Skipped npm test: the run goes on/)
+    await settled()
+    expect(last(w)).toMatchObject({ subagentType: 'factory:code-reviewer' })
+    expect(Object.entries(w.written).find(([k]) => /checks\.md$/.test(k))?.[1]).toMatch(/– \(skipped by the person\) npm test/)
+    expect(w.spawned.find(a => a.subagentType === 'factory:security-reviewer')?.prompt).toMatch(/No checks ran|Skipped by the person/)
+    w.release()
+    await settled()
+    expect(String((await $.tool.call({ tool: CONTROL, action: 'skip-check' } as never)).result)).toBe('No check is running to skip.')
+  })
+
+  test('a stuck builder is abandoned: its calls are refused, and Retry starts a new one', async ($, on) => {
+    const w = engine(on, { delivers: true })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    const r = await $.tool.call({ tool: CONTROL, action: 'abandon-agent', reason: 'no activity for 20 minutes' } as never)
+    expect(String(r.result)).toMatch(/^Abandoned the builder, round 1 \(no activity for 20 minutes\)/)
+    expect(await bandText($)).toMatch(/Abandoned the builder/)
+    const denied = await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'a', new_string: 'b', agentId: 'a2' } as never)
+    expect((denied as { deny?: string }).deny).toBeTruthy()
+    await command($, 'retry')
+    await settled()
+    expect(w.spawned.filter(a => a.subagentType === 'factory:builder').map(a => a.id)).toEqual(['a2', 'a3'])
+  })
+
+  test('reviewers added mid-run review from the next round; the sub-agents can\'t steer the run', async ($, on) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    const added = await $.tool.call({ tool: CONTROL, action: 'add-reviewers', reviewers: ['deploy'] } as never)
+    expect(String(added.result)).toMatch(/^Added deploy/)
+    expect((await $.tool.call({ tool: CONTROL, action: 'stop', agentId: 'a1' } as never) as { deny?: string }).deny).toMatch(/Only the main conversation/)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    expect(w.spawned.slice(2).map(a => a.description)).toEqual(['factory · security review', 'factory · code review', 'factory · deploy review'])
+  })
+})
+
 describe('the parsers', () => {
   test('tasks, with priorities and what they need', () => {
     expect(parseTasks(SPEC_ANSWER)).toEqual([
@@ -1045,7 +1151,7 @@ describe('the models follow the size of the feature', () => {
   })
 
   test('auto: sonnet builds unless the feature is large; opus reviews security and approves; fixed ignores the size', () => {
-    expect(modelsFor('medium', 'auto')).toEqual({ spec: 'sonnet', builder: 'sonnet', security: 'opus', code: 'sonnet', approver: 'opus', skeptic: 'sonnet' })
+    expect(modelsFor('medium', 'auto')).toEqual({ spec: 'sonnet', builder: 'sonnet', security: 'opus', code: 'sonnet', approver: 'opus', skeptic: 'sonnet', extra: 'sonnet' })
     expect(modelsFor(null, 'auto').builder).toBe('sonnet')
     expect(modelsFor('large', 'auto').builder).toBe('opus')
     expect(modelsFor('large', 'fixed').builder).toBe('sonnet')
