@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: build-01-implements-to-spec-and-tests
+runs: 1
+context:
+  scaffold_script: scaffold.sh

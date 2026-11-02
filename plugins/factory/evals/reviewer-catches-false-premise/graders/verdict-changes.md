@@ -1,4 +1,5 @@
 ---
 type: regex
-pattern: 'VERDICT:\s*CHANGES'
+pattern: '^[\s>*_-]*VERDICT:\s*\**\s*CHANGES\b[*_\s.]*$'
+flags: m
 ---
