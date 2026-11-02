@@ -413,6 +413,26 @@ describe('in a session', () => {
     await band.unmount()
   })
 
+  test('after a quiet minute the poll slows to every 16 seconds, and the next prompt speeds it up again (code review 2, B5)', async ($, on) => {
+    const files = project()
+    const w = engine(on, files)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    const band = await $.ui.mount({ ...BAND, surface: 'terminal' } as never)
+    await w.clock.advance(64_000)
+    w.write('.agent-brain/shared/Projects/mistake-brain-skill.md', para('mistake-brain-skill', 30))
+    await w.clock.advance(4_100)
+    expect(await texts(band)).not.toMatch(/Filed into memory/)
+    await w.clock.advance(12_100)
+    expect(await texts(band)).toMatch(/Filed into memory → Projects/)
+    // Quiet again, then the person's prompt: the next change shows within 4 seconds.
+    await w.clock.advance(70_000)
+    await $.turn.start({ text: 'next', turnId: 't9' } as never)
+    w.write('.agent-brain/shared/Projects/mistake-brain-skill.md', para('mistake-brain-skill', 31))
+    await w.clock.advance(4_100)
+    expect(await texts(band)).toMatch(/Filed into memory → Projects/)
+    await band.unmount()
+  })
+
   test("a change made outside a tool call (the skill's own hooks) is caught by the poll", async ($, on) => {
     const files = project()
     const w = engine(on, files)
