@@ -43,6 +43,8 @@ export const STOP_PHRASES = [
   'לא אומת', 'לא נבדק', 'לא נבדקו', 'פער ידוע', 'פער פתוח', 'פריט המשך', 'שאלה פתוחה', 'שאלות פתוחות',
 ]
 export const STOP_MESSAGE = 'You mentioned items that need follow-up. Call mcp__followups__flag for each, or say there are none.'
+// The same, when a sub-agent's open questions were already offered above the prompt this turn.
+export const STOP_MESSAGE_OFFERED = "You mentioned items that need follow-up. A sub-agent's open questions are already offered above the prompt: call mcp__followups__flag only for the others, or say there are none."
 
 // What the after-answer check asks a small model: what in this answer was left open.
 export const SWEEP_RULES = `You read the final reply an AI coding assistant just gave, with any reports its sub-agents handed it this turn, and list the follow-ups in them: problems or loose ends mentioned but left open, which the person could lose track of.
@@ -226,16 +228,31 @@ async function sweep($: EngineInterface, answer: string, reports: string[]) {
 
 // A sub-agent's report that names open questions has them offered in the band at once: read
 // straight from its section, no model, so it works where the after-answer look can't run.
-// Resolves how many it offered.
-async function offerOpenItems($: EngineInterface, report: string): Promise<number> {
+// Resolves the titles it offered.
+async function offerOpenItems($: EngineInterface, report: string): Promise<string[]> {
   const known = await knownTitles($)
   const fresh = openItems(report).filter(t => !known.has(norm(clip(t, 120))))
-  if (!fresh.length) return 0
+  if (!fresh.length) return []
   const at = await $.clock.now()
   const flags: Flag[] = fresh.map(t => ({ id: newId(at), kind: 'task', title: clip(t, 120), detail: "From a sub-agent's open questions", where: '', at }))
   await update($, pending, l => [...l, ...flags])
   $.ui.toast(fresh.length === 1 ? 'A sub-agent left an open question: see above the prompt' : `A sub-agent left ${fresh.length} open questions: see above the prompt`)
-  return fresh.length
+  return flags.map(f => f.title)
+}
+
+// The reply without the sentences that restate an item already offered: what is left open besides them.
+export function withoutOffered(reply: string, offered: string[]): string {
+  // An item's words of four letters or more; a sentence that holds most of them restates it.
+  const wordsOf = (t: string) => norm(t).split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 4)
+  const items = offered.map(wordsOf).filter(w => w.length >= 2)
+  if (!items.length) return reply
+  return reply
+    .split(/(?<=[.!?])\s+|\n/)
+    .filter(sentence => {
+      const has = new Set(wordsOf(sentence))
+      return !items.some(w => w.filter(x => has.has(x)).length >= Math.ceil(w.length * 0.6))
+    })
+    .join('\n')
 }
 
 const newId = (at: number) => `${at.toString(36)}-${Math.random().toString(36).slice(2, 7)}`
@@ -266,12 +283,17 @@ async function sync($: EngineInterface) {
   await update($, base, () => stored)
 }
 
+// The store has no lock: another session saving between this one's read and write would lose its change.
+// So the store is read once more just before the write, and merged again if it moved meanwhile. That
+// leaves only the moment between that read and the write, not the whole merge.
 async function save($: EngineInterface) {
   const key = await storeKey($)
-  const saved = await $.store.get(key)
+  const listOf = (v: unknown, or: Item[]) => (Array.isArray(v) ? migrate(v) : or)
   const from = await read($, base)
-  const stored = Array.isArray(saved) ? migrate(saved) : from
-  const merged = await update($, items, mine => mergeLists(from, mine, stored))
+  const first = listOf(await $.store.get(key), from)
+  let merged = await update($, items, mine => mergeLists(from, mine, first))
+  const again = listOf(await $.store.get(key), first)
+  if (JSON.stringify(again) !== JSON.stringify(first)) merged = await update($, items, mine => mergeLists(first, mine, again))
   await $.store.set(key, merged)
   await update($, base, () => merged)
 }
@@ -425,6 +447,9 @@ export const register: Register = (on, options) => {
   // The module's own, per turn: a person is at the prompt, flag was called, the check already stopped once.
   let isInteractive = false
   let isFlagged = false
+  // A sub-agent's open questions offered in the band this turn: the stop check still runs, for the
+  // reply's other loose ends, leaving out the sentences that restate these, and says they are taken care of.
+  let offered: string[] = []
   let isBlocked = false
   // Sub-agents' final reports since the main loop's last answer: the work, and its loose ends, is often there.
   let reports: string[] = []
@@ -492,6 +517,7 @@ export const register: Register = (on, options) => {
     if (e.agentId === undefined) await checkFactory($)
     if (e.agentId === undefined && e.text !== '') {
       isFlagged = false
+      offered = []
       isBlocked = false
       // Another session open beside this one may have changed the list since.
       await sync($).catch(() => {})
@@ -546,7 +572,7 @@ export const register: Register = (on, options) => {
       if (e.reason === 'answer' && e.answer.trim()) {
         reports = [...reports, e.answer.trim()].slice(-4)
         // Offered in the band: the stop check needn't send Claude back to flag them again.
-        if (await offerOpenItems($, e.answer)) isFlagged = true
+        offered = [...offered, ...(await offerOpenItems($, e.answer))]
       }
       return r
     }
@@ -565,12 +591,14 @@ export const register: Register = (on, options) => {
   // The end of the main loop's turn: when the reply names something left open and flag wasn't called,
   // stop it once with a nudge. classic.Stop is the one event that can send Claude back to work
   // (`block`); turn.complete only reads. Without a person at the prompt, nobody could answer, so no check.
+  // At most once a turn (isBlocked), so another hook's block before it (stop_hook_active on the next
+  // Stop: goal-run's nudge, say) doesn't keep this one from its own once.
   on('classic.Stop', async ($, e, next) => {
     const r = await next(e)
-    if (!stopCheck || !isInteractive || isFlagged || isBlocked || e.stop_hook_active || r.block) return r
-    if (!leftOpen(e.last_assistant_message ?? '').length) return r
+    if (!stopCheck || !isInteractive || isFlagged || isBlocked || r.block) return r
+    if (!leftOpen(withoutOffered(e.last_assistant_message ?? '', offered)).length) return r
     isBlocked = true
-    return { ...r, block: STOP_MESSAGE }
+    return { ...r, block: offered.length ? STOP_MESSAGE_OFFERED : STOP_MESSAGE }
   }).catch(($, e, next) => (next.called ? next(e) : {}))
 
   on('command.run', { command: 'followups' }, async $ => {

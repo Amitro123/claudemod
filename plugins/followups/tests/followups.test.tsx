@@ -918,6 +918,29 @@ describe("a sub-agent report's open questions", () => {
     const stop = await $.classic.Stop({ stop_hook_active: false, last_assistant_message: 'Fixed the secret. Still open, unverified: whether staging uses the same secret.' } as never)
     expect(stop.block).toBeUndefined()
   })
+
+  test("offered questions don't turn the check off for the reply's other loose ends (code review 2, FU5)", async ($, on) => {
+    engine(on, {})
+    on('turn.start', () => ({ turnId: 't1' }))
+    on('turn.complete', () => ({ text: '' }))
+    on('classic.Stop', () => ({}))
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    await $.turn.start({ text: 'debug the 401', turnId: 't1' } as never)
+    await $.turn.complete({ answer: REPORT, durationMs: 10, isAborted: false, turnId: 'w1', agentId: 'worker-1', reason: 'answer' } as never)
+    const stop = await $.classic.Stop({ stop_hook_active: false, last_assistant_message: 'Fixed the secret. Unverified: whether staging uses the same secret. The retry path is untested.' } as never)
+    expect(stop.block).toMatch(/already offered above the prompt: call mcp__followups__flag only for the others/)
+  })
+
+  test('a block by another mod first leaves the check its own once (code review 2, R4)', async ($, on) => {
+    engine(on, {})
+    on('turn.start', () => ({ turnId: 't1' }))
+    on('classic.Stop', () => ({}))
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    await $.turn.start({ text: 'go', turnId: 't1' } as never)
+    const first = await $.classic.Stop({ stop_hook_active: true, last_assistant_message: 'Done, but the upload path is untested.' } as never)
+    expect(first.block).toMatch(/Call mcp__followups__flag for each/)
+    expect((await $.classic.Stop({ stop_hook_active: true, last_assistant_message: 'Still untested.' } as never)).block).toBeUndefined()
+  })
 })
 
 describe('the stop phrases and open questions', () => {
@@ -931,6 +954,29 @@ describe('the stop phrases and open questions', () => {
 })
 
 describe('merging with another session', () => {
+  test("another session's save between this one's read and write isn't lost (code review 2, FU6)", async ($, on) => {
+    const other = { id: 'there-1', title: 'Saved by the other session', detail: '', where: '', at: 0, status: 'open', kind: 'task' }
+    let value: unknown[] = []
+    let armed = 0
+    const saved: Record<string, unknown> = {}
+    // The other session saves right after this one's first read of the save.
+    Object.defineProperty(saved, 'items:/repo', {
+      enumerable: true,
+      get() {
+        if (armed && ++armed === 3) value = [...value, other]
+        return value
+      },
+      set(v: unknown[]) {
+        value = v
+      },
+    })
+    engine(on, {}, saved)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    armed = 1
+    await $.command.run({ command: 'followup', args: 'Added here' } as never)
+    expect((value as { title: string }[]).map(i => i.title).sort()).toEqual(['Added here', 'Saved by the other session'])
+  })
+
   const it_ = (id: string, v = 'a') => ({ id, v })
   test('changes made here win; changes made only there are taken', () => {
     expect(mergeLists([it_('1'), it_('2')], [it_('1', 'here'), it_('2')], [it_('1', 'there'), it_('2', 'there')])).toEqual([it_('1', 'here'), it_('2', 'there')])
