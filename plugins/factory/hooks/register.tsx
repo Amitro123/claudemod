@@ -62,7 +62,7 @@ import {
   progressNote,
   resumePrompt,
 } from './flow'
-import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, routeReview } from './route'
+import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, forbiddenTool, routeReview } from './route'
 import { FACTORY_START_TOOL, factoryArgs, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, parsePlanResultArgs, toolText } from './texts'
 
 const run = atom({ plugin: 'factory', key: 'run' } as const, null as Run | null)
@@ -1110,8 +1110,14 @@ export const register: Register = (on, options) => {
       const r = await read($, run)
       if ((r?.agents[e.agentId] && !isLive(r.phase)) || (await read($, stoppedAgents)).includes(e.agentId)) return { deny: STOPPED_DENY }
       // Pushing, publishing, deploying or deleting outside the worktree is never a run agent's job.
-      if (r?.agents[e.agentId] && e.tool === 'Bash') {
-        const what = forbiddenCommand(String((e as unknown as { command?: unknown }).command ?? ''))
+      // A guard that fails refuses the call, for the run's agents only.
+      if (r?.agents[e.agentId]) {
+        let what = ''
+        try {
+          what = forbiddenTool(e.tool) || (e.tool === 'Bash' || e.tool === 'PowerShell' ? forbiddenCommand(String((e as unknown as { command?: unknown }).command ?? '')) : '')
+        } catch (err) {
+          what = `a command the factory couldn't check (${String(err).slice(0, 80)})`
+        }
         if (what) return { deny: `The factory's agents don't do this (${what}): the work stays on the run's branch in its worktree, and the person opens the PR once it is approved. Leave it out and go on.` }
       }
       // What the run's agent does now: the band shows it, so a working step never reads as stuck.

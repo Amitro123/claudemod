@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { applyRulings, changedOf, diffLines, forbiddenCommand, routeReview } from '../hooks/route'
+import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenTool, routeReview } from '../hooks/route'
 import { extrasFrom, LENSES } from '../hooks/flow'
 import { cleanFeature, couldNotStart, detectChecks, detectSetup, leftOut, neverCommit, slugOf, untrackedOf, modelsFor, parseDecision, parseSize, parseSkills, progressNote, titleOf, parseTasks, parseVerdict, planPrompt, specPrompt, splitChecks } from '../hooks/flow'
 import { factoryArgs, goalPrompt, startLine, factoryPlanApprovedArgs, factoryPlanResultArgs, PLAN_APPROVED_FOR_FACTORY, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, planChangesForFactory } from '../hooks/texts'
@@ -894,6 +894,30 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     }
   })
 
+  test('wrappers, paths, subshells, git options and a shell\'s -c string are seen through (code review 2, F1)', () => {
+    for (const c of [
+      'git -c foo=bar push', 'git --no-pager push', '/usr/bin/git push', 'env git push', 'env -i HOME=/x git push',
+      'bash -c "git push"', "sh -c 'git push'", 'eval git push', 'eval "git push origin x"', '(git push)', 'echo $(git push)',
+      'echo `git push`', 'xargs git push', 'time git push', 'nohup git push', 'npx vercel deploy', 'npx -y vercel deploy --prod',
+      'pnpm dlx netlify deploy', 'npm exec -- wrangler deploy', 'timeout 30 git push', 'git --git-dir=/r/.git --work-tree /w push',
+      'powershell -Command "git push"', 'C:\\Program` Files\\Git\\bin\\git.exe push',
+    ]) {
+      expect([c, forbiddenCommand(c) !== '']).toEqual([c, true])
+    }
+    for (const c of ['bash -c "npm test"', 'git -c core.pager=cat log', 'npx vitest run', 'xargs rm -f a.tmp', 'time npm run build']) {
+      expect([c, forbiddenCommand(c)]).toEqual([c, ''])
+    }
+  })
+
+  test('MCP tools that change a remote are refused to the run\'s agents; reading ones are not', () => {
+    for (const t of ['mcp__github__push_files', 'mcp__github__create_or_update_file', 'mcp__github__create_pull_request', 'mcp__github__merge_pull_request', 'mcp__github__create_branch', 'mcp__github__delete_file', 'mcp__vercel__deploy']) {
+      expect([t, forbiddenTool(t) !== '']).toEqual([t, true])
+    }
+    for (const t of ['mcp__github__get_file_contents', 'mcp__github__pull_request_read', 'mcp__github__list_branches', 'Read', 'Bash']) {
+      expect([t, forbiddenTool(t)]).toEqual([t, ''])
+    }
+  })
+
   test("a run's agent is refused a git push; the main conversation isn't", async ($, on) => {
     on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }) as never)
     engine(on)
@@ -906,6 +930,10 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     expect((tests as { deny?: string }).deny).toBeFalsy()
     const main = await $.tool.call({ tool: 'Bash', command: 'git push -u origin factory/rate-limiter' } as never)
     expect((main as { deny?: string }).deny).toBeFalsy()
+    const pwsh = await $.tool.call({ tool: 'PowerShell', command: 'git push origin HEAD', agentId: 'a2' } as never)
+    expect(String((pwsh as { deny?: string }).deny)).toMatch(/git push/)
+    const mcp = await $.tool.call({ tool: 'mcp__github__create_pull_request', title: 'x', agentId: 'a2' } as never)
+    expect(String((mcp as { deny?: string }).deny)).toMatch(/through an MCP tool/)
   })
 
   test("a diff that changes an agent's instructions: both reviewers are told to look, and the code reviewer runs on opus", async ($, on) => {
