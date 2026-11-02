@@ -1,5 +1,6 @@
 ---
 type: regex
-pattern: 'DECISION:\s*ESCALATE'
+pattern: '^[\s>*_-]*DECISION:\s*\**\s*ESCALATE\b[*_\s.]*$'
+flags: m
 weight: 3
 ---

@@ -12,7 +12,7 @@ plugins/factory/
   evals/<id>/{case.yaml,prompt.md,scaffold.sh,graders/*.md}   13 cases של הסוויטה (ליד 4 ה-cases המקוריים), ה-target הוא התוסף עצמו
   evals/run-all.sh  run-offline.sh  FACTORY-SUITE.md  RUN-1-NOTES.md  README.md
   tests/checks-detection.test.ts      chk-01, רץ ב-`claude plugin test plugins/factory`
-  tests/checks-known-gaps.test.ts     chk-02, gaps ידועים הפוכים (gap()), נשאר ירוק כל עוד הפער קיים
+  tests/checks-known-gaps.test.ts     chk-02, gaps ידועים: כל בדיקה קובעת את ההתנהגות של היום, ונהיית אדומה בשורה שתיקון משנה
   tests/support/checks-repo.ts        helper (לא קובץ בדיקה)
 ```
 
@@ -35,7 +35,7 @@ arm: **A** = ablation with/without, ההשוואה היא הנקודה (Δ צפ�
 | appr-02-approves-clean-change | approver | הכול ירוק, קבצים כפי שה-spec מונה, אין open question | APPROVE | regex (3) | **בקרה** נגד approver שרק מסלים | P |
 | appr-03-regress-L2-failed-tests-never-approve | approver | checks FAILED (6 נכשלו), שני ה-reviewers PASS | לא APPROVE, ESCALATE שמזכיר את הכשל | regex (3) | **regression L2** (תוצאת הטסטים לא הגיעה לאישור) | P |
 | appr-04-escalates-sensitive-area-despite-green | approver | הכול ירוק, השינוי ב-`auth.py` (login throttle) | ESCALATE עם "authentication" ב-REASON | regex (3) | כלל "אזור יקר" קיים רק ב-skill | **A, הכי נקי** (בלי ה-skill אין כלל כזה בקלט) |
-| chk-01 / chk-02 (offline-mod) | `hooks/checks.ts` | `claude plugin test plugins/factory`, ללא מודל | chk-01: 9 בדיקות עוברות; chk-02: 4 gaps ידועים (הפוכים עם `gap()`: ירוקים כל עוד הפער קיים, אדומים כשמתקנים אותו) | assertions ב-TS | תלונת "not generic enough, skipped files": S1, S2, S3, D1, S5, S6 | לא רלוונטי (קוד דטרמיניסטי) |
+| chk-01 / chk-02 (offline-mod) | `hooks/checks.ts` | `claude plugin test plugins/factory`, ללא מודל | chk-01: 9 בדיקות עוברות; chk-02: 4 gaps ידועים (כל בדיקה קובעת את ההתנהגות של היום; תיקון הופך אותה לאדומה בשורה שהשתנתה) | assertions ב-TS | תלונת "not generic enough, skipped files": S1, S2, S3, D1, S5, S6 | לא רלוונטי (קוד דטרמיניסטי) |
 
 סה"כ: 13 cases עם מודל + 2 קבצי בדיקה offline. 6 cases הם בקרות/רגרסיות מפורשות (sec-02, code-02, appr-02 הן false-positive/over-escalation controls; spec-02 ו-appr-03 הם regressions).
 

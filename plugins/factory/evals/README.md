@@ -20,7 +20,7 @@ plugins/factory/evals/run-offline.sh
 #   claude plugin validate plugins/factory
 #   claude plugin test plugins/factory   # כולל chk-01 (9, רגילות) ו-chk-02 (4, gaps ידועים)
 ```
-`tests/checks-known-gaps.test.ts` מתעד את הבאג האמיתי (קבצים שמדולגים בזיהוי ה-checks, ממצאים S1-S3 ב-`docs/findings/2026-10-29-factory-run-review.md`). 'claude-code/testing' אין בו `test.failing`, לכן ה-helper `gap()` הופך את התוצאה: הבדיקה ירוקה כל עוד הפער קיים, ו**נהיית אדומה כשמתקנים את הפער**; אז מעבירים אותה כבדיקה רגילה ל-`checks-detection.test.ts`. כך ה-CI (`mods.yml`) נשאר ירוק.
+`tests/checks-known-gaps.test.ts` מתעד את הבאג האמיתי (קבצים שמדולגים בזיהוי ה-checks, ממצאים S1-S3 ב-`docs/findings/2026-10-29-factory-run-review.md`). כל בדיקה שם קובעת במפורש מה הזיהוי עושה היום (הפער), ובהערה מה הוא אמור לעשות. כך ה-CI (`mods.yml`) ירוק, ותיקון הופך את הבדיקה לאדומה בדיוק בשורה שהשתנתה: אז מעדכנים אותה להתנהגות החדשה ומעבירים אותה ל-`checks-detection.test.ts`. (בגרסה הקודמת `gap()` תפס כל exception, כך ששגיאת הקלדה או export ששינה שם נשארו ירוקים בשקט.)
 
 אין ל-`claude plugin eval` מצב dry-run/validate, לכן תקינות ה-cases נבדקה ב-parsing עצמי (YAML, מפתחות, regex, scaffold).
 
