@@ -504,7 +504,7 @@ export const register: Register = (on, options) => {
     const remind = toRoute >= ROUTE_AT && toRoute > (await read($, routeLater))
     if (e.props.hasSurvey || (!p && !pending.length && !remind)) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    const Svg = e.surface === 'terminal' ? null : $.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
     const t = await read($, frame)
     const below = await next(e)
     const o = pending[0]
@@ -553,7 +553,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const Svg = e.surface === 'terminal' ? null : $.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
     const b = await read($, brain)
     if (!b) {
       return (

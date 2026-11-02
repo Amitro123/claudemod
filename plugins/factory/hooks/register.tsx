@@ -62,7 +62,7 @@ import {
   progressNote,
   resumePrompt,
 } from './flow'
-import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, routeReview } from './route'
+import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, forbiddenTool, routeReview } from './route'
 import { FACTORY_START_TOOL, factoryArgs, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, parsePlanResultArgs, toolText } from './texts'
 
 const run = atom({ plugin: 'factory', key: 'run' } as const, null as Run | null)
@@ -637,18 +637,25 @@ async function runChecks($: EngineInterface) {
       results.push({ cmd: argv.join(' '), ok: false, tail: '', isMissing: true, isSkipped: true })
       continue
     }
+    // pytest that found no tests (exit 5), or a python without pytest: nothing ran, so nothing failed.
+    const said = `${out.stdout}\n${out.stderr}`
+    if (argv.includes('pytest') && (out.exitCode === 5 || /No module named pytest/.test(said))) {
+      results.push({ cmd: argv.join(' '), ok: false, tail: '', isMissing: true, why: out.exitCode === 5 ? 'no tests collected' : 'pytest is not installed' })
+      continue
+    }
     results.push({ cmd: argv.join(' '), ok: out.exitCode === 0, tail: out.exitCode === 0 ? '' : tailOf(`${out.stdout}\n${out.stderr}`), ...(out.notStarted ? { isMissing: true } : {}), ...(out.timedOut ? { isTimedOut: true } : {}) })
   }
   const timedOut = results.filter(c => c.isTimedOut)
   const failed = results.filter(c => !c.ok && !c.isMissing)
   const missing = results.filter(c => c.isMissing)
   const ran = results.filter(c => !c.isMissing)
-  if (results.length) await record($, 'checks', results.map(c => `${c.isSkipped ? '– (skipped by the person)' : c.isMissing ? '– (not installed)' : c.isTimedOut ? `⏱ (timed out after ${mmss(checkTimeoutMs)})` : c.ok ? '✓' : '✗'} ${c.cmd}${c.tail ? `\n${c.tail}` : ''}`).join('\n'))
+  if (results.length) await record($, 'checks', results.map(c => `${c.isSkipped ? '– (skipped by the person)' : c.why ? `– (${c.why})` : c.isMissing ? '– (not installed)' : c.isTimedOut ? `⏱ (timed out after ${mmss(checkTimeoutMs)})` : c.ok ? '✓' : '✗'} ${c.cmd}${c.tail ? `\n${c.tail}` : ''}`).join('\n'))
   // Why nothing ran, or what detection warned about, or which programs aren't installed: the
   // reviewers and the approver read it.
   const notes = [
     ...(missing.some(c => c.isSkipped) ? [`Skipped by the person, so not run: ${missing.filter(c => c.isSkipped).map(c => c.cmd).join(', ')}.`] : []),
-    ...(missing.some(c => !c.isSkipped) ? [`Not installed here, so not run: ${missing.filter(c => !c.isSkipped).map(c => c.cmd).join(', ')}.`] : []),
+    ...(missing.some(c => !c.isSkipped && !c.why) ? [`Not installed here, so not run: ${missing.filter(c => !c.isSkipped && !c.why).map(c => c.cmd).join(', ')}.`] : []),
+    ...(missing.some(c => c.why) ? [`Not run: ${missing.filter(c => c.why).map(c => `${c.cmd} (${c.why})`).join(', ')}.`] : []),
     ...(!ran.length ? [found.reason || NOTHING_RAN] : []),
     ...(ran.length && found.warnings.length ? [found.warnings.join('; ')] : []),
   ]
@@ -1008,11 +1015,12 @@ function actions($: EngineInterface, r: Run): { key: string; label: string; pres
 async function tick($: EngineInterface) {
   const r = await read($, run)
   if (!r || !isLive(r.phase)) return void timers.splice(0).forEach(t => t.cancel())
-  if (!waitsOnPerson(r.phase)) await update($, frame, f => f + 1)
+  // While a check runs nothing in the diagram moves: only the seconds do, and only when they change.
+  if (!waitsOnPerson(r.phase) && r.phase !== 'checks') await update($, frame, f => f + 1)
   // The seconds the band counts: a running check's, or since the agent's last action.
   if ((r.phase === 'checks' && r.checking) || ['spec', 'build', 'review', 'approve'].includes(r.phase)) {
     const t = await $.clock.now()
-    await update($, now, () => t)
+    if (Math.floor(t / 1000) !== Math.floor((await read($, now)) / 1000)) await update($, now, () => t)
   }
 }
 
@@ -1034,6 +1042,9 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     for (const t of timers.splice(0)) t.cancel()
+    // A job of an earlier session that never settled (a question nobody answered) doesn't hold this one's.
+    queue = Promise.resolve()
+    skipRunning = null
     await $.command.register({ name: 'factory', description: 'Run a feature through the software factory: spec, plan, build, checks, reviews, approval', argumentHint: '<feature> | approve | retry | rework <note> | stop' })
     for (const role of Object.keys(ROLES) as Role[]) {
       const spec = ROLES[role]
@@ -1110,8 +1121,14 @@ export const register: Register = (on, options) => {
       const r = await read($, run)
       if ((r?.agents[e.agentId] && !isLive(r.phase)) || (await read($, stoppedAgents)).includes(e.agentId)) return { deny: STOPPED_DENY }
       // Pushing, publishing, deploying or deleting outside the worktree is never a run agent's job.
-      if (r?.agents[e.agentId] && e.tool === 'Bash') {
-        const what = forbiddenCommand(String((e as unknown as { command?: unknown }).command ?? ''))
+      // A guard that fails refuses the call, for the run's agents only.
+      if (r?.agents[e.agentId]) {
+        let what = ''
+        try {
+          what = forbiddenTool(e.tool) || (e.tool === 'Bash' || e.tool === 'PowerShell' ? forbiddenCommand(String((e as unknown as { command?: unknown }).command ?? '')) : '')
+        } catch (err) {
+          what = `a command the factory couldn't check (${String(err).slice(0, 80)})`
+        }
         if (what) return { deny: `The factory's agents don't do this (${what}): the work stays on the run's branch in its worktree, and the person opens the PR once it is approved. Leave it out and go on.` }
       }
       // What the run's agent does now: the band shows it, so a working step never reads as stuck.
@@ -1208,7 +1225,7 @@ export const register: Register = (on, options) => {
     const r = yield* next(e)
     const u = r.usage
     if (e.agentId !== undefined && u && (await read($, run))?.agents[e.agentId]) {
-      await addTokens($, e.agentId, u.input_tokens + u.output_tokens + u.cache_creation_input_tokens)
+      await addTokens($, e.agentId, (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0))
       if (u.model) ranOn.set(e.agentId, (ranOn.get(e.agentId) ?? new Set()).add(u.model))
     }
     return r
@@ -1261,7 +1278,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const Svg = e.surface === 'terminal' ? null : $.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
     const r = await read($, run)
     if (!r) {
       return (

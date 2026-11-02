@@ -107,10 +107,12 @@ export const diffLines = (diff: string) =>
 
 // The factory's agents build and review in a worktree: pushing, publishing, deploying, rewriting
 // remotes or deleting outside it is never their job (the person opens the PR after approval). One of
-// these at the start of a command in a Bash call is refused; quoted text (a commit message) doesn't count.
+// these as a command in a Bash or PowerShell call is refused; quoted text (a commit message) doesn't
+// count, but a shell's -c string and eval's words do. A guard against an agent's mistake, not a
+// security boundary: a command built at run time (a variable, a script file) gets past it.
 const FORBIDDEN: { re: RegExp; what: string }[] = [
-  { re: /^git\s+(?:-C\s+\S+\s+)?push\b/, what: 'git push' },
-  { re: /^git\s+(?:-C\s+\S+\s+)?remote\s+(add|set-url|remove|rm|rename)\b/, what: 'changing git remotes' },
+  { re: /^git\s+push\b/, what: 'git push' },
+  { re: /^git\s+remote\s+(add|set-url|remove|rm|rename)\b/, what: 'changing git remotes' },
   { re: /^gh\s+(pr|release|repo|secret|variable|workflow|api)\b/, what: 'GitHub changes with gh' },
   { re: /^(npm|pnpm|yarn|cargo|twine|gem|poetry)\b[^|]*\bpublish\b/, what: 'publishing a package' },
   { re: /^docker\s+(push|login)\b/, what: 'docker push' },
@@ -121,16 +123,74 @@ const FORBIDDEN: { re: RegExp; what: string }[] = [
   { re: /^rm\s+(-\w*r\w*f?\w*|-\w*f\w*r\w*|--recursive)\b.*(\s|^)(\/|~|\.\.|[A-Za-z]:[\\/])/, what: 'deleting outside the worktree' },
 ]
 
+// Words that run the command after them: wrappers and runners, with the options they take.
+const WRAPPERS = new Set(['sudo', 'exec', 'eval', 'command', 'env', 'time', 'nohup', 'nice', 'xargs', 'npx', 'bunx', 'stdbuf', 'timeout', 'doas'])
+// git's options before its subcommand; these take a value as the next word.
+const GIT_VALUE_OPTS = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env'])
+
+// A command's words with what runs it peeled off: VAR=x, the wrappers (and their options), a path to
+// the program (/usr/bin/git), `pnpm dlx`/`yarn dlx`/`npm exec`, and git's global options.
+function normalize(segment: string): string {
+  const words = segment.trim().split(/\s+/).filter(Boolean)
+  let i = 0
+  for (;;) {
+    while (i < words.length && /^[A-Za-z_]\w*=/.test(words[i]!)) i++
+    const w = (words[i] ?? '').replace(/^.*[\\/]/, '').replace(/\.exe$/i, '')
+    if (WRAPPERS.has(w)) {
+      i++
+      // timeout's duration, and the wrappers' own options.
+      while (i < words.length && (/^-/.test(words[i]!) || (w === 'timeout' && /^\d/.test(words[i]!)))) i++
+      continue
+    }
+    if ((w === 'pnpm' || w === 'yarn') && words[i + 1] === 'dlx') {
+      i += 2
+      continue
+    }
+    if (w === 'npm' && words[i + 1] === 'exec') {
+      i += 2
+      while (i < words.length && /^-/.test(words[i]!)) i++
+      continue
+    }
+    break
+  }
+  const rest = words.slice(i)
+  if (!rest.length) return ''
+  rest[0] = rest[0]!.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '')
+  if (rest[0] === 'git') {
+    let k = 1
+    while (k < rest.length && /^-/.test(rest[k]!)) k += GIT_VALUE_OPTS.has(rest[k]!) ? 2 : 1
+    return ['git', ...rest.slice(k)].join(' ')
+  }
+  return rest.join(' ')
+}
+
+// The commands a shell line runs: each segment between ; && || | and newlines, what $( ), backticks and
+// ( ) hold, and the string a shell's -c or eval runs (read as commands in turn, two levels deep).
+function commandsIn(line: string, depth = 0): string[] {
+  const inner: string[] = []
+  if (depth < 2) {
+    for (const m of line.matchAll(/\b(?:bash|sh|zsh|dash|ksh|fish|pwsh|powershell)(?:\.exe)?\s+(?:-\w+\s+)*-(?:c|Command)\s+(['"])((?:(?!\1)[^\\]|\\.)*)\1/gi)) inner.push(...commandsIn(m[2]!, depth + 1))
+    for (const m of line.matchAll(/\beval\s+(['"])((?:(?!\1)[^\\]|\\.)*)\1/g)) inner.push(...commandsIn(m[2]!, depth + 1))
+  }
+  const unquoted = line.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, '""')
+  const parts = unquoted.split(/&&|\|\||;|\||\n|\$\(|`|\(|\)/)
+  return [...inner, ...parts.map(normalize).filter(Boolean)]
+}
+
 // Why a run's agent may not run this command, or '' when it may.
 export function forbiddenCommand(command: string): string {
-  const unquoted = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, '""')
-  for (const part of unquoted.split(/&&|\|\||;|\||\n/)) {
-    const cmd = part.trim().replace(/^(?:\w+=\S*\s+)+/, '').replace(/^(?:sudo|exec|command)\s+/, '')
+  for (const cmd of commandsIn(command)) {
     const hit = FORBIDDEN.find(f => f.re.test(cmd))
     if (hit) return hit.what
   }
   return ''
 }
+
+// MCP tools that change a remote (a push, a PR, a branch, a release, a deploy): never a run agent's job.
+const REMOTE_WRITE = /^mcp__.+__(?:.*(?:push|merge|pull_request|create_branch|delete_branch|create_or_update_file|delete_file|create_repository|fork|release|deploy|publish|create_tag))/i
+// A tool that only reads (get_, list_, search_, _read) is left alone.
+const READS = /__(?:.*[_-])?(get|list|search|read)(?:[_-]|$)/i
+export const forbiddenTool = (tool: string) => (REMOTE_WRITE.test(tool) && !READS.test(tool) ? 'changing the remote through an MCP tool' : '')
 
 // ---------- the skeptic ----------
 

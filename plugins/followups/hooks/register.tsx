@@ -37,7 +37,7 @@ When a message says it started a to-do item and gives its id, do that work, and 
 export const STOP_PHRASES = [
   'not verified', 'unverified', 'not tested', 'untested', 'no coverage', 'left open', 'still open', 'known gap',
   'open question', 'open questions', 'unsure about', 'unsure-about',
-  'לא אומת', 'לא נבדק', 'לא נבדקו', 'פער', 'פריט המשך', 'שאלה פתוחה', 'שאלות פתוחות',
+  'לא אומת', 'לא נבדק', 'לא נבדקו', 'פער ידוע', 'פער פתוח', 'פריט המשך', 'שאלה פתוחה', 'שאלות פתוחות',
 ]
 export const STOP_MESSAGE = 'You mentioned items that need follow-up. Call mcp__followups__flag for each, or say there are none.'
 
@@ -71,7 +71,10 @@ export const isStatus = (s: unknown): s is Status => s === 'open' || s === 'in_p
 // Items saved before statuses existed carry isDone; map them to a status.
 export function migrate(saved: unknown): Item[] {
   if (!Array.isArray(saved)) return []
-  return saved.map((raw: Record<string, unknown>) => {
+  // An entry that isn't an item (null, a string, one with no id or title) is dropped, not thrown on.
+  const isItem = (x: unknown): x is Record<string, unknown> =>
+    !!x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string' && typeof (x as { title?: unknown }).title === 'string'
+  return saved.filter(isItem).map(raw => {
     const { isDone, ...rest } = raw
     const status: Status = isStatus(raw.status) ? raw.status : isDone === true ? 'done' : 'open'
     return { ...rest, status, kind: raw.kind === 'bug' ? 'bug' : 'task' } as Item
@@ -403,11 +406,12 @@ const quoted = (s: string) => `\`${s.replace(/\s+/g, ' ').replace(/`/g, "'").tri
 
 export function section(target: Target, list: Item[]): string {
   const t = TARGETS[target]
-  const asCode = target === 'memory'
+  // Every export quotes: Claude reads the README and docs too, and an item's words may come from the
+  // after-answer look or a sub-agent's report (a web page it read), never meant as instructions.
   const lines = list.map(i => {
-    const extra = [i.detail && (asCode ? quoted(i.detail) : i.detail), i.where && quoted(i.where)].filter(Boolean).join(' · ')
+    const extra = [i.detail && quoted(i.detail), i.where && quoted(i.where)].filter(Boolean).join(' · ')
     const tags = `${i.kind === 'bug' ? ' _(bug)_' : ''}${i.status === 'in_progress' ? ' _(in progress)_' : ''}`
-    return `- [${i.status === 'done' ? 'x' : ' '}] ${asCode ? quoted(i.title) : i.title}${tags}${extra ? ` — ${extra}` : ''}`
+    return `- [${i.status === 'done' ? 'x' : ' '}] ${quoted(i.title)}${tags}${extra ? ` — ${extra}` : ''}`
   })
   return [START, t.heading, '', ...(t.note ? [`_${t.note}_`, ''] : []), ...lines, END].join('\n')
 }
@@ -546,9 +550,11 @@ export const register: Register = (on, options) => {
     const input = e as unknown as { id?: unknown; note?: unknown }
     const ref = String(input.id ?? '').trim()
     const list = await read($, items)
-    const item = list.find(i => i.id === ref) ?? list.find(i => ref && norm(i.title) === norm(ref))
+    // By id; by title only among the items under way, so it can't close an item nobody started.
+    const item = list.find(i => i.id === ref) ?? list.find(i => ref && i.status === 'in_progress' && norm(i.title) === norm(ref))
     if (!item) return { deny: `No to-do item with id "${ref}". Use the id from the start message.` }
     if (item.status === 'done') return { result: `"${item.title}" is already done. Nothing to change.` }
+    if (item.status !== 'in_progress') return { deny: `"${item.title}" wasn't started from the to-do list, so it isn't yours to mark done. Call this only for an item a start message gave you.` }
     await setStatus($, new Set([item.id]), 'done')
     const note = clip(String(input.note ?? '').trim(), 200)
     $.ui.toast(`Done: ${item.title}`)

@@ -12,6 +12,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # The test kit ships in the CLI and runs offline: no credentials needed.
-      - run: npm i -g @anthropic-ai/claude-code
+      # The test kit ships in the CLI and runs offline: no credentials needed. Pinned, so a new CLI
+      # release can't turn CI red (or hide a regression) with no change here: bump it on purpose, after
+      # the tests pass on the new version.
+      - run: npm i -g @anthropic-ai/claude-code@2.1.312
       - run: claude plugin test plugins/${{ matrix.mod }}

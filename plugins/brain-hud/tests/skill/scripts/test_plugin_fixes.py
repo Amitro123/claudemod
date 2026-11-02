@@ -414,3 +414,22 @@ def test_insert_entry_only_touches_the_seam():
     out = host_layout.insert_entry(text, "## [2026-10-26 08:00] New\n- **Status:** unrouted\n\n\n")
     assert out == head + "\n\n## [2026-10-26 08:00] New\n- **Status:** unrouted\n\n" + older
     assert host_layout.insert_entry(head + "\n", "## [x] Only\n") == head + "\n\n## [x] Only\n"
+
+
+def test_the_mods_marker_is_the_skills(tmp_path):
+    """brain-hud's journal.ts inserts the handoff below the same marker the skill writes (code review 2, B4)."""
+    journal = (SKILL.parent.parent / "hooks" / "journal.ts").read_text(encoding="utf-8")
+    assert f"export const MARKER = '{init_project.MARKER.strip()}'" in journal
+
+
+def test_a_hook_that_fails_still_exits_0(tmp_path):
+    """run.sh lets the session go on whatever the hook did: here MISTAKES.md is a folder (code review 2, B3)."""
+    project = tmp_path / "p"
+    project.mkdir()
+    (project / "MISTAKES.md").mkdir()
+    proc = subprocess.run(
+        ["sh", str(SKILL / "hooks" / "run.sh"), "draft_mistake_on_revert.py"],
+        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "git checkout -- a.txt"}, "cwd": str(project)}),
+        capture_output=True, text=True, env={**os.environ, "CLAUDE_PROJECT_DIR": str(project)},
+    )
+    assert proc.returncode == 0

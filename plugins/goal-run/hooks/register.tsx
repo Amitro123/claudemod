@@ -118,8 +118,9 @@ export function orderPlan(items: PlanItem[]): Task[] {
 
 // What a request added: its output, the input it wrote to the cache, and uncached input. Cache reads
 // are the context earlier requests already counted; adding them would count it again on every step.
-export function stepTokens(u: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }): number {
-  return u.input_tokens + u.output_tokens + u.cache_creation_input_tokens
+// A field the step didn't report counts as 0, so a missing one never turns the count into NaN.
+export function stepTokens(u: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }): number {
+  return (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
 }
 
 // Everything a task needs, directly or through another task.
@@ -954,7 +955,7 @@ export const register: Register = (on, options) => {
     const g = await read($, goal)
     const canRunAsFactory = await read($, hasFactory)
     const frame = Math.floor((await read($, tick)) / FRAME_MS)
-    const Svg = e.surface === 'terminal' ? null : $.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
 
     if (!g) {
       return (

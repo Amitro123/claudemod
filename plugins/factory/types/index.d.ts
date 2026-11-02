@@ -18,7 +18,8 @@ export type SpecTask = { title: string; priority: 'high' | 'medium' | 'low'; dep
 // builder isn't sent to fix what it can't.
 // isTimedOut: it ran past the checks' time limit: the person decides, not the builder.
 // isSkipped: the person (or the main Claude for them) let the run go on without waiting for it.
-export type Check = { cmd: string; ok: boolean; tail: string; isMissing?: boolean; isTimedOut?: boolean; isSkipped?: boolean }
+// why: what a check that didn't run said instead (pytest that collected no tests, say).
+export type Check = { cmd: string; ok: boolean; tail: string; isMissing?: boolean; isTimedOut?: boolean; isSkipped?: boolean; why?: string }
 // agentId: the reviewer's agent this round (null until started), so a late answer from an earlier one is ignored.
 export type Review = { role: Reviewer; state: StepState; findings: Finding[]; tokens: number; round: number; agentId: string | null }
 // Where the run is: each phase waits on one thing (an agent, the checks, the person).

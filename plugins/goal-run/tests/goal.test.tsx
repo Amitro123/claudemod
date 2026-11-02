@@ -579,6 +579,8 @@ describe('the order of the plan', () => {
 
   test("a step's tokens are the new ones: cache reads, the context already counted, are left out", () => {
     expect(stepTokens({ input_tokens: 1_000, output_tokens: 500, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 2_000 })).toBe(3_500)
+    // A field the step didn't report is 0, never NaN (code review 2, G1).
+    expect(stepTokens({ input_tokens: 1_000, output_tokens: 500 })).toBe(1_500)
   })
 
   test('↑ and ↓ move a task among the pending ones, never past one in progress or done', () => {

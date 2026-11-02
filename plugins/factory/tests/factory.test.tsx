@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { applyRulings, changedOf, diffLines, forbiddenCommand, routeReview } from '../hooks/route'
+import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenTool, routeReview } from '../hooks/route'
 import { extrasFrom, LENSES } from '../hooks/flow'
 import { cleanFeature, couldNotStart, detectChecks, detectSetup, leftOut, neverCommit, slugOf, untrackedOf, modelsFor, parseDecision, parseSize, parseSkills, progressNote, titleOf, parseTasks, parseVerdict, planPrompt, specPrompt, splitChecks } from '../hooks/flow'
 import { factoryArgs, goalPrompt, startLine, factoryPlanApprovedArgs, factoryPlanResultArgs, PLAN_APPROVED_FOR_FACTORY, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, planChangesForFactory } from '../hooks/texts'
@@ -31,7 +31,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '' } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }> } = {}) {
   const spawned: Spawned[] = []
   const ran: string[] = []
   const limits: Record<string, number> = {}
@@ -107,6 +107,8 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     // The branch's changed files for the review route (`changedFiles`, name-status -z).
     if (cmd.startsWith('git diff --name-status -z')) return ok(changedFiles)
     if (cmd.startsWith('git ')) return ok()
+    // `outputs`: what a command answers, as given.
+    if (outputs[cmd]) return { value: outputs[cmd] } as never
     if (missing.includes(cmd)) throw new Error(`spawn ${e.argv[0]} ENOENT`)
     if (cmd === 'sh-missing') return { value: { exitCode: 127, stdout: '', stderr: 'sh: vitest: not found' } } as never
     if (failing > 0) {
@@ -758,19 +760,35 @@ describe('a run that seems stuck says where it is', () => {
     await command($, 'plan-approved')
   }
 
-  test('a check that runs out of time stops the run for the person: the builder is not sent to fix it', async ($, on) => {
+  // A 2-minute limit keeps the clock's frame ticks few: 10 minutes of them made this test slow on some
+  // machines (code review 2, F2).
+  test('a check that runs out of time stops the run for the person: the builder is not sent to fix it', { options: { checkTimeout: '2' } } as never, async ($: Engine, on: On) => {
     // npm test runs to the limit and fails there: killed at the timeout.
     const w = engine(on, { hold: 'npm test', fails: 1 })
     await toBuild($)
     await answer($, 'a2', 'built')
-    expect(w.limits['npm test']).toBe(600_000)
-    await w.clock.advance(600_000)
+    expect(w.limits['npm test']).toBe(120_000)
+    await w.clock.advance(120_000)
     w.release()
     await settled()
     expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(1)
-    expect(await bandText($)).toMatch(/npm test didn't finish in 10:00\. It may be slow or hung/)
-    expect(Object.entries(w.written).find(([k]) => /checks\.md$/.test(k))?.[1]).toMatch(/⏱ \(timed out after 10:00\) npm test/)
+    expect(await bandText($)).toMatch(/npm test didn't finish in 2:00\. It may be slow or hung/)
+    expect(Object.entries(w.written).find(([k]) => /checks\.md$/.test(k))?.[1]).toMatch(/⏱ \(timed out after 2:00\) npm test/)
     expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/TIMED OUT: npm test/)
+  })
+
+  test('a question nobody answers holds no later session: a new run starts after session.start (code review 2, F2)', async ($, on) => {
+    const w = engine(on, { holdAsk: true })
+    await toBuild($)
+    await answer($, 'a2', 'built')
+    expect(w.asked.at(-1)).toMatch(/^Before the factory runs the checks/)
+    // The question stays open; the session restarts and the run is stopped, then a new one starts.
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'stop')
+    await command($, 'Add a cache')
+    await settled()
+    expect(last(w)).toMatchObject({ subagentType: 'factory:spec-writer' })
+    expect(last(w).prompt).toContain('Feature: Add a cache')
   })
 
   test('the checkTimeout option shortens the limit; Claude Code allows 10 minutes at most', { options: { checkTimeout: '5' } } as never, async ($: Engine, on: On) => {
@@ -894,6 +912,30 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     }
   })
 
+  test('wrappers, paths, subshells, git options and a shell\'s -c string are seen through (code review 2, F1)', () => {
+    for (const c of [
+      'git -c foo=bar push', 'git --no-pager push', '/usr/bin/git push', 'env git push', 'env -i HOME=/x git push',
+      'bash -c "git push"', "sh -c 'git push'", 'eval git push', 'eval "git push origin x"', '(git push)', 'echo $(git push)',
+      'echo `git push`', 'xargs git push', 'time git push', 'nohup git push', 'npx vercel deploy', 'npx -y vercel deploy --prod',
+      'pnpm dlx netlify deploy', 'npm exec -- wrangler deploy', 'timeout 30 git push', 'git --git-dir=/r/.git --work-tree /w push',
+      'powershell -Command "git push"', 'C:\\Program` Files\\Git\\bin\\git.exe push',
+    ]) {
+      expect([c, forbiddenCommand(c) !== '']).toEqual([c, true])
+    }
+    for (const c of ['bash -c "npm test"', 'git -c core.pager=cat log', 'npx vitest run', 'xargs rm -f a.tmp', 'time npm run build']) {
+      expect([c, forbiddenCommand(c)]).toEqual([c, ''])
+    }
+  })
+
+  test('MCP tools that change a remote are refused to the run\'s agents; reading ones are not', () => {
+    for (const t of ['mcp__github__push_files', 'mcp__github__create_or_update_file', 'mcp__github__create_pull_request', 'mcp__github__merge_pull_request', 'mcp__github__create_branch', 'mcp__github__delete_file', 'mcp__vercel__deploy']) {
+      expect([t, forbiddenTool(t) !== '']).toEqual([t, true])
+    }
+    for (const t of ['mcp__github__get_file_contents', 'mcp__github__pull_request_read', 'mcp__github__list_branches', 'Read', 'Bash']) {
+      expect([t, forbiddenTool(t)]).toEqual([t, ''])
+    }
+  })
+
   test("a run's agent is refused a git push; the main conversation isn't", async ($, on) => {
     on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }) as never)
     engine(on)
@@ -906,6 +948,10 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     expect((tests as { deny?: string }).deny).toBeFalsy()
     const main = await $.tool.call({ tool: 'Bash', command: 'git push -u origin factory/rate-limiter' } as never)
     expect((main as { deny?: string }).deny).toBeFalsy()
+    const pwsh = await $.tool.call({ tool: 'PowerShell', command: 'git push origin HEAD', agentId: 'a2' } as never)
+    expect(String((pwsh as { deny?: string }).deny)).toMatch(/git push/)
+    const mcp = await $.tool.call({ tool: 'mcp__github__create_pull_request', title: 'x', agentId: 'a2' } as never)
+    expect(String((mcp as { deny?: string }).deny)).toMatch(/through an MCP tool/)
   })
 
   test("a diff that changes an agent's instructions: both reviewers are told to look, and the code reviewer runs on opus", async ($, on) => {
@@ -1077,6 +1123,26 @@ describe('extra reviewers the main Claude adds, and steering a run', () => {
     await answer($, 'a2', 'built')
     expect(w.spawned.slice(2).map(a => a.description)).toEqual(['factory · security review', 'factory · code review', 'factory · deploy review'])
   })
+})
+
+describe('pytest that found nothing, or no pytest at all, is not a failure (code review 2, F3)', () => {
+  for (const [name, out, why] of [
+    ['collected no tests (exit 5)', { exitCode: 5, stdout: 'no tests ran in 0.01s', stderr: '' }, 'no tests collected'],
+    ['a python without pytest', { exitCode: 1, stdout: '', stderr: '/usr/bin/python3: No module named pytest' }, 'pytest is not installed'],
+  ] as const) {
+    test(`pytest ${name}: recorded as not run, the builder is not sent back`, async ($, on) => {
+      const w = engine(on, { files: ['package.json', 'node_modules', 'conftest.py'], outputs: { 'python -m pytest -q': { ...out } } })
+      await startRun($)
+      await answer($, 'a1', SPEC_ANSWER)
+      await command($, 'plan-approved')
+      await answer($, 'a2', 'built')
+      await settled()
+      expect(w.ran).toContain('python -m pytest -q')
+      expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(1)
+      expect(Object.entries(w.written).find(([k]) => /checks\.md$/.test(k))?.[1]).toContain(`– (${why}) python -m pytest -q`)
+      expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toContain(`not run (${why}): python -m pytest -q`)
+    })
+  }
 })
 
 describe('the parsers', () => {

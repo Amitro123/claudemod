@@ -75,7 +75,8 @@ function nodeChecks(d: DirInfo): string[][] {
 
 function pythonChecks(d: DirInfo): string[][] {
   const definite = has(d, 'pytest.ini') || has(d, 'conftest.py') || d.pyTests
-  const configured = ['pyproject.toml', 'setup.cfg', 'tox.ini'].some(f => has(d, f) && (d.texts[f] == null || /pytest/i.test(d.texts[f]!)))
+  // Only a config that was read and names pytest counts; one that couldn't be read is a warning, not a guess.
+  const configured = ['pyproject.toml', 'setup.cfg', 'tox.ini'].some(f => has(d, f) && typeof d.texts[f] === 'string' && /pytest/i.test(d.texts[f]!))
   if (!definite && !configured) return []
   return [d.isRoot ? ['python', '-m', 'pytest', '-q'] : ['python', '-m', 'pytest', '-q', d.dir]]
 }
@@ -140,7 +141,7 @@ export function detectChecks(files: string[], packageJson: string | null): strin
     const names = Array.isArray(files) ? files.filter(f => typeof f === 'string') : []
     const texts: Record<string, string | null> = {}
     if (packageJson !== null) texts['package.json'] = packageJson
-    const d: DirInfo = { dir: '', names, texts, isRoot: true, pyTests: names.some(n => PY_TEST_FILE.test(n)) || names.includes('tests') }
+    const d: DirInfo = { dir: '', names, texts, isRoot: true, pyTests: names.some(n => PY_TEST_FILE.test(n)) }
     const warnings: string[] = []
     return detectIn(d, warnings).checks
   } catch {
@@ -346,8 +347,13 @@ export async function detectProjectChecks(io: ChecksIO, root: string, opts: Dete
         }
         const texts: Record<string, string | null> = {}
         for (const n of READ_NAMES) if (names.includes(n)) texts[n] = await read(`${abs(dir)}/${n}`)
+        for (const n of ['pyproject.toml', 'setup.cfg', 'tox.ini']) {
+          if (names.includes(n) && texts[n] === null) warnings.push(`${dir || '.'}/${n} couldn't be read, so pytest isn't assumed from it`)
+        }
         // An unreadable package.json is a warning, and no checks from it.
-        const info: DirInfo = { dir, names, texts, isRoot, pyTests: pyTests || (names.includes('tests') && entries.some(e => e.name === 'tests' && e.isDir)) }
+        // A tests/ folder means pytest only when it holds python test files: a Node project has one too.
+        const testsDir = (listings.get(join(dir, 'tests')) ?? []).some(e => PY_TEST_FILE.test(e.name))
+        const info: DirInfo = { dir, names, texts, isRoot, pyTests: pyTests || testsDir }
         let got: { checks: string[][]; python: boolean }
         try {
           got = detectIn(info, warnings)
