@@ -19,7 +19,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'rtl',
       description: 'Toggle RTL layout for mixed Hebrew/Arabic and English messages',
-      argumentHint: '[on|off|status]',
+      argumentHint: '[on|off|toggle|status]',
       immediate: true,
     })
     return next(e)

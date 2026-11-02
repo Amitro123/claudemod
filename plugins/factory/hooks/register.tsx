@@ -1225,7 +1225,7 @@ export const register: Register = (on, options) => {
     const r = yield* next(e)
     const u = r.usage
     if (e.agentId !== undefined && u && (await read($, run))?.agents[e.agentId]) {
-      await addTokens($, e.agentId, u.input_tokens + u.output_tokens + u.cache_creation_input_tokens)
+      await addTokens($, e.agentId, (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0))
       if (u.model) ranOn.set(e.agentId, (ranOn.get(e.agentId) ?? new Set()).add(u.model))
     }
     return r
@@ -1278,7 +1278,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const Svg = e.surface === 'terminal' ? null : $.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
     const r = await read($, run)
     if (!r) {
       return (

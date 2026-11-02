@@ -25,7 +25,8 @@ const KEEP_LINES = 3
 const KEEP_AGENTS = 24
 // An agent that has done nothing for this long is shown as stopped, so one whose turn never
 // completes (a crash, an abort the engine did not report) cannot keep the timer running.
-const STALE_MS = 10 * 60_000
+// Longer than one command may run (10 minutes), so a long check alone doesn't stop an agent's card.
+const STALE_MS = 15 * 60_000
 
 const timers: { cancel: () => void }[] = []
 
@@ -263,7 +264,8 @@ export const register: Register = on => {
     const r = yield* next(e)
     const u = r.usage
     if (e.agentId !== undefined && u) {
-      const used = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens + u.output_tokens
+      // A field the step didn't report counts as 0, never NaN.
+      const used = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0)
       await reviveIfSilent($, e.agentId)
       await patchAgent($, e.agentId, a => ({ ...a, tokens: used }))
     }
@@ -291,8 +293,10 @@ export const register: Register = on => {
     const name = (await read($, title)) || 'Tasks'
     const now = done === list.length ? 'All done' : cur ? `Now: ${cur.activeForm}` : `Next: ${list.find(t => t.status === 'pending')?.subject ?? ''}`
     const below = await next(e)
+    // A surface that draws no SVG (the terminal, or one without Svg) gets the text bar.
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
 
-    if (e.surface === 'terminal') {
+    if (!Svg) {
       const cells = Math.max(10, Math.min(40, e.props.bodyColumns - name.length - 24))
       return (
         <Box flexDirection="column">
@@ -308,7 +312,6 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const { Svg } = $.ui.resolve(e as typeof e & { surface: 'desktop' })
     return (
       <Box flexDirection="column">
         <Box flexDirection="column" paddingX={1}>
@@ -334,7 +337,7 @@ export const register: Register = on => {
     const frame = Math.floor(t / TICK_MS)
     const running = list.filter(a => a.state === 'running')
     const finished = list.filter(a => a.state !== 'running').reverse()
-    const Svg = e.surface === 'terminal' ? null : $.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg
+    const Svg = e.surface === 'terminal' ? null : ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null)
     const elapsed = (a: Agent) => mmss((a.endedAt ?? t) - a.startedAt)
     const total = list.reduce((n, a) => n + a.tokens, 0)
     const first = list.length ? Math.min(...list.map(a => a.startedAt)) : t
