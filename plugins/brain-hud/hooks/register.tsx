@@ -42,6 +42,11 @@ const PARA_ROOT = '.agent-brain/shared'
 const POLL_MS = 4_000
 // In a project with no memory yet, the poll looks this often instead: a turn's end checks too.
 const IDLE_POLL_MS = 32_000
+// Polls in a row with nothing changed before the poll slows to every QUIET_EVERY-th tick (16 seconds),
+// until a change or the person's next prompt.
+const QUIET_AFTER = 15
+const QUIET_EVERY = 4
+let quiet = 0
 const PULSE_MS = 6_000
 const FRAME_MS = 160
 const INBOX_SHOWN = 3
@@ -377,9 +382,14 @@ export const register: Register = (on, options) => {
     await readTheme($)
     await refresh($)
     let ticks = 0
+    quiet = 0
     timers.push($.clock.every(POLL_MS, async () => {
       if (!(await read($, brain)) && ++ticks % (IDLE_POLL_MS / POLL_MS)) return
-      if ((await stamp($)) !== mtimes) await refresh($)
+      if (quiet >= QUIET_AFTER && ++ticks % QUIET_EVERY) return
+      if ((await stamp($)) !== mtimes) {
+        quiet = 0
+        await refresh($)
+      } else quiet++
     }))
     return next(e)
   })
@@ -402,6 +412,8 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     // A sub-agent's turn changes neither: no need to ask on each one.
     if (e.agentId !== undefined) return next(e)
+    // The person is back: the memory may change again soon, so the poll goes back to every 4 seconds.
+    quiet = 0
     await checkFollow($)
     // A theme changed in /config mid-session reaches the graph from the next prompt on.
     await readTheme($)

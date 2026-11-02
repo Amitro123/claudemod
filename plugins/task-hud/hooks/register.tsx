@@ -173,6 +173,9 @@ export const register: Register = on => {
       await update($, lastPrompt, () => e.text)
       await update($, retitle, () => true)
     }
+    // Used once: a turn that starts with no prompt.submit before it reads as the person's, not as the
+    // previous prompt's sender.
+    isPersons = true
     const list = await read($, todos)
     if (list.length && list.every(t => t.status === 'completed')) await update($, todos, () => [])
     return next(e)

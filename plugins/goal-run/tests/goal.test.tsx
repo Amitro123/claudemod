@@ -724,8 +724,9 @@ describe('after approval: run through, or ask between tasks', () => {
     // The person's next prompt allows one more nudge.
     await $.prompt.submit({ text: 'next', wait: false, origin: { kind: 'composer' } } as never)
     await $.turn.start({ text: 'next', turnId: 't2' } as never)
-    expect((await $.classic.Stop({ stop_hook_active: true, last_assistant_message: '' } as never)).block).toBeUndefined()
-    expect((await $.classic.Stop(stop)).block).toMatch(/Go on with t2/)
+    // Another hook's block came first (stop_hook_active): goal-run's own once still stands (code review 2, R4).
+    expect((await $.classic.Stop({ stop_hook_active: true, last_assistant_message: '' } as never)).block).toMatch(/Go on with t2/)
+    expect((await $.classic.Stop(stop)).block).toBeUndefined()
   })
 
   test("another mod's prompt gets no goal reminder, and the stop after it isn't sent on", async ($, on) => {

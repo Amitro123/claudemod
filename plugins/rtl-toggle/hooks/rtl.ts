@@ -185,17 +185,28 @@ type Memo = {
   cache: Map<string, string>
   size: number
   stream: { src: string; out: string; fence: Fence }
+  // The text cached last: a longer text that starts with it is the same message, streamed further.
+  last?: string
 }
 const memos = new Map<boolean, Memo>()
+// How many texts a memo holds now, and their size: for the tests.
+export const cacheStats = (tableCells = false) => ({ entries: memos.get(tableCells)?.cache.size ?? 0, size: memos.get(tableCells)?.size ?? 0 })
 
-function remember(memo: Memo, text: string, result: string) {
-  if (text.length > CACHE_BUDGET) return
+// Each entry counts its text and its result. A streamed message's earlier, shorter text (a prefix of this
+// one) is dropped as the longer one comes in, so one message never fills the cache with its partial texts.
+function remember(memo: Memo, text: string, result: string, prefix = '') {
+  const cost = text.length + result.length
+  if (cost > CACHE_BUDGET) return
+  if (prefix && prefix !== text && memo.cache.has(prefix)) {
+    memo.size -= prefix.length + memo.cache.get(prefix)!.length
+    memo.cache.delete(prefix)
+  }
   memo.cache.set(text, result)
-  memo.size += text.length
-  for (const [k] of memo.cache) {
+  memo.size += cost
+  for (const [k, v] of memo.cache) {
     if (memo.size <= CACHE_BUDGET) break
     memo.cache.delete(k)
-    memo.size -= k.length
+    memo.size -= k.length + v.length
   }
 }
 
@@ -227,6 +238,7 @@ export function toRtl(text: string, options: RtlOptions = {}): string {
   }
   const result = head + convertLines([text.slice(cut)], fence, options).out[0]
 
-  remember(memo, text, result)
+  remember(memo, text, result, memo.last && text.startsWith(memo.last) ? memo.last : '')
+  memo.last = text
   return result
 }

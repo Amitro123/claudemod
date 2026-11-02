@@ -857,12 +857,14 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   // Running through: a turn that ends with pending tasks left is sent on once, to the next one. Claude
-  // may still stop when it is blocked or needs the person; the second stop of a turn always passes.
+  // may still stop when it is blocked or needs the person; the second stop of goal-run's own always
+  // passes. Once a turn (isNudged), not "never after a block": followups' stop check blocking first
+  // (stop_hook_active on the next Stop) doesn't cancel the nudge.
   on('classic.Stop', async ($, e, next) => {
     const r = await next(e)
     const g = await read($, goal)
     const next1 = g?.tasks.find(t => t.status === 'pending')
-    if (!isInteractive || !isOurs || isNudged || e.stop_hook_active || r.block || !g || g.status !== 'active' || g.source === FACTORY_SOURCE || paceOf(g) !== 'run' || !next1) return r
+    if (!isInteractive || !isOurs || isNudged || r.block || !g || g.status !== 'active' || g.source === FACTORY_SOURCE || paceOf(g) !== 'run' || !next1) return r
     if ((await read($, side))?.isLive) return r
     isNudged = true
     const left = g.tasks.filter(t => t.status !== 'done').length
