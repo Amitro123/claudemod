@@ -385,7 +385,7 @@ claude plugin eval . --trust-plugin --scaffold --runs 3 --max-cost-usd 5 --allow
 
 A case that needs the shell also needs `--allow-tools Bash`. The run refuses it on a machine where the shell can't be sandboxed.
 
-The wording one mod writes and another reads (followups' Start prompt and `done` result, goal-run's goal prompt and reached-goal texts, the factory plan's outcomes) lives in `shared/texts.ts`, together with its parsers. A mod can import nothing outside its folder, so followups, goal-run, brain-hud and factory each keep a generated copy in `hooks/texts.ts`. Edit `shared/texts.ts`, then run `node tools/sync-texts.mjs`. CI runs it with `--check` and fails on a stale copy.
+The wording one mod writes and another reads (followups' Start prompt and `done` result, goal-run's goal prompt and reached-goal texts, the factory plan's outcomes) lives in `shared/texts.ts`, together with its parsers. A mod can import nothing outside its folder, so followups, goal-run, brain-hud and factory each keep a generated copy in `hooks/texts.ts`. The helpers they run against the engine live beside it in `shared/runtime.ts` (copied to `hooks/runtime.ts`): the project a saved list or goal belongs to, whether another mod's command is there, and the three-way merge of two sessions' saves. Edit the file in `shared/`, then run `node tools/sync-texts.mjs`. CI runs it with `--check` and fails on a stale copy. One limit: the engine reads state only from an atom the module itself declares, so a shared helper can't take an atom; each mod keeps that part (a flag it remembers) in its own file.
 
 ## License
 
