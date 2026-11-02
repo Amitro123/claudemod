@@ -1,7 +1,7 @@
 // The factory's pure parts: what each role is told, how its answer is read, which checks run, and
 // how a run starts. The hooks module only spawns, runs and draws.
 
-import type { Check, Finding, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
+import type { Check, Extra, Finding, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
 import { FACTORY_SOURCE } from './texts'
 
 export const REVIEWERS: Reviewer[] = ['security', 'code']
@@ -15,7 +15,54 @@ export const ROLES: Record<Role, { name: string; model: string; label: string; t
   security: { name: 'security-reviewer', model: 'opus', label: 'security', tools: ['Read', 'Grep', 'Glob', 'Bash'] },
   code: { name: 'code-reviewer', model: 'sonnet', label: 'code', tools: ['Read', 'Grep', 'Glob', 'Bash'] },
   approver: { name: 'approver', model: 'opus', label: 'approver', tools: ['Read', 'Grep', 'Glob'] },
+  skeptic: { name: 'skeptic', model: 'sonnet', label: 'skeptic', tools: ['Read', 'Grep', 'Glob', 'Bash'] },
+  extra: { name: 'reviewer', model: 'sonnet', label: 'reviewer', tools: ['Read', 'Grep', 'Glob', 'Bash'] },
 }
+
+// ---------- extra reviewers ----------
+
+// What the main Claude can add for a run that needs it, beside security and code (which always run).
+// Each is the factory's generic reviewer with this lens; an agent type of the session can run one instead.
+export const LENSES: Record<string, string> = {
+  frontend: 'the user-facing side: every state a screen can be in (loading, empty, error, long text), keyboard and screen-reader access (WCAG 2.2 AA), responsive layout, and copy that matches what the code does',
+  finops: 'what the change costs to run: new paid resources or calls, per-request costs, scaling and instance settings, retention, egress, and limits that keep a mistake from becoming a bill',
+  deploy: 'whether it can ship safely: the order of migrations and code, config and secrets it now needs in each environment, a way to roll back, a flag for a risky path, and the logs or metrics to see it working',
+  performance: 'how it behaves under load: N+1 queries, missing indexes, unbounded loops or result sets, work done per request that could be done once, memory held too long',
+  api: 'its public contract: backward compatibility for existing callers, versioning, error shapes and status codes, validation at the boundary, and documentation of what changed',
+  data: 'the data it touches: migrations that are safe on a large table and can be undone, personal data (where it goes, who can read it, how long it stays), and integrity under concurrent writes',
+}
+export const MAX_EXTRAS = 3
+export const CORE_REVIEWERS = new Set(['security', 'code'])
+export const isExtra = (role: Reviewer) => !CORE_REVIEWERS.has(role)
+
+// The reviewers the main Claude asked for, as the factory runs them: a lens by its name, or one of its
+// own with a name, what it looks at and, optionally, the agent type to run. Unknown or empty ones are
+// left out, and so are any past the limit: a run never grows past three extra reviewers.
+export function extrasFrom(raw: unknown): { extras: Extra[]; ignored: string[] } {
+  const extras: Extra[] = []
+  const ignored: string[] = []
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const o = (typeof item === 'string' ? { name: item } : item ?? {}) as { name?: unknown; lens?: unknown; focus?: unknown; agent?: unknown }
+    const name = String(o.name ?? o.lens ?? '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 24)
+    const focus = String(o.focus ?? '').trim() || LENSES[name] || ''
+    const agent = String(o.agent ?? '').trim()
+    if (!name || !focus || CORE_REVIEWERS.has(name) || extras.some(e => e.name === name)) {
+      if (name) ignored.push(name)
+      continue
+    }
+    if (extras.length >= MAX_EXTRAS) {
+      ignored.push(name)
+      continue
+    }
+    extras.push({ name, focus: focus.slice(0, 400), ...(agent ? { agent } : {}) })
+  }
+  return { extras, ignored }
+}
+
+export const reviewerLabel = (role: Reviewer) => (CORE_REVIEWERS.has(role) ? ROLES[role as Role].label : role)
+// An extra reviewer runs on sonnet, or on its own agent's model.
+export const reviewerModel = (run: Pick<Run, 'models' | 'extras'>, role: Reviewer) =>
+  CORE_REVIEWERS.has(role) ? modelOf(run, role as Role) : run.extras?.find(e => e.name === role)?.agent ? 'its own' : modelOf(run, 'extra')
 
 // The roles' standing instructions, short defaults; a project's own skills can say more.
 export const ROLE_PROMPTS: Record<Role, string> = {
@@ -23,6 +70,8 @@ export const ROLE_PROMPTS: Record<Role, string> = {
   builder: `You are the builder of a software factory. You implement exactly what the spec asks, in the repository you are started in, with tests for each acceptance criterion. Keep the change focused; don't refactor beyond it. Commit your work to the current branch when you are done.`,
   security: `You are the security reviewer of a software factory. Review the change against the spec for: injection and unsafe input handling, authentication and authorization, secrets in code or logs, unsafe defaults, dependency risk, and data exposure. Report only real, specific problems.`,
   code: `You are the code reviewer of a software factory. Review the change against the spec for: correctness against each acceptance criterion, missing or weak tests, error handling, clarity, layering and design, and performance traps. Report only real, specific problems.`,
+  skeptic: `You are the skeptic of a software factory. Reviewers found problems in a change; before the builder is sent to fix them, you try to refute each one with evidence: the code at file:line, a definition, or a command's output. You change no file. A finding you can't refute stands: never refute one on opinion.`,
+  extra: `You are an extra reviewer of a software factory, added for this change. You review it through the one lens your job names, against the spec. Report only real, specific problems.`,
   approver: `You are the approver of a software factory. You decide whether a change that went through review can go to a pull request. You don't review the code again: you weigh the spec, the check results and the reviewers' verdicts and findings.`,
 }
 
@@ -243,7 +292,7 @@ export const couldNotStart = (err: unknown) => !/time(d)?\s*out(?!ms)/i.test(Str
 
 // The checks that actually ran: one whose program isn't installed here was skipped, not run.
 export const ranChecks = (run: Pick<Run, 'checks'>) => run.checks.filter(c => !c.isMissing)
-const checkWord = (c: Check) => (c.isMissing ? 'not installed, not run' : c.ok ? 'passed' : 'FAILED')
+const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' : c.isMissing ? 'not installed, not run' : c.ok ? 'passed' : 'FAILED')
 
 export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
   return [
@@ -253,6 +302,8 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
     ...(!ranChecks(run).length && run.checksNote ? [`No checks ran for this change: ${run.checksNote} Nothing was verified by running it, so weigh the tests you read accordingly.`] : []),
     `Start from the diff and the spec's "Code map". Read a changed file whole when it is short (under about 400 lines), else around the changed lines; search before reading anything else.`,
     'Check every API field, input or type the change, or an acceptance criterion, relies on against its real definition (search for it and read the definition), not against the spec\'s wording: a criterion built on a field that doesn\'t exist is a blocker, and a test that only feeds a made-up fixture doesn\'t prove it.',
+    ...(run.route?.focus.length ? ['What this diff calls for (from its files and lines, checked by the factory): look at each of these closely.', ...run.route.focus.map(f => `- ${f}`)] : []),
+    ...(isExtra(role) ? [`You are the ${role} reviewer: look at ${run.extras?.find(e => e.name === role)?.focus ?? role}.`] : []),
     `Look only at what a ${role} review covers. Don't change any file.`,
     'End your answer with exactly:',
     'VERDICT: PASS or VERDICT: CHANGES',
@@ -262,12 +313,26 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
   ].filter(Boolean).join('\n')
 }
 
+// To the skeptic: the round's blocker and major findings, numbered, and the answer format it ends with.
+export function skepticPrompt(run: Run, findings: { role: Reviewer; finding: Finding }[]): string {
+  return [
+    `A change for: ${run.feature}`,
+    `The spec is ${run.specFile}. The change is on branch ${run.branch}, since ${run.base.slice(0, 12)} (git diff ${run.base.slice(0, 12)}..HEAD), in the repository you are started in.`,
+    'The reviewers asked for changes over these findings. For each, try to refute it: read the code it names, the definitions it relies on, run a read-only command if that settles it. Refute only with evidence.',
+    ...findings.map((x, i) => `F${i + 1}. ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}`),
+    'End your answer with one line per finding, exactly:',
+    'F<n>: STANDS | REFUTED <evidence: file:line or command output> | DOWNGRADED <why it is only minor, with evidence>',
+  ].join('\n')
+}
+
 // `stat`: git's list of the files the change touched, so the approver can hold them against the spec.
 export function approvePrompt(run: Run, stat = ''): string {
   const reviews = run.reviews.map(r => `- ${r.role}: ${r.state === 'pass' ? 'PASS' : 'CHANGES'}${r.findings.length ? `\n${r.findings.map(f => `  - [${f.severity}] ${f.where} ${f.text}`).join('\n')}` : ''}`)
   return [
     `Decide on the change for: ${run.feature}`,
     `The spec is ${run.specFile}; the change is on branch ${run.branch}.`,
+    ...(run.route?.focus.length ? ['What this diff called for:', ...run.route.focus.map(f => `- ${f}`)] : []),
+    ...(run.refuted?.length ? ['Findings a skeptic refuted or downgraded with evidence (not fixed, on purpose):', ...run.refuted.map(x => `- ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}: ${x.ruling}, ${x.why}`)] : []),
     `Checks: ${ranChecks(run).length ? run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ') : `NONE RAN. ${run.checksNote || 'none configured'}`}.`,
     ...(ranChecks(run).length && run.checksNote ? [`Check notes: ${run.checksNote}`] : []),
     ...(stat ? [`Files the change touched:\n${stat}`, "Hold them against the spec's Design and Code map: a file, dependency or public interface the spec doesn't name is scope it didn't ask for. Name it in your reason, and ESCALATE unless it is plainly needed to meet a criterion."] : []),
@@ -302,7 +367,7 @@ export function prPrompt(run: Run, reason: string): string {
   return [
     `The factory run "${run.feature}" is approved${reason ? ` (${reason})` : ''}.`,
     `Push branch ${run.branch} (its worktree is ${run.worktree}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}.`,
-    `Title it after the feature. In the body: what it does (from ${run.specFile}), the checks (${run.checks.map(c => `${c.cmd} ${c.isMissing ? '– not installed' : c.ok ? '✓' : '✗'}`).join(', ') || 'none ran'}), and ${run.round} review round${run.round === 1 ? '' : 's'}: ${run.reviews.map(r => `${r.role} ${r.state === 'pass' ? 'PASS' : 'CHANGES'}`).join(', ')}.`,
+    `Title it after the feature. In the body: what it does (from ${run.specFile}), the checks (${run.checks.map(c => `${c.cmd} ${c.isSkipped ? '– skipped' : c.isMissing ? '– not installed' : c.ok ? '✓' : '✗'}`).join(', ') || 'none ran'}), and ${run.round} review round${run.round === 1 ? '' : 's'}: ${run.reviews.map(r => `${r.role} ${r.state === 'pass' ? 'PASS' : 'CHANGES'}`).join(', ')}.`,
     ...(minor.length ? ['List these minor findings under "Not fixed":', ...minor] : []),
     ...(run.followupId ? [`Once the PR is open, call mcp__followups__done with id "${run.followupId}" and the PR's link as the note: the run came from that to-do item.`] : []),
     ...(run.skipped?.length ? [`The factory left these new files out of its commits (dependencies, build output or credentials); don't add them: ${run.skipped.join(', ')}.`] : []),
@@ -370,6 +435,8 @@ export function untrackedOf(porcelainZ: string): string[] {
   return out
 }
 
+export const reviewOf = (role: Reviewer): Review => ({ role, state: 'wait', findings: [], tokens: 0, round: 0, agentId: null })
+
 export function newRun(feature: string, at: number, base: string, root: string, slug = slugOf(feature)): Run {
   const step = (): { state: StepState; tokens: number } => ({ state: 'wait', tokens: 0 })
   return {
@@ -387,7 +454,7 @@ export function newRun(feature: string, at: number, base: string, root: string, 
     tasks: [],
     steps: { spec: { state: 'run', tokens: 0 }, builder: step(), checks: step(), approver: step() },
     checks: [],
-    reviews: REVIEWERS.map(role => ({ role, state: 'wait' as StepState, findings: [], tokens: 0, round: 0, agentId: null })),
+    reviews: REVIEWERS.map(role => reviewOf(role)),
     agents: {},
     note: 'writing the spec',
     blocked: null,
@@ -482,7 +549,7 @@ export function statusReport(run: Run, now: number, recordFiles: string[] = []):
     ...(run.activity ? [`Last agent action: ${run.activity.role} ${run.activity.text}, ${mmss(now - run.activity.at)} ago (${run.activity.calls} tool calls this step).`] : []),
     `Steps: ${(Object.keys(run.steps) as (keyof Run['steps'])[]).map(k => `${k} ${run.steps[k].state}`).join(', ')}; reviews round ${run.round}: ${run.reviews.map(x => `${x.role} ${x.state}`).join(', ')}.`,
     ...(run.stat ? [`Changed: ${run.stat}`] : []),
-    ...(run.checks.length ? ['Checks:', ...run.checks.map(c => `- ${c.isMissing ? 'not installed' : c.isTimedOut ? 'TIMED OUT' : c.ok ? 'passed' : 'FAILED'}: ${c.cmd}${c.tail ? `\n${c.tail.split('\n').slice(-10).map(l => `    ${l}`).join('\n')}` : ''}`)] : []),
+    ...(run.checks.length ? ['Checks:', ...run.checks.map(c => `- ${c.isSkipped ? 'skipped' : c.isMissing ? 'not installed' : c.isTimedOut ? 'TIMED OUT' : c.ok ? 'passed' : 'FAILED'}: ${c.cmd}${c.tail ? `\n${c.tail.split('\n').slice(-10).map(l => `    ${l}`).join('\n')}` : ''}`)] : []),
     ...(run.checksNote ? [`Checks note: ${run.checksNote}`] : []),
     ...(findings.length ? ['Findings this round:', ...findings.flatMap(x => x.findings.map(f => `- ${x.role} [${f.severity}] ${f.where} ${f.text}`))] : []),
     ...(waitsOnYou(run) ? [`Waits on the person: ${run.note}`] : []),
@@ -490,7 +557,7 @@ export function statusReport(run: Run, now: number, recordFiles: string[] = []):
   ].join('\n')
 }
 
-export const tokensOf = (run: Run) => Object.values(run.steps).reduce((n, s) => n + s.tokens, 0) + run.reviews.reduce((n, r) => n + r.tokens, 0)
+export const tokensOf = (run: Run) => Object.values(run.steps).reduce((n, s) => n + s.tokens, 0) + run.reviews.reduce((n, r) => n + r.tokens, 0) + (run.skepticTokens ?? 0)
 export const tok = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`)
 
 // The findings the builder must still address: every finding of the reviewers that asked for changes.

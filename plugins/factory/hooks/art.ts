@@ -2,7 +2,7 @@
 // steps as text lines for the terminal.
 
 import type { Run, StepState } from '../types'
-import { modelOf, ROLES, tok } from './flow'
+import { modelOf, reviewerLabel, reviewerModel, ROLES, tok } from './flow'
 
 const COLOR: Record<StepState, string> = { pass: '#16a34a', changes: '#d97706', run: '#2563eb', wait: '#94a3b8', skip: '#cbd5e1', fail: '#dc2626' }
 const MARK: Record<StepState, string> = { pass: '✓', changes: '!', run: '◐', wait: '◌', skip: '–', fail: '✕' }
@@ -76,9 +76,10 @@ export function diagramSvg(run: Run, frame: number, theme: Theme = 'light'): str
   s += box(bx, 192, bw, 44, run.checkRound > 1 ? `checks · pass ${run.checkRound}` : 'checks', 'no model', run.steps.checks.state, checksLine(run))
 
   // The reviewers, side by side, all waited for.
-  const rw = 180
-  const gap = 20
+  // Two reviewers, or up to five with the extras the main Claude added: the boxes narrow to fit.
   const n = run.reviews.length
+  const gap = n > 3 ? 10 : 20
+  const rw = Math.min(180, Math.floor((W - 60 - (n - 1) * gap) / n))
   const x0 = cx - (n * rw + (n - 1) * gap) / 2
   s += `<line x1="${cx}" y1="236" x2="${cx}" y2="256" stroke="${P.line}" stroke-width="1.6"/>`
   s += `<line x1="${x0 + rw / 2}" y1="256" x2="${x0 + (n - 1) * (rw + gap) + rw / 2}" y2="256" stroke="${P.line}" stroke-width="1.6"/>`
@@ -86,7 +87,7 @@ export function diagramSvg(run: Run, frame: number, theme: Theme = 'light'): str
     const x = x0 + i * (rw + gap)
     s += arrow(256, 272, x + rw / 2)
     const meta = r.state === 'pass' ? `PASS${r.tokens ? ` · ${tok(r.tokens)}` : ''}` : r.state === 'changes' ? `${r.findings.length} finding${r.findings.length === 1 ? '' : 's'}${r.tokens ? ` · ${tok(r.tokens)}` : ''}` : r.state === 'run' ? 'reviewing' : ''
-    s += box(x, 272, rw, 48, ROLES[r.role].label, modelOf(run, r.role), r.state, meta)
+    s += box(x, 272, rw, 48, reviewerLabel(r.role), reviewerModel(run, r.role), r.state, meta)
     s += `<line x1="${x + rw / 2}" y1="320" x2="${x + rw / 2}" y2="338" stroke="${P.line}" stroke-width="1.6"/>`
   })
   s += `<line x1="${x0 + rw / 2}" y1="338" x2="${x0 + (n - 1) * (rw + gap) + rw / 2}" y2="338" stroke="${P.line}" stroke-width="1.6"/>`
@@ -119,7 +120,7 @@ export function pipelineLines(run: Run): string[] {
     line(st.planState, 'plan approval (you)'),
     line(run.steps.builder.state, `builder${buildRound(run) > 1 ? ` · round ${buildRound(run)}` : ''} (${modelOf(run, 'builder')})`),
     line(run.steps.checks.state, 'checks', checksLine(run)),
-    ...run.reviews.map(r => `  ${line(r.state, `${ROLES[r.role].label} (${modelOf(run, r.role)})`, r.state === 'changes' ? `${r.findings.length} findings` : r.state === 'pass' ? 'PASS' : '')}`),
+    ...run.reviews.map(r => `  ${line(r.state, `${reviewerLabel(r.role)} (${reviewerModel(run, r.role)})`, r.state === 'changes' ? `${r.findings.length} findings` : r.state === 'pass' ? 'PASS' : '')}`),
     line(run.steps.approver.state, `approver (${modelOf(run, 'approver')})`),
     line(st.pr !== 'wait' ? st.pr : st.human === 'changes' ? 'changes' : 'wait', st.pr === 'pass' ? 'open PR' : st.pr === 'run' ? 'open PR (you)' : st.human === 'changes' ? 'needs-human' : 'PR or needs-human'),
   ]
