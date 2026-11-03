@@ -27,14 +27,16 @@ export function states(run: Run) {
   const reviewing = run.reviews.filter(r => r.round === run.round && r.round > 0)
   const inCount = reviewing.filter(r => r.state === 'pass' || r.state === 'changes' || r.state === 'fail').length
   const waitState: StepState = !reviewing.length ? 'wait' : inCount < reviewing.length ? 'run' : reviewing.some(r => r.state !== 'pass') ? 'changes' : 'pass'
-  const opened = run.phase === 'done' && run.steps.approver.state === 'pass'
+  // Opened only once the main Claude reported the PR's link; a run from before that state kept none.
+  const done = run.phase === 'done' && run.steps.approver.state === 'pass'
+  const opened = done && (!run.pr || run.pr.state === 'opened')
   return {
     planState,
     waitState,
     inCount,
     outOf: reviewing.length,
     // Ready: approved, the PR waits for the person's press.
-    pr: (opened ? 'pass' : run.phase === 'ready' ? 'run' : 'wait') as StepState,
+    pr: (opened ? 'pass' : run.phase === 'ready' || done ? 'run' : 'wait') as StepState,
     human: (run.phase === 'needs-human' ? 'changes' : 'wait') as StepState,
   }
 }
@@ -105,10 +107,20 @@ export function diagramSvg(run: Run, frame: number, theme: Theme = 'light'): str
   s += box(bx, 414, bw, 44, ROLES.approver.label, modelOf(run, 'approver'), run.steps.approver.state, run.blocked?.on === 'escalate' || run.phase === 'ready' || run.phase === 'done' ? run.note : '')
   s += `<line x1="${cx - 70}" y1="458" x2="${cx - 70}" y2="486" stroke="${P.line}" stroke-dasharray="4 3"/><line x1="${cx + 70}" y1="458" x2="${cx + 70}" y2="486" stroke="${P.line}" stroke-dasharray="4 3"/>`
   s += `<text x="${cx - 118}" y="480" font-size="9.5" fill="${P.dim}" text-anchor="middle">APPROVE</text><text x="${cx + 118}" y="480" font-size="9.5" fill="${P.dim}" text-anchor="middle">ESCALATE</text>`
-  s += box(cx - 190, 486, 160, 40, 'open PR', '', st.pr)
+  s += box(cx - 190, 486, 160, 40, prLabel(run, st.pr), '', st.pr)
   s += box(cx + 30, 486, 160, 40, 'needs-human', '', st.human)
   s += `<text x="${cx}" y="546" font-size="10" fill="${P.dim}" text-anchor="middle">${esc(short(`branch ${run.branch} · ${run.worktree.split(/[\\/]/).slice(-2).join('/')}`, 96))}</text>`
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><rect width="${W}" height="${H}" rx="10" fill="${P.bg}"/>${s}</svg>`
+}
+
+// The PR's step in words: waiting on the person's Open PR, requested of Claude, handed to the person
+// as commands, or opened.
+export function prLabel(run: Run, state: StepState): string {
+  if (state === 'pass') return run.pr?.url ? `PR opened · ${run.pr.url}` : 'open PR'
+  if (run.phase === 'ready') return 'open PR (you)'
+  if (run.pr?.state === 'handed') return 'PR: commands handed to you'
+  if (run.pr?.state === 'requested') return 'PR requested (Claude)'
+  return 'open PR'
 }
 
 // The terminal's pipeline: one line a step.
@@ -122,6 +134,6 @@ export function pipelineLines(run: Run): string[] {
     line(run.steps.checks.state, 'checks', checksLine(run)),
     ...run.reviews.map(r => `  ${line(r.state, `${reviewerLabel(r.role)} (${reviewerModel(run, r.role)})`, r.state === 'changes' ? `${r.findings.length} findings` : r.state === 'pass' ? 'PASS' : '')}`),
     line(run.steps.approver.state, `approver (${modelOf(run, 'approver')})`),
-    line(st.pr !== 'wait' ? st.pr : st.human === 'changes' ? 'changes' : 'wait', st.pr === 'pass' ? 'open PR' : st.pr === 'run' ? 'open PR (you)' : st.human === 'changes' ? 'needs-human' : 'PR or needs-human'),
+    line(st.pr !== 'wait' ? st.pr : st.human === 'changes' ? 'changes' : 'wait', st.pr !== 'wait' ? prLabel(run, st.pr) : st.human === 'changes' ? 'needs-human' : 'PR or needs-human'),
   ]
 }

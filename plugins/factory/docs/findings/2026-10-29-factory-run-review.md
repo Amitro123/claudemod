@@ -4,6 +4,10 @@ Review of one `/factory` run (sample size: 1 run) against the factory source. La
 
 Paths: `factory/` = `plugins/factory/` in this repo (HEAD 962477a, plugin v0.12.0). `target/` = the repository the run worked on (a private plugin repository with a model-router mod; its local path is left out). Transcripts = the run's five subagent transcripts, one per role, kept locally.
 
+## Status
+
+Addressed in factory 0.16.0: L1 (reviewers and the builder read the repository's CLAUDE.md; the approver escalates a broken rule), L2 (the builder ends with a `TESTS:` line; reviewers and the approver see it with its summary; reported failures turn an APPROVE into an escalation), L3 (the PR is *requested* until the main Claude reports its link with `pr-opened`; a feature that says not to push gets the commands instead), L9 (absolute spec and worktree paths in every prompt, `git -C <worktree>`, the main checkout named as off limits), L10 (reviewers end with `NOT CHECKED:`, which reaches the approver and the PR body). L9 is a prompt-level fix: whether the harness honours the spawn's `cwd` is still unverified. Open: L4-L8, L11.
+
 ## Summary
 
 The run finished with spec, build, two reviews and APPROVE, and produced three outputs: a one-line `marketplace.json` change committed on the factory branch (24b8450), a regenerated diff file outside the repo (byte-identical to `git diff 5af36be~1 5af36be`, VERIFIED with `cmp`), and a test-run report. No PR exists and nothing was pushed.

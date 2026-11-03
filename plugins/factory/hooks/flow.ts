@@ -144,21 +144,71 @@ function marker(answer: string, key: string, options: string, safe: string): { v
   return { value: [...found][0], mixed: false }
 }
 
+const FINDING = /^\s*[-*]\s*\[(blocker|major|minor)\]\s+(\S+)\s+[—–-]?\s*(.+)$/i
+const isNone = (t: string) => /^(none|nothing|n\/a|-)?\.?$/i.test(t.trim())
+
+// The reviewer's own words for what the change must do: its UNDERSTOOD line, the last one.
+export function parseUnderstood(answer: string): string | undefined {
+  const all = [...answer.matchAll(/^[\s*_>-]*UNDERSTOOD:\**\s*(.+)$/gim)].map(m => m[1]!.trim()).filter(t => t && !isNone(t) && !/^<.*>$/.test(t))
+  return all.at(-1)?.slice(0, 400)
+}
+
+// What the reviewer says it did not verify: its NOT CHECKED: line and the list under it. None given:
+// undefined (an older format, or a reviewer that skipped it); "NOT CHECKED: none": [].
+export function parseNotChecked(answer: string): string[] | undefined {
+  const lines = answer.split('\n')
+  const at = lines.map(l => /^[\s*_>-]*NOT CHECKED:\**\s*(.*)$/i.exec(l)).reduce((n, m, i) => (m ? i : n), -1)
+  if (at < 0) return undefined
+  const out: string[] = []
+  const first = /NOT CHECKED:\**\s*(.*)$/i.exec(lines[at]!)![1]!.trim()
+  if (first && !isNone(first)) out.push(first)
+  for (const raw of lines.slice(at + 1)) {
+    if (!raw.trim()) {
+      if (out.length) break
+      continue
+    }
+    const m = /^\s*[-*]\s+(.+)$/.exec(raw)
+    if (!m || FINDING.test(raw)) break
+    if (!isNone(m[1]!) && !/^<.*>$/.test(m[1]!.trim())) out.push(m[1]!.trim().slice(0, 300))
+  }
+  return out.slice(0, 12)
+}
+
 // A reviewer ends with:  VERDICT: PASS | CHANGES  and  FINDINGS:  "- [major] path:line what and why".
 // No verdict, or both, reads as CHANGES, so a confused reviewer can't wave a change through.
-export function parseVerdict(answer: string): { state: 'pass' | 'changes'; findings: Finding[] } {
+export function parseVerdict(answer: string): { state: 'pass' | 'changes'; findings: Finding[]; understood?: string; notChecked?: string[] } {
   const verdict = marker(answer, 'VERDICT', 'PASS|CHANGES', 'CHANGES')
   const findings: Finding[] = []
   for (const raw of answer.split('\n')) {
-    const m = /^\s*[-*]\s*\[(blocker|major|minor)\]\s+(\S+)\s+[—–-]?\s*(.+)$/i.exec(raw)
+    const m = FINDING.exec(raw)
     if (m) findings.push({ severity: m[1]!.toLowerCase() as Severity, where: m[2]!, text: m[3]!.trim() })
   }
-  if (!verdict.value) return { state: 'changes', findings: [{ severity: 'major', where: '-', text: 'The reviewer gave no VERDICT line.' }, ...findings] }
-  if (verdict.mixed) return { state: 'changes', findings: [{ severity: 'major', where: '-', text: 'The reviewer gave both VERDICT: PASS and VERDICT: CHANGES.' }, ...findings] }
+  const understood = parseUnderstood(answer)
+  const notChecked = parseNotChecked(answer)
+  const said = { ...(understood ? { understood } : {}), ...(notChecked ? { notChecked } : {}) }
+  if (!verdict.value) return { state: 'changes', findings: [{ severity: 'major', where: '-', text: 'The reviewer gave no VERDICT line.' }, ...findings], ...said }
+  if (verdict.mixed) return { state: 'changes', findings: [{ severity: 'major', where: '-', text: 'The reviewer gave both VERDICT: PASS and VERDICT: CHANGES.' }, ...findings], ...said }
   // A PASS that still lists a blocker isn't a pass.
   const state = verdict.value === 'PASS' && !findings.some(f => f.severity === 'blocker') ? 'pass' : 'changes'
-  return { state, findings }
+  return { state, findings, ...said }
 }
+
+// The builder's own test run, from its closing TESTS: line (the last one). Failing: a count of failures
+// above zero, or, with no count, a word of failure that isn't "no failures". None given: undefined.
+export function parseBuilderTests(answer: string): { text: string; failing: boolean } | undefined {
+  const text = [...answer.matchAll(/^[\s*_>-]*TESTS:\**\s*(.+)$/gim)].map(m => m[1]!.trim()).filter(t => !/^<.*>$/.test(t)).at(-1)
+  if (!text) return undefined
+  const counts = [...text.matchAll(/(\d+)\s*(?:tests?\s+)?(?:failed|failing|failures?|fail)\b/gi)].map(m => Number(m[1]))
+  const failing = counts.length ? counts.some(n => n > 0) : /\bfail/i.test(text) && !/\b(no|none|0|zero)\s+(?:tests?\s+)?fail/i.test(text)
+  return { text: text.slice(0, 300), failing }
+}
+
+// The builder's closing summary, without its TESTS: line (that one is read on its own).
+export const summaryOf = (answer: string) => lastLines(answer.split('\n').filter(l => !/^[\s*_>-]*TESTS:/i.test(l)).join('\n'), 2)
+
+// The feature says not to push or not to open the PR: the factory hands the person the commands instead.
+export const forbidsPush = (feature: string) =>
+  /\b(do\s*n[o']?t|never|without|no)\s+(git\s+)?push(ing)?\b(?!\s*(notification|message|alert))|\b(do\s*n[o']?t|never|without)\s+(open(ing)?|creat(e|ing))\s+(a\s+|the\s+)?(pr|pull\s+request)\b|(אל|לא|בלי)\s+ל?(תדחוף|לדחוף|דחיפה|push)/i.test(feature)
 
 // The approver ends with:  DECISION: APPROVE | ESCALATE  and  REASON: one line. No decision at all is
 // null (it decided nothing: the run waits for a Retry); both is an escalation.
@@ -216,12 +266,33 @@ export function slugOf(feature: string): string {
   return `${latin || 'feature'}-${h.toString(36).padStart(7, '0').slice(-7)}`
 }
 
+// Where each agent works, by absolute path (L9): a feature that names the main checkout's paths once
+// drew the agents out of the worktree, and the spec landed in the person's checkout.
+export const specPathOf = (run: Pick<Run, 'worktree' | 'specFile'>) => (run.worktree ? `${run.worktree}/${run.specFile}` : run.specFile)
+export const whereLine = (run: Pick<Run, 'worktree' | 'slug'>) =>
+  !run.worktree ? '' : `Work only in the worktree ${run.worktree}, your working directory: read and edit files there and run git there (git -C ${run.worktree} ...). The main checkout ${rootOf(run)} is the person's: never cd into it or change anything in it, even where the feature names a path under it; use the same path under the worktree.`
+// The repository's own rules bind the change (L1): a generated file edited by hand fails its CI.
+export const RULES_LINE =
+  "Read the repository's own rules first: CLAUDE.md at the worktree's root (AGENTS.md and CONTRIBUTING.md too, if there) and any CLAUDE.md in a folder the change touches. A change that breaks one (a file it says is generated, edited by hand; a check it says CI runs, that would now fail) is a blocker. Run that read-only check (a --check, a lint) when it settles it."
+
+// What the builder said of its own work: its summary and its test run, for the reviewers and the approver (L2).
+export function builderSaid(run: Pick<Run, 'summary' | 'builderTests'>): string[] {
+  if (!run.summary && !run.builderTests) return []
+  return [
+    ...(run.summary ? [`The builder's summary: ${run.summary}`] : []),
+    run.builderTests
+      ? `The builder's own test run: ${run.builderTests.text}${run.builderTests.failing ? ' (it reports failures: find out whether the change caused them)' : ''}`
+      : "The builder didn't say whether it ran the tests.",
+  ]
+}
+
 export function specPrompt(run: Run, feedback = ''): string {
   return [
     `Feature: ${run.feature}`,
     ...(feedback ? [`The person asked for changes to your earlier spec: ${feedback}`, 'Revise the spec file and the tasks.'] : []),
-    `Write the spec to ${run.specFile} (create the folder if needed).`,
-    `End the spec file with a "## Code map" section, for the builder and reviewers to start from instead of searching again: each file the change touches or depends on, with the functions, types and line ranges that matter (path:start-end) and a few words on each; the signatures of the types it uses from large files (type definitions, generated code), so nobody reads those whole; and the commands that test the change. In it, list every copy of the code the change touches (the same logic in another module, a bundled and a standalone version, generated output) and mark each in or out of scope.`,
+    ...[whereLine(run)].filter(Boolean),
+    `Write the spec to ${specPathOf(run)} (create the folder if needed).`,
+    `End the spec file with a "## Code map" section, for the builder and reviewers to start from instead of searching again: each file the change touches or depends on, with the functions, types and line ranges that matter (path:start-end) and a few words on each; the signatures of the types it uses from large files (type definitions, generated code), so nobody reads those whole; and the commands that test the change. For each file the change will create, change or delete, one line on why it must. In it, list every copy of the code the change touches (the same logic in another module, a bundled and a standalone version, generated output) and mark each in or out of scope.`,
     'Then judge the size of the feature, on a line of its own:',
     'SIZE: small, medium or large',
     'small: a local change in one or two files. medium: a few files in one area, the design clear. large: it spans several modules, or needs design decisions (architecture, data model or migrations, security, concurrency), or the request leaves real questions open. The builder runs on a stronger model for a large one.',
@@ -233,10 +304,16 @@ export function specPrompt(run: Run, feedback = ''): string {
   ].join('\n')
 }
 
+// How the builder ends: what it changed, then its own test run on a line the factory reads.
+export const BUILDER_END = [
+  'End with a two-line summary of what you changed, then one line with the tests you ran and their result:',
+  'TESTS: <command> -> <N passed, M failed>   (or: TESTS: none run, and why)',
+]
+
 // What a builder that stopped mid-job is told when it's sent on: it keeps its own context, so only
 // to pick up where it was, after checking what it already left in the worktree.
 export const resumePrompt = (why: string) =>
-  `You stopped before finishing${why ? ` (${why})` : ''}. Carry on from where you stopped: check \`git status\` and \`git log\` in this worktree for what you already did, and don't redo it. Commit when done, and end with the two-line summary of what you changed.`
+  `You stopped before finishing${why ? ` (${why})` : ''}. Carry on from where you stopped: check \`git status\` and \`git log\` in this worktree for what you already did, and don't redo it. Commit when done, and end as your job said: ${BUILDER_END.join(' ')}`
 
 // A new builder on a worktree that already has work in it (the one before stopped and couldn't be
 // sent on): what is there, from git, so it starts from it instead of reading its way back.
@@ -261,10 +338,12 @@ export function buildPrompt(run: Run, findings: Finding[], failed: Check[], { ag
   // In the session goal, goal-run's ids: it numbers the tasks in its own order, not the spec's.
   const tasks = run.gate === 'goal-run' && run.goalTasks?.length ? run.goalTasks.map(t => `- ${t.id}: ${t.title}`) : run.tasks.map((t, i) => `- t${i + 1}: ${t.title}`)
   const head = again
-    ? [`Another round on the change you built for: ${titleOf(run.feature, 200)}`, `Same branch ${run.branch} and worktree. Fix what follows, keep the rest as it is, and commit.`]
+    ? [`Another round on the change you built for: ${titleOf(run.feature, 200)}`, `Same branch ${run.branch} and worktree (${run.worktree}). Fix what follows, keep the rest as it is, and commit.`]
     : [
-        `Implement the spec in ${run.specFile} for: ${run.feature}`,
+        `Implement the spec in ${specPathOf(run)} for: ${run.feature}`,
         `You are on branch ${run.branch}, in its own worktree. Commit your work to this branch when done.`,
+        whereLine(run),
+        "Follow the repository's CLAUDE.md (read it first): its rules on generated files and the commands it says to run before a commit.",
         `For each of the spec's Open questions, say in your closing summary how you settled it.`,
         `Start from the spec's "Code map": read the files it lists by the ranges it gives. Search (Grep) before reading anything it doesn't list, and never read a large file (type definitions, generated code, lockfiles) whole.`,
         // Marked in goal-run only when its plan is the session goal: when goal-run kept the person's own
@@ -282,7 +361,7 @@ export function buildPrompt(run: Run, findings: Finding[], failed: Check[], { ag
       ? ['', `Review round ${run.round} asked for changes. Fix each blocker and major finding; fix a minor one only when it's cheap:`, ...findings.map(f => `- [${f.severity}] ${f.where} ${f.text}`)]
       : []),
     '',
-    'End with a two-line summary of what you changed.',
+    ...BUILDER_END,
   ].join('\n')
 }
 
@@ -297,19 +376,26 @@ const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' 
 export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
   return [
     `Review the change for: ${run.feature}`,
-    `The spec is ${run.specFile}. The change is the commits on branch ${run.branch} since ${run.base.slice(0, 12)}, in the repository you are started in (git diff ${run.base.slice(0, 12)}..HEAD): exactly what will be pushed.`,
+    `The spec is ${specPathOf(run)}. The change is the commits on branch ${run.branch} since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD): exactly what will be pushed.`,
+    whereLine(run),
     stat ? `Files changed:\n${stat}` : '',
+    ...builderSaid(run),
     ...(!ranChecks(run).length && run.checksNote ? [`No checks ran for this change: ${run.checksNote} Nothing was verified by running it, so weigh the tests you read accordingly.`] : []),
     `Start from the diff and the spec's "Code map". Read a changed file whole when it is short (under about 400 lines), else around the changed lines; search before reading anything else.`,
     'Check every API field, input or type the change, or an acceptance criterion, relies on against its real definition (search for it and read the definition), not against the spec\'s wording: a criterion built on a field that doesn\'t exist is a blocker, and a test that only feeds a made-up fixture doesn\'t prove it.',
     ...(run.route?.focus.length ? ['What this diff calls for (from its files and lines, checked by the factory): look at each of these closely.', ...run.route.focus.map(f => `- ${f}`)] : []),
     ...(isExtra(role) ? [`You are the ${role} reviewer: look at ${run.extras?.find(e => e.name === role)?.focus ?? role}.`] : []),
+    RULES_LINE,
     `Look only at what a ${role} review covers. Don't change any file.`,
+    'Begin your answer with one line, before anything else:',
+    'UNDERSTOOD: <what the change must do, in one or two sentences of your own, from the spec>',
     'End your answer with exactly:',
     'VERDICT: PASS or VERDICT: CHANGES',
     'FINDINGS:',
     '- [blocker|major|minor] <path:line> <what is wrong and why>',
-    'A blocker or major finding means CHANGES. Write "FINDINGS: none" when there are none.',
+    'NOT CHECKED:',
+    '- <an acceptance criterion or part of the change in your area that you did not verify, and why>',
+    'A blocker or major finding means CHANGES. Write "FINDINGS: none" when there are none, and "NOT CHECKED: none" only when you verified everything in your area.',
   ].filter(Boolean).join('\n')
 }
 
@@ -317,7 +403,8 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
 export function skepticPrompt(run: Run, findings: { role: Reviewer; finding: Finding }[]): string {
   return [
     `A change for: ${run.feature}`,
-    `The spec is ${run.specFile}. The change is on branch ${run.branch}, since ${run.base.slice(0, 12)} (git diff ${run.base.slice(0, 12)}..HEAD), in the repository you are started in.`,
+    `The spec is ${specPathOf(run)}. The change is on branch ${run.branch}, since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD).`,
+    whereLine(run),
     'The reviewers asked for changes over these findings. For each, try to refute it: read the code it names, the definitions it relies on, run a read-only command if that settles it. Refute only with evidence.',
     ...findings.map((x, i) => `F${i + 1}. ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}`),
     'End your answer with one line per finding, exactly:',
@@ -327,19 +414,30 @@ export function skepticPrompt(run: Run, findings: { role: Reviewer; finding: Fin
 
 // `stat`: git's list of the files the change touched, so the approver can hold them against the spec.
 export function approvePrompt(run: Run, stat = ''): string {
-  const reviews = run.reviews.map(r => `- ${r.role}: ${r.state === 'pass' ? 'PASS' : 'CHANGES'}${r.findings.length ? `\n${r.findings.map(f => `  - [${f.severity}] ${f.where} ${f.text}`).join('\n')}` : ''}`)
+  const reviews = run.reviews.map(r =>
+    [
+      `- ${r.role}: ${r.state === 'pass' ? 'PASS' : 'CHANGES'}`,
+      ...(r.understood ? [`  understood: ${r.understood}`] : []),
+      ...r.findings.map(f => `  - [${f.severity}] ${f.where} ${f.text}`),
+      `  not checked: ${r.notChecked === undefined ? 'not said' : r.notChecked.length ? r.notChecked.join('; ') : 'none'}`,
+    ].join('\n'),
+  )
   return [
     `Decide on the change for: ${run.feature}`,
-    `The spec is ${run.specFile}; the change is on branch ${run.branch}.`,
+    `The spec is ${specPathOf(run)}; the change is on branch ${run.branch}, in the worktree ${run.worktree}.`,
+    whereLine(run),
+    ...builderSaid(run),
     ...(run.route?.focus.length ? ['What this diff called for:', ...run.route.focus.map(f => `- ${f}`)] : []),
     ...(run.refuted?.length ? ['Findings a skeptic refuted or downgraded with evidence (not fixed, on purpose):', ...run.refuted.map(x => `- ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}: ${x.ruling}, ${x.why}`)] : []),
     `Checks: ${ranChecks(run).length ? run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ') : `NONE RAN. ${run.checksNote || 'none configured'}`}.`,
     ...(ranChecks(run).length && run.checksNote ? [`Check notes: ${run.checksNote}`] : []),
     ...(stat ? [`Files the change touched:\n${stat}`, "Hold them against the spec's Design and Code map: a file, dependency or public interface the spec doesn't name is scope it didn't ask for. Name it in your reason, and ESCALATE unless it is plainly needed to meet a criterion."] : []),
     "Read the spec's Open questions: one the change settled by guessing, rather than the way the spec or the builder's summary says, is the person's to decide: ESCALATE.",
-    `Review rounds: ${run.round}. The last verdicts:`,
+    "Read the repository's CLAUDE.md: a change to files it says are generated, or one that skips a check it says CI runs, is the person's to decide: ESCALATE.",
+    `Review rounds: ${run.round}. The last verdicts, each with what the reviewer understood the change to be and what it says it did not check:`,
     ...reviews,
-    'APPROVE when every acceptance criterion is met and no blocker or major finding is left; otherwise ESCALATE to the person.',
+    "A reviewer whose understanding misses the spec's goal reviewed something else: ESCALATE. An acceptance criterion that no reviewer checked and no check ran for is unverified: ESCALATE, naming it. The builder reporting failing tests: ESCALATE, unless a check above ran those tests and passed.",
+    'APPROVE when every acceptance criterion is met and verified and no blocker or major finding is left; otherwise ESCALATE to the person.',
     ...(!ranChecks(run).length ? ['No check ran: an APPROVE goes to the person as an escalation, since nothing was verified by running it. Say in your reason what the reviews did verify.'] : []),
     'End with exactly:',
     'DECISION: APPROVE or DECISION: ESCALATE',
@@ -360,15 +458,35 @@ export function planPrompt(run: Run): string {
 
 // To the main Claude, once approved: the PR, through whatever GitHub access the session has.
 // The branch the PR goes into: the one the run is built on, without its remote's name.
+export const CONTROL_TOOL_NAME = 'mcp__factory__control'
 export const prBase = (run: Pick<Run, 'baseRef'>) => run.baseRef?.replace(/^(origin|upstream)\//, '') ?? ''
+
+// How the PR is opened, as commands: what the person runs when the feature says not to push.
+export const prCommands = (run: Run) => [
+  `git -C ${run.worktree} push -u origin ${run.branch}`,
+  `gh pr create --head ${run.branch}${prBase(run) ? ` --base ${prBase(run)}` : ''} --title ${JSON.stringify(titleOf(run.feature, 70))} --body-file <the body below, saved to a file>`,
+]
 
 export function prPrompt(run: Run, reason: string): string {
   const minor = run.reviews.flatMap(r => r.findings.filter(f => f.severity === 'minor').map(f => `- ${r.role}: ${f.where} ${f.text}`))
+  const unverified = run.reviews.flatMap(r => (r.notChecked ?? []).map(t => `- ${r.role}: ${t}`))
+  const noPush = forbidsPush(run.feature)
   return [
     `The factory run "${run.feature}" is approved${reason ? ` (${reason})` : ''}.`,
-    `Push branch ${run.branch} (its worktree is ${run.worktree}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}.`,
+    ...(noPush
+      ? [
+          "The feature says not to push, so don't push and don't open the PR. Show the person these commands to run themselves, and the PR body below:",
+          ...prCommands(run).map(c => `  ${c}`),
+          `If the person opens it and gives you the link, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the link as url.`,
+        ]
+      : [
+          `Push branch ${run.branch} (git -C ${run.worktree} push -u origin ${run.branch}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}.`,
+          `Once it is open, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the PR's link as url: until then the factory shows the PR as requested, not opened. If you can't open it, tell the person why, with these commands: ${prCommands(run).join(' && ')}.`,
+        ]),
     `Title it after the feature. In the body: what it does (from ${run.specFile}), the checks (${run.checks.map(c => `${c.cmd} ${c.isSkipped ? '– skipped' : c.isMissing ? '– not installed' : c.ok ? '✓' : '✗'}`).join(', ') || 'none ran'}), and ${run.round} review round${run.round === 1 ? '' : 's'}: ${run.reviews.map(r => `${r.role} ${r.state === 'pass' ? 'PASS' : 'CHANGES'}`).join(', ')}.`,
+    ...(run.builderTests ? [`The builder's own test run: ${run.builderTests.text}.`] : []),
     ...(minor.length ? ['List these minor findings under "Not fixed":', ...minor] : []),
+    ...(unverified.length ? ['List what the reviewers said they did not check under "Not verified":', ...unverified] : []),
     ...(run.followupId ? [`Once the PR is open, call mcp__followups__done with id "${run.followupId}" and the PR's link as the note: the run came from that to-do item.`] : []),
     ...(run.skipped?.length ? [`The factory left these new files out of its commits (dependencies, build output or credentials); don't add them: ${run.skipped.join(', ')}.`] : []),
   ].join('\n')
@@ -549,6 +667,8 @@ export function statusReport(run: Run, now: number, recordFiles: string[] = []):
     ...(run.activity ? [`Last agent action: ${run.activity.role} ${run.activity.text}, ${mmss(now - run.activity.at)} ago (${run.activity.calls} tool calls this step).`] : []),
     `Steps: ${(Object.keys(run.steps) as (keyof Run['steps'])[]).map(k => `${k} ${run.steps[k].state}`).join(', ')}; reviews round ${run.round}: ${run.reviews.map(x => `${x.role} ${x.state}`).join(', ')}.`,
     ...(run.stat ? [`Changed: ${run.stat}`] : []),
+    ...(run.builderTests ? [`Builder's own test run: ${run.builderTests.text}${run.builderTests.failing ? ' (failures reported)' : ''}`] : []),
+    ...(run.pr ? [`PR: ${run.pr.state === 'opened' ? `opened, ${run.pr.url}` : run.pr.state === 'handed' ? 'handed to the person as commands (the feature says not to push)' : 'requested; not reported open yet'}`] : []),
     ...(run.checks.length ? ['Checks:', ...run.checks.map(c => `- ${c.isSkipped ? 'skipped' : c.why ? `not run (${c.why})` : c.isMissing ? 'not installed' : c.isTimedOut ? 'TIMED OUT' : c.ok ? 'passed' : 'FAILED'}: ${c.cmd}${c.tail ? `\n${c.tail.split('\n').slice(-10).map(l => `    ${l}`).join('\n')}` : ''}`)] : []),
     ...(run.checksNote ? [`Checks note: ${run.checksNote}`] : []),
     ...(findings.length ? ['Findings this round:', ...findings.flatMap(x => x.findings.map(f => `- ${x.role} [${f.severity}] ${f.where} ${f.text}`))] : []),

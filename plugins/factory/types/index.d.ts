@@ -21,7 +21,9 @@ export type SpecTask = { title: string; priority: 'high' | 'medium' | 'low'; dep
 // why: what a check that didn't run said instead (pytest that collected no tests, say).
 export type Check = { cmd: string; ok: boolean; tail: string; isMissing?: boolean; isTimedOut?: boolean; isSkipped?: boolean; why?: string }
 // agentId: the reviewer's agent this round (null until started), so a late answer from an earlier one is ignored.
-export type Review = { role: Reviewer; state: StepState; findings: Finding[]; tokens: number; round: number; agentId: string | null }
+// understood: what the reviewer says the change must do, in its own words (a misread spec shows there);
+// notChecked: what it says it did not verify. Both from its answer, absent when it gave none.
+export type Review = { role: Reviewer; state: StepState; findings: Finding[]; tokens: number; round: number; agentId: string | null; understood?: string; notChecked?: string[] }
 // Where the run is: each phase waits on one thing (an agent, the checks, the person).
 // 'ready': the approver said APPROVE; the PR waits for the person's Open PR.
 export type Phase = 'spec' | 'plan' | 'build' | 'checks' | 'review' | 'approve' | 'ready' | 'needs-human' | 'done' | 'stopped'
@@ -70,6 +72,12 @@ export type Run = {
   // What the builder says it changed (its closing summary), and git's count of the change.
   summary?: string
   stat?: string
+  // The builder's own test run, from its TESTS: line (its last round's): what reviewers and the
+  // approver are told, and a reported failure turns an APPROVE into the person's call.
+  builderTests?: { text: string; failing: boolean }
+  // The PR, once the run is done: asked of the main Claude (requested), opened (it reported the link
+  // with the control tool), or handed to the person as commands when the feature says not to push.
+  pr?: { state: 'requested' | 'opened' | 'handed'; url?: string }
   steps: Record<'spec' | 'builder' | 'checks' | 'approver', { state: StepState; tokens: number }>
   checks: Check[]
   // Why no check ran, or what detection warned about: what the reviewers and the approver are told.

@@ -5,7 +5,11 @@ description: "How the factory's code reviewer reviews a change against its spec:
 
 # Code review of a factory change
 
-Your prompt gives the spec, the diff range and the answer format (VERDICT, FINDINGS). The prompt wins.
+Your prompt gives the spec, the diff range and the answer format (UNDERSTOOD, VERDICT, FINDINGS, NOT CHECKED). The prompt wins.
+
+First, in your own words: what the change must do (your UNDERSTOOD line). Last, honestly: what in your
+area you did not verify, and why (NOT CHECKED). A PASS means "nothing wrong in what I checked"; the
+approver needs to know what that was.
 
 ## Reading, the costliest part of a run
 
@@ -21,6 +25,9 @@ Every file read stays in your context and is paid again at each later step. So:
 
 ## Walk through
 
+0. **The repository's rules**: its CLAUDE.md (root and the folders the change touches), AGENTS.md,
+   CONTRIBUTING. A file it says is generated, edited by hand, or a check it says CI runs that would
+   now fail, is a blocker; run that read-only check (`--check`, lint) when it settles it.
 1. **Each acceptance criterion** in the spec: find the code that meets it and the test that proves
    it. A criterion with no code or no test is a finding. A criterion built on an API field, input or
    type: read its real definition. One that doesn't exist (the criterion's premise is false) is a

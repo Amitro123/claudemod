@@ -4,6 +4,7 @@ import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenTool, routeReview } from '../hooks/route'
 import { extrasFrom, LENSES } from '../hooks/flow'
+import { forbidsPush, parseBuilderTests, parseNotChecked, parseUnderstood, summaryOf } from '../hooks/flow'
 import { cleanFeature, couldNotStart, detectChecks, detectSetup, leftOut, neverCommit, slugOf, untrackedOf, modelsFor, parseDecision, parseSize, parseSkills, progressNote, titleOf, parseTasks, parseVerdict, planPrompt, specPrompt, splitChecks } from '../hooks/flow'
 import { factoryArgs, goalPrompt, startLine, factoryPlanApprovedArgs, factoryPlanResultArgs, PLAN_APPROVED_FOR_FACTORY, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, planChangesForFactory } from '../hooks/texts'
 
@@ -247,7 +248,7 @@ describe('a run from the feature to the PR', () => {
     expect(w.ran).toContain('git diff --stat abc123 HEAD')
     expect(w.spawned.slice(2).map(s => s.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
     expect(w.spawned[2]!.prompt).toContain('src/mw.ts | 40')
-    expect(w.spawned[2]!.prompt).toContain('git diff abc123..HEAD')
+    expect(w.spawned[2]!.prompt).toContain('git -C /repo/.factory/rate-limiter diff abc123..HEAD')
 
     await answer($, 'a3', PASS)
     expect(w.spawned).toHaveLength(4)
@@ -271,7 +272,9 @@ describe('a run from the feature to the PR', () => {
     const text = await texts(pane)
     expect(text).toMatch(/✓ spec-writer \(sonnet\) · 3 tasks/)
     expect(text).toMatch(/✓ approver/)
-    expect(text).toMatch(/✓ open PR/)
+    // Only requested: it reads as opened once Claude reports the PR's link.
+    expect(text).toMatch(/PR requested \(Claude\)/)
+    expect(text).not.toMatch(/✓ open PR/)
     expect(text).toMatch(/2k tokens/)
     await pane.unmount()
   })
@@ -1827,5 +1830,129 @@ describe('the record says which model each role ran on', () => {
     await step($, 'a1')
     await answer($, 'a1', SPEC_ANSWER)
     expect(w.written['/repo/.factory/rate-limiter.record/01-spec-writer.md']).toMatch(/^# spec-writer\n\nModel asked: sonnet; ran on: m\.\n/)
+  })
+})
+
+describe('what the run review of 2026-10-29 found (L1, L2, L3, L9, L10)', () => {
+  const CONTROL = 'mcp__factory__control'
+  const REVIEW = 'UNDERSTOOD: limit requests per client and answer 429 with Retry-After.\nRead it.\nVERDICT: PASS\nFINDINGS: none\nNOT CHECKED:\n- the burst test under load: not run\n- [minor] a.ts:1 not an item'
+  const paneText = async ($: Engine) => {
+    const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
+    const t = await texts(pane)
+    await pane.unmount()
+    return t
+  }
+
+  test('the parsers: UNDERSTOOD, NOT CHECKED, the builder\'s TESTS line, a feature that says not to push', () => {
+    expect(parseUnderstood(REVIEW)).toBe('limit requests per client and answer 429 with Retry-After.')
+    expect(parseUnderstood('UNDERSTOOD: <what the change must do>')).toBeUndefined()
+    expect(parseNotChecked(REVIEW)).toEqual(['the burst test under load: not run'])
+    expect(parseNotChecked('VERDICT: PASS\nNOT CHECKED: none')).toEqual([])
+    expect(parseNotChecked('VERDICT: PASS')).toBeUndefined()
+    expect(parseBuilderTests('done\nTESTS: npm test -> 141 passed, 6 failed')).toEqual({ text: 'npm test -> 141 passed, 6 failed', failing: true })
+    expect(parseBuilderTests('TESTS: npm test -> 12 passed, 0 failed')!.failing).toBe(false)
+    expect(parseBuilderTests('TESTS: none run, no runner here')!.failing).toBe(false)
+    expect(parseBuilderTests('TESTS: pytest: two tests fail')!.failing).toBe(true)
+    expect(parseBuilderTests('TESTS: pytest, no failures')!.failing).toBe(false)
+    expect(parseBuilderTests('no line')).toBeUndefined()
+    expect(summaryOf('Changed mw.ts.\nAdded tests.\nTESTS: npm test -> 3 passed')).toBe('Changed mw.ts. Added tests.')
+    expect(forbidsPush('Fix the router. Do not push.')).toBe(true)
+    expect(forbidsPush("Fix it, but don't open a PR")).toBe(true)
+    expect(forbidsPush('תתקן את הראוטר, אל תדחוף')).toBe(true)
+    expect(forbidsPush('Send no push notifications at night')).toBe(false)
+    expect(forbidsPush('Rate limiter')).toBe(false)
+  })
+
+  test('L9: every agent is given absolute paths and kept out of the main checkout', async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    for (const s of w.spawned) {
+      expect(s.prompt).toContain('/repo/.factory/rate-limiter/docs/specs/rate-limiter.md')
+      expect(s.prompt).toMatch(/Work only in the worktree \/repo\/\.factory\/rate-limiter[^\n]*The main checkout \/repo is the person's: never cd into it/)
+    }
+  })
+
+  test("L1: reviewers read the repository's rules first; the builder follows them; the approver escalates a broken one", async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    expect(w.spawned.find(s => s.subagentType === 'factory:builder')!.prompt).toMatch(/Follow the repository's CLAUDE\.md/)
+    expect(w.spawned.find(s => s.subagentType === 'factory:code-reviewer')!.prompt).toMatch(/CLAUDE\.md at the worktree's root[^\n]*a file it says is generated, edited by hand[^\n]*is a blocker/)
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    expect(last(w).prompt).toMatch(/Read the repository's CLAUDE\.md: a change to files it says are generated[^\n]*ESCALATE/)
+  })
+
+  test("L2: the builder's test run reaches the reviewers and the approver; failures turn an APPROVE into the person's call", async ($, on) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    expect(last(w).prompt).toContain('TESTS: <command> -> <N passed, M failed>')
+    await answer($, 'a2', 'Shortened the prompts.\nTwo caps may bite.\nTESTS: claude plugin test -> 141 passed, 6 failed')
+    const review = w.spawned.find(s => s.subagentType === 'factory:code-reviewer')!.prompt
+    expect(review).toContain("The builder's summary: Shortened the prompts. Two caps may bite.")
+    expect(review).toContain("The builder's own test run: claude plugin test -> 141 passed, 6 failed (it reports failures")
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    expect(last(w).prompt).toContain("The builder's own test run: claude plugin test -> 141 passed, 6 failed")
+    await answer($, 'a5', 'DECISION: APPROVE\nREASON: spec met')
+    const t = await bandText($)
+    expect(t).toMatch(/the builder reported failing tests/)
+    expect(t).not.toMatch(/Open the PR when you're ready/)
+  })
+
+  test("L10 and the comprehension check: what each reviewer understood and didn't check goes to the approver and the PR", async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    const review = w.spawned.find(s => s.subagentType === 'factory:code-reviewer')!.prompt
+    expect(review).toMatch(/^UNDERSTOOD: <what the change must do/m)
+    expect(review).toMatch(/^NOT CHECKED:$/m)
+    await answer($, 'a3', REVIEW)
+    await answer($, 'a4', PASS)
+    const p = last(w).prompt
+    expect(p).toContain('  understood: limit requests per client and answer 429 with Retry-After.')
+    expect(p).toContain('  not checked: the burst test under load: not run')
+    expect(p).toContain('  not checked: not said')
+    expect(p).toMatch(/An acceptance criterion that no reviewer checked and no check ran for is unverified: ESCALATE/)
+    await answer($, 'a5', 'DECISION: APPROVE\nREASON: ok')
+    await command($, 'approve')
+    expect(w.sent.at(-1)).toMatch(/Not verified[^\n]*\n- security: the burst test under load: not run/)
+  })
+
+  test('L3: the PR reads as requested until Claude reports its link; pr-opened records it', async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    expect(await $.tool.call({ tool: CONTROL, action: 'pr-opened', url: 'https://github.com/o/r/pull/7' } as never).then(r => String(r.result))).toBe('No approved factory run waits for its PR.')
+    await answer($, 'a5', 'DECISION: APPROVE\nREASON: ok')
+    await command($, 'approve')
+    expect(w.sent.at(-1)).toMatch(/Push branch factory\/rate-limiter \(git -C \/repo\/\.factory\/rate-limiter push -u origin factory\/rate-limiter\)/)
+    expect(w.sent.at(-1)).toMatch(/call mcp__factory__control with action "pr-opened"/)
+    expect(await paneText($)).toMatch(/PR requested \(Claude\)/)
+    expect(await $.tool.call({ tool: CONTROL, action: 'pr-opened', url: 'not a link' } as never).then(r => String(r.result))).toMatch(/needs the PR's link/)
+    expect(await $.tool.call({ tool: CONTROL, action: 'pr-opened', url: 'https://github.com/o/r/pull/7' } as never).then(r => String(r.result))).toMatch(/pull\/7/)
+    expect(await paneText($)).toMatch(/✓ PR opened · https:\/\/github\.com\/o\/r\/pull\/7/)
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/PR: opened, https:\/\/github\.com\/o\/r\/pull\/7/)
+  })
+
+  test('L3: a feature that says not to push gets the commands for the person, and no push', async ($, on) => {
+    const w = engine(on)
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'Rate limiter. Do not push.')
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    await answer($, 'a5', 'DECISION: APPROVE\nREASON: ok')
+    await command($, 'approve')
+    const sent = w.sent.at(-1)!
+    expect(sent).toMatch(/The feature says not to push, so don't push and don't open the PR/)
+    expect(sent).toMatch(/git -C \/repo\/\.factory\/[\w-]+ push -u origin factory\//)
+    expect(sent).not.toMatch(/^Push branch/m)
+    expect(await paneText($)).toMatch(/PR: commands handed to you/)
   })
 })
