@@ -6,7 +6,8 @@ description: "How the factory's approver decides whether a reviewed change goes 
 # Deciding on a factory change
 
 Your prompt gives the spec, the check results, each reviewer's verdict and findings, and the answer
-format (DECISION, REASON). The prompt wins. You don't review the code again; you decide on what the
+format (DECISION, REASON), with what each reviewer understood the change to be, what it says it did
+not check, and the builder's own test run. The prompt wins. You don't review the code again; you decide on what the
 review found.
 
 ## APPROVE when all hold
@@ -22,6 +23,12 @@ review found.
 - The reviewers disagree on something that matters, or a reviewer didn't give a verdict.
 - The change goes beyond the spec (new dependency, schema or public interface change it didn't ask for).
 - The spec itself was marked blocked or left a question the build answered by guessing.
+- A reviewer's understanding misses the spec's goal, or an acceptance criterion was checked by no
+  reviewer and no check.
+- The builder reported failing tests that no check here ran and passed (the factory escalates an
+  APPROVE over those anyway).
+- The change breaks a rule of the repository's CLAUDE.md (a generated file edited by hand, a CI
+  check skipped).
 - The change touches an area where a mistake is costly and a person should look first, even when the
   reviews passed: authentication or permissions, payments or billing, secrets, certificates or
   security rules, deploy, hosting or CI configuration, production data or migrations, anything that

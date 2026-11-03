@@ -58,6 +58,9 @@ import {
   skillsLine,
   builtinSkill,
   lastLines,
+  forbidsPush,
+  parseBuilderTests,
+  summaryOf,
   isLimitError,
   progressNote,
   resumePrompt,
@@ -694,7 +697,7 @@ async function startReviews($: EngineInterface) {
       round,
       ...(route ? { route, ...(route.deep ? { models: { ...cur.models, code: 'opus' } } : {}) } : {}),
       checkRound: 0,
-      reviews: cur.reviews.map(x => ({ ...x, state: 'run', findings: [], round, agentId: null })),
+      reviews: cur.reviews.map(x => ({ ...x, state: 'run', findings: [], round, agentId: null, understood: undefined, notChecked: undefined })),
     }
   })
   if (r) await spawnReviewers($, r)
@@ -713,7 +716,7 @@ async function spawnReviewers($: EngineInterface, r: Run) {
 
 async function onReview($: EngineInterface, role: Reviewer, agentId: string, answer: string, why: string) {
   const verdict = !why ? parseVerdict(answer) : { state: 'fail' as const, findings: [{ severity: 'major' as const, where: '-', text: `The reviewer stopped: ${why}.` }] }
-  const r = await patch($, cur => ({ ...cur, reviews: cur.reviews.map(x => (x.agentId === agentId ? { ...x, state: verdict.state, findings: verdict.findings } : x)) }))
+  const r = await patch($, cur => ({ ...cur, reviews: cur.reviews.map(x => (x.agentId === agentId ? { ...x, state: verdict.state, findings: verdict.findings, understood: verdict.understood, notChecked: verdict.notChecked } : x)) }))
   if (!r || r.phase !== 'review') return
   const mine = r.reviews.filter(x => x.round === r.round)
   if (mine.some(x => x.state === 'run')) return
@@ -781,8 +784,14 @@ async function onApprover($: EngineInterface, answer: string, why: string) {
   // (Approve PR anyway is their override).
   const r0 = await read($, run)
   const unverified = parsed.decision === 'APPROVE' && r0 !== null && !ranChecks(r0).length
-  const decision = unverified ? 'ESCALATE' : parsed.decision
-  const reason = unverified ? `The approver would approve${parsed.reason ? ` (${parsed.reason})` : ''}, but no check ran, so nothing was verified by running it. Approve the PR anyway if the reviews are enough, or set the checks option.` : parsed.reason
+  // The builder said its own test run failed (L2): an APPROVE over that is the person's call too.
+  const failingTests = parsed.decision === 'APPROVE' && !unverified && !!r0?.builderTests?.failing
+  const decision = unverified || failingTests ? 'ESCALATE' : parsed.decision
+  const reason = unverified
+    ? `The approver would approve${parsed.reason ? ` (${parsed.reason})` : ''}, but no check ran, so nothing was verified by running it. Approve the PR anyway if the reviews are enough, or set the checks option.`
+    : failingTests
+      ? `The approver would approve${parsed.reason ? ` (${parsed.reason})` : ''}, but the builder reported failing tests: ${r0!.builderTests!.text}. Approve the PR anyway if they aren't the change's, or send it back with /factory rework.`
+      : parsed.reason
   if (decision === 'ESCALATE') {
     await block($, { on: 'escalate' }, reason, r => ({ ...r, steps: { ...r.steps, approver: { ...r.steps.approver, state: 'changes' } } }))
     $.ui.toast('The factory needs you: Approve PR, /factory rework <what to change>, or /factory stop')
@@ -796,9 +805,25 @@ async function onApprover($: EngineInterface, answer: string, why: string) {
   void askPr($)
 }
 
+// The main Claude opened the approved run's PR: it now reads as opened, with its link.
+async function prOpened($: EngineInterface, url: string): Promise<string> {
+  const link = url.trim()
+  if (!/^https?:\/\/\S+$/.test(link)) return 'pr-opened needs the PR\'s link as url.'
+  const r = await read($, run)
+  if (!r || r.phase !== 'done') return 'No approved factory run waits for its PR.'
+  await patch($, cur => ({ ...cur, pr: { state: 'opened', url: link }, note: `PR opened: ${link}` }))
+  return `Recorded: the factory run's PR is ${link}.`
+}
+
 // Approved by the person (or by the approver, with autoPr on): the main Claude opens the PR.
+// The PR is only requested here (L3): it reads as opened once the main Claude reports its link (the
+// control tool's pr-opened). A feature that says not to push gets the commands, for the person.
 async function finish($: EngineInterface, reason: string) {
-  const r = await patch($, cur => ({ ...moveTo(cur, 'done', reason || 'approved'), steps: { ...cur.steps, approver: { ...cur.steps.approver, state: 'pass' } } }))
+  const r = await patch($, cur => {
+    const handed = forbidsPush(cur.feature)
+    const note = `${reason || 'approved'}. ${handed ? 'The PR commands are handed to you: the feature says not to push' : 'PR requested from Claude'}`
+    return { ...moveTo(cur, 'done', note), pr: { state: handed ? 'handed' : 'requested' }, steps: { ...cur.steps, approver: { ...cur.steps.approver, state: 'pass' } } }
+  })
   if (!r) return
   void $.prompt.submit({ text: prPrompt(r, reason) }).catch(() => {
     $.ui.toast(`Approved. Open a PR from ${r.branch} yourself; the prompt could not be sent.`)
@@ -830,7 +855,7 @@ async function onAgentDone($: EngineInterface, agentId: string, answer: string, 
   if (role === 'spec') return r.phase === 'spec' ? onSpec($, answer, why) : undefined
   if (role === 'builder') {
     if (r.phase !== 'build') return
-    if (!why && answer.trim()) await patch($, cur => ({ ...cur, summary: lastLines(answer, 2) }))
+    if (!why && answer.trim()) await patch($, cur => ({ ...cur, summary: summaryOf(answer), builderTests: parseBuilderTests(answer) }))
     if (why) return block($, { on: 'builder', why }, `The builder stopped: ${why}.${isLimitError(why) ? ' Retry once the limit is lifted: the same builder carries on.' : ''}`, cur => ({ ...cur, steps: { ...cur.steps, builder: { ...cur.steps.builder, state: 'fail' } } }))
     return onBuilt($)
   }
@@ -868,7 +893,7 @@ async function approveNow($: EngineInterface, goalTasks?: GoalTask[], fromGoalRu
   }
   if (r.phase === 'ready' || (r.phase === 'needs-human' && r.blocked?.on === 'escalate')) {
     void serial(() => finish($, r.phase === 'ready' ? r.note.replace(/\. Open the PR when you're ready$/, '') : 'approved by the person over the approver'))
-    return 'Approved: Claude opens the PR.'
+    return forbidsPush(r.feature) ? 'Approved: the feature says not to push, so Claude gives you the commands to open the PR.' : 'Approved: Claude opens the PR.'
   }
   if (r.phase === 'needs-human') return `Nothing to approve: ${r.note} /factory retry runs that step again; /factory stop ends the run.`
   return `Nothing waits for approval: the run is ${r.note}.`
@@ -896,7 +921,7 @@ async function retryNow($: EngineInterface): Promise<string> {
     if (b.role === 'approver') return startApprover($)
     const now = await patch($, cur => ({
       ...moveTo(cur, 'review', `reviewing, round ${cur.round}`),
-      reviews: cur.reviews.map(x => (x.round === cur.round && x.state === 'fail' ? { ...x, state: 'run', agentId: null, findings: [] } : x)),
+      reviews: cur.reviews.map(x => (x.round === cur.round && x.state === 'fail' ? { ...x, state: 'run', agentId: null, findings: [], understood: undefined, notChecked: undefined } : x)),
     }))
     if (now) await spawnReviewers($, now)
   })
@@ -1082,11 +1107,12 @@ export const register: Register = (on, options) => {
     await $.tool
       .register({
         name: 'control',
-        description: "Steer the factory run for the person. skip-check: go on without the check (or install) running now. abandon-agent: give up on the agent the step waits on (a stuck one: no activity for long), so Retry starts a new one. add-reviewers: extra reviewers from the next round on (reviewers: lens names or { name, focus, agent }), only when the change needs that look. retry: run again the step that stopped the run. stop: end the run. Use it when the person asks, or when the status tool shows a step stuck, and tell the person what you did and why.",
+        description: "Steer the factory run for the person. skip-check: go on without the check (or install) running now. abandon-agent: give up on the agent the step waits on (a stuck one: no activity for long), so Retry starts a new one. add-reviewers: extra reviewers from the next round on (reviewers: lens names or { name, focus, agent }), only when the change needs that look. retry: run again the step that stopped the run. stop: end the run. pr-opened: the PR of an approved run is open (url: its link); only after you opened it, or the person did. Use it when the person asks, or when the status tool shows a step stuck, and tell the person what you did and why.",
         inputSchema: {
           type: 'object',
           properties: {
-            action: { type: 'string', enum: ['skip-check', 'abandon-agent', 'add-reviewers', 'retry', 'stop'] },
+            action: { type: 'string', enum: ['skip-check', 'abandon-agent', 'add-reviewers', 'retry', 'stop', 'pr-opened'] },
+            url: { type: 'string', description: "For pr-opened: the link of the PR you opened for the approved run" },
             reason: { type: 'string', description: 'Why, in a few words: the run records it' },
             reviewers: { type: 'array', description: 'For add-reviewers: lens names or { name, focus, agent }', items: {} },
           },
@@ -1158,7 +1184,8 @@ export const register: Register = (on, options) => {
       case 'add-reviewers': return { result: await addReviewers($, input.reviewers) }
       case 'retry': return { result: await retryNow($) }
       case 'stop': return { result: await stopNow($) }
-      default: return { deny: 'action is skip-check, abandon-agent, add-reviewers, retry or stop.' }
+      case 'pr-opened': return { result: await prOpened($, String((input as { url?: unknown }).url ?? '')) }
+      default: return { deny: 'action is skip-check, abandon-agent, add-reviewers, retry, stop or pr-opened.' }
     }
   })
 

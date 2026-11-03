@@ -5,7 +5,11 @@ description: "How the factory's security reviewer reviews a change: trace untrus
 
 # Security review of a factory change
 
-Your prompt gives the spec, the diff range and the answer format (VERDICT, FINDINGS). The prompt wins.
+Your prompt gives the spec, the diff range and the answer format (UNDERSTOOD, VERDICT, FINDINGS, NOT CHECKED). The prompt wins.
+
+First, in your own words: what the change must do (your UNDERSTOOD line). Last, honestly: what in your
+area you did not verify, and why (NOT CHECKED). A PASS means "nothing wrong in what I checked"; the
+approver needs to know what that was.
 Review the diff, not the whole repository: what this change adds or alters, and what it newly reaches.
 
 ## Reading, the costliest part of a run

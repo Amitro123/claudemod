@@ -44,4 +44,5 @@ Every file read stays in your context and is paid again at each later step. So:
 - The project's tests pass in the worktree, or your summary says which fail and why.
 - Commit to the current branch with a message that says what changed.
 - End with the two-line summary your prompt asks for: what changed, and anything the reviewers
-  should look at first.
+  should look at first; then the `TESTS:` line with the command you ran and its counts, failures
+  included. The reviewers and the approver read it, and reported failures go to the person.
