@@ -32,7 +32,9 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }> } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[] } = {}) {
+  // Files the install writes in the worktree (`setupMakes`, a lockfile npm install made): untracked from then on.
+  const made: string[] = []
   const spawned: Spawned[] = []
   const ran: string[] = []
   const limits: Record<string, number> = {}
@@ -93,6 +95,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (cmd === 'git diff --name-only --diff-filter=A -z abc123 HEAD') return ok(committedNew.join('\0'))
     if (cmd === 'git status --porcelain' || cmd === 'git status --porcelain -uall') return ok(dirty ? ' M src/mw.ts\n?? src/limit/new.ts\n?? node_modules/\n?? .env\n?? certs/server.key\n' : '')
     // -z -uall: each untracked file on its own, NUL-separated, unquoted (a new folder's .env too).
+    if (cmd === 'git status --porcelain -z -uall' && !dirty) return ok(made.map(f => `?? ${f}\0`).join(''))
     if (cmd === 'git status --porcelain -z -uall') return ok(dirty ? [' M src/mw.ts', '?? src/limit/new.ts', '?? src/limit/שלום.ts', '?? app/.env', '?? app/index.js', '?? node_modules/x/a.js', '?? .env', '?? certs/server.key', 'R  src/b.ts', 'src/a.ts', ''].join('\0') : '')
     if (cmd.startsWith('git log -1 --format=%H HEAD --')) return ok(`${configCommit}\n`)
     if (cmd.startsWith('git diff --name-only abc123 HEAD --')) return ok(configCommit === 'c0' ? '' : 'package.json\n')
@@ -111,6 +114,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (cmd.startsWith('git ')) return ok()
     // `outputs`: what a command answers, as given.
     if (outputs[cmd]) return { value: outputs[cmd] } as never
+    if ((cmd === 'npm install' || cmd === 'npm ci') && setupMakes.length) made.push(...setupMakes.filter(f => !made.includes(f)))
     if (missing.includes(cmd)) throw new Error(`spawn ${e.argv[0]} ENOENT`)
     if (cmd === 'sh-missing') return { value: { exitCode: 127, stdout: '', stderr: 'sh: vitest: not found' } } as never
     if (failing > 0) {
@@ -2067,5 +2071,19 @@ describe("the agents don't need git or a shell chain (what the first real run's 
     await answer($, 'a3', PASS)
     await answer($, 'a4', PASS)
     expect(last(w).prompt).toContain("Checks the factory ran itself, in the worktree, after the last build: npm test passed. A reviewer or the builder who says it couldn't run one of these is covered by this result.")
+  })
+})
+
+describe('what the setup writes is not the change (the second bench round)', () => {
+  test("a lockfile npm install made in the worktree is never committed in a later round, and is listed as left out", { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on, { files: ['package.json'], setupMakes: ['package-lock.json'] })
+    await toReviews($)
+    expect(w.ran).toContain('npm install')
+    await answer($, 'a3', CHANGES)
+    await answer($, 'a4', PASS)
+    expect(last(w).subagentType).toBe('factory:builder')
+    await answer($, last(w).id, 'fixed')
+    expect(w.ran.filter(c => c.startsWith('git add --'))).toEqual([])
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).not.toMatch(/FAILED/)
   })
 })

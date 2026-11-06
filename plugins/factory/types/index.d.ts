@@ -84,6 +84,8 @@ export type Run = {
   // This round's whole diff, written by the factory beside the record: the reviewers read it instead
   // of running git, which a session with no one to approve it refuses.
   diffFile?: string
+  // New files the setup command wrote in the worktree (a lockfile npm install made): never committed.
+  setupFiles?: string[]
   steps: Record<'spec' | 'builder' | 'checks' | 'approver', { state: StepState; tokens: number }>
   checks: Check[]
   // Why no check ran, or what detection warned about: what the reviewers and the approver are told.

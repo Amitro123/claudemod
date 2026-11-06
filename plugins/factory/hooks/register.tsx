@@ -416,8 +416,9 @@ async function onBuilt($: EngineInterface) {
   const status = await git($, ['status', '--porcelain', '-z', '-uall'], r.worktree)
   if (status.exitCode === 0 && status.stdout.trim()) {
     const untracked = untrackedOf(status.stdout)
-    const skipped = leftOut(untracked.filter(neverCommit))
-    const fresh = untracked.filter(p => !neverCommit(p))
+    const bySetup = new Set(r.setupFiles ?? [])
+    const skipped = leftOut(untracked.filter(p => neverCommit(p) || bySetup.has(p)))
+    const fresh = untracked.filter(p => !neverCommit(p) && !bySetup.has(p))
     let out = await git($, ['add', '-u'], r.worktree)
     if (out.exitCode === 0 && fresh.length) out = await git($, ['add', '--', ...fresh], r.worktree)
     // A new file the builder staged itself (git add .env) is in the index, not untracked: unstaged too.
@@ -523,6 +524,10 @@ async function checkCommands($: EngineInterface, r: Run): Promise<DetectedChecks
 // once a run before its first checks. Its failure is the person's to look at, not the builder's.
 async function setUp($: EngineInterface, r: Run, files: string[]): Promise<boolean> {
   if (r.setupDone) return true
+  // What was untracked before the install: whatever it adds beside (a lockfile npm install writes
+  // where there was none) is the setup's, not the change's, and never goes into its commits.
+  const before = await git($, ['status', '--porcelain', '-z', '-uall'], r.worktree)
+  const had = new Set(before.exitCode === 0 ? untrackedOf(before.stdout) : [])
   const cmds = setupOption.trim() ? splitChecks(setupOption) : [detectSetup(files)].filter((c): c is string[] => c !== null)
   for (const [k, argv] of cmds.entries()) {
     if (!(await stillIn($, 'checks'))) return false
@@ -538,7 +543,9 @@ async function setUp($: EngineInterface, r: Run, files: string[]): Promise<boole
       return false
     }
   }
-  await patch($, cur => ({ ...cur, setupDone: true, checking: null }))
+  const after = await git($, ['status', '--porcelain', '-z', '-uall'], r.worktree)
+  const made = after.exitCode === 0 ? untrackedOf(after.stdout).filter(p => !had.has(p) && !neverCommit(p)) : []
+  await patch($, cur => ({ ...cur, setupDone: true, checking: null, ...(made.length ? { setupFiles: made.slice(0, 50) } : {}) }))
   return true
 }
 
