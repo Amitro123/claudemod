@@ -203,7 +203,9 @@ export type Ruling = 'stands' | 'refuted' | 'downgraded'
 // stands, and so does a security blocker, which only the security reviewer may take back.
 export function applyRulings(findings: Finding[], answer: string, isSecurity: (f: Finding) => boolean): { kept: Finding[]; dropped: { finding: Finding; ruling: Ruling; why: string }[] } {
   const rulings = new Map<number, { ruling: Ruling; why: string }>()
-  for (const m of answer.matchAll(/^\s*[-*]?\s*F(\d+)\s*[:.)-]\s*(STANDS|REFUTED|DOWNGRADED)\b[\s:—–-]*(.*)$/gim)) {
+  // Within one line only ([ \t], not \s): a bare "F1: STANDS" must not take the next line's ruling
+  // as its own evidence, and lose it.
+  for (const m of answer.matchAll(/^[ \t]*[-*]?[ \t]*F(\d+)[ \t]*[:.)-][ \t]*(STANDS|REFUTED|DOWNGRADED)\b[ \t:—–-]*(.*)$/gim)) {
     rulings.set(Number(m[1]), { ruling: m[2]!.toLowerCase() as Ruling, why: m[3]!.trim() })
   }
   const kept: Finding[] = []

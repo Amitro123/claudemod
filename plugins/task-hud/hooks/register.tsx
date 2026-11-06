@@ -226,7 +226,7 @@ export const register: Register = on => {
     const list = await read($, agents)
     // A resumed agent picks up its card; one whose card was already dropped gets a fresh one.
     if (e.resume && list.some(a => a.id === ran.agentId)) {
-      await patchAgent($, ran.agentId, a => ({ ...a, state: 'running', endedAt: null }))
+      await patchAgent($, ran.agentId, a => ({ ...a, state: 'running', endedAt: null, isSilent: false }))
       await ensureTicking($)
       return ran
     }
@@ -236,7 +236,7 @@ export const register: Register = on => {
       description: e.description || e.subagentType,
       type: e.subagentType,
       model: modelName(ran.model || e.model || e.parentModel),
-      slot: list.length ? Math.max(...list.map(a => a.slot)) + 1 : 0,
+      slot: 0,
       startedAt: t,
       endedAt: null,
       updatedAt: t,
@@ -245,10 +245,12 @@ export const register: Register = on => {
       tokens: 0,
       activity: [],
     }
-    await update($, agents, l => keepAgents([...l, agent]))
+    // Its slot (its color and creature) from the list as it is now: several sub-agents started in one
+    // message are spawned at once, and each read of the list before them would give the same slot.
+    await update($, agents, l => keepAgents([...l, { ...agent, slot: l.length ? Math.max(...l.map(a => a.slot)) + 1 : 0 }]))
     await update($, tick, () => t)
     await ensureTicking($)
-    void $.ui.open({ id: PANE, title: PANE_TITLE })
+    void $.ui.open({ id: PANE, title: PANE_TITLE }).catch(() => {})
     return ran
   }).catch(($, e, next) => next(e))
 

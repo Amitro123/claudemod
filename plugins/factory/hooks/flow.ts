@@ -1,7 +1,7 @@
 // The factory's pure parts: what each role is told, how its answer is read, which checks run, and
 // how a run starts. The hooks module only spawns, runs and draws.
 
-import type { Check, Extra, Finding, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
+import type { Check, Extra, Finding, LedgerEntry, Outcome, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
 import { FACTORY_SOURCE } from './texts'
 
 export const REVIEWERS: Reviewer[] = ['security', 'code']
@@ -616,18 +616,45 @@ export function newReview(focus: string, at: number, base: string, root: string,
   }
 }
 
+// A review run's findings, numbered for their outcomes: what stands (F1...), then what the skeptic
+// refuted or downgraded, which comes with its outcome already.
+export function ledgerOf(run: Run): LedgerEntry[] {
+  const standing = run.reviews.flatMap(r => r.findings.map(f => ({ role: r.role, severity: f.severity, where: f.where, text: f.text })))
+  const ruled = (run.refuted ?? []).map(x => ({ role: x.role, severity: x.finding.severity, where: x.finding.where, text: x.finding.text, outcome: (x.ruling === 'downgraded' ? 'downgraded' : 'refuted') as Outcome, why: x.why }))
+  return [...standing, ...ruled].map((x, i) => ({ id: `F${i + 1}`, ...x }))
+}
+
+export const OUTCOMES: Outcome[] = ['fixed', 'not-a-bug', 'wont-fix']
+const OUTCOME_WORDS: Record<Outcome, string> = { fixed: 'fixed', 'not-a-bug': 'not a bug', 'wont-fix': "won't fix", refuted: 'refuted by the skeptic', downgraded: 'downgraded by the skeptic' }
+
+// The outcomes, counted: in stats.md, and over a repository's runs (its findings.jsonl).
+export function outcomesLine(entries: readonly { outcome?: Outcome }[]): string {
+  const n = (o?: Outcome) => entries.filter(e => e.outcome === o).length
+  const judged = n('fixed') + n('not-a-bug') + n('wont-fix')
+  const parts = (['fixed', 'not-a-bug', 'wont-fix', 'refuted', 'downgraded'] as Outcome[]).filter(o => n(o)).map(o => `${n(o)} ${OUTCOME_WORDS[o]}`)
+  const open = n(undefined)
+  return [
+    `${entries.length} finding${entries.length === 1 ? '' : 's'}: ${parts.join(', ') || 'none judged yet'}${open ? `, ${open} not reported yet` : ''}.`,
+    ...(judged ? [`False positives among those judged: ${Math.round((100 * n('not-a-bug')) / judged)}% (${n('not-a-bug')} of ${judged}).`] : []),
+  ].join(' ')
+}
+
 // What the main Claude is told once a review run's reviewers (and the skeptic) are done.
 export function reviewDonePrompt(run: Run): string {
-  const standing = run.reviews.flatMap(r => r.findings.map(f => ({ role: r.role, f })))
-  const fix = standing.filter(x => x.f.severity !== 'minor')
-  const minor = standing.filter(x => x.f.severity === 'minor')
+  const ledger = run.ledger ?? ledgerOf(run)
+  const standing = ledger.filter(x => !x.outcome)
+  const fix = standing.filter(x => x.severity !== 'minor')
+  const minor = standing.filter(x => x.severity === 'minor')
   const unverified = run.reviews.flatMap(r => (r.notChecked ?? []).map(t => `- ${r.role}: ${t}`))
   return [
     `The factory's reviewers (${run.reviews.map(r => reviewerLabel(r.role)).join(', ')}) reviewed the change in ${run.worktree} against ${run.base.slice(0, 12)}${run.feature ? ` (${titleOf(run.feature, 120)})` : ''}.`,
     ...(fix.length
-      ? ['Fix each of these in the checkout, then say what you changed:', ...fix.map(x => `- ${x.role} [${x.f.severity}] ${x.f.where} ${x.f.text}`)]
+      ? ['Fix each of these in the checkout, then say what you changed:', ...fix.map(x => `- ${x.id} ${x.role} [${x.severity}] ${x.where} ${x.text}`)]
       : ['No blocker or major finding.']),
-    ...(minor.length ? ['Minor, fix when cheap:', ...minor.map(x => `- ${x.role} ${x.f.where} ${x.f.text}`)] : []),
+    ...(minor.length ? ['Minor, fix when cheap:', ...minor.map(x => `- ${x.id} ${x.role} ${x.where} ${x.text}`)] : []),
+    ...(standing.length
+      ? [`Check each against the code before you act on it. Then report what became of every one, ${standing.map(x => x.id).join(', ')}, with ${CONTROL_TOOL_NAME} action "findings": outcomes [{ id, outcome: fixed | not-a-bug | wont-fix, why }]. not-a-bug is a finding that is wrong (say why: the code, a test, a design choice it missed); that is how the person learns how far the reviewers can be trusted.`]
+      : []),
     ...(run.refuted?.length ? ['A skeptic refuted or downgraded these with evidence (leave them):', ...run.refuted.map(x => `- ${x.role} ${x.finding.where} ${x.finding.text}: ${x.ruling}, ${x.why}`)] : []),
     ...(unverified.length ? ['What the reviewers say they did not check:', ...unverified] : []),
     `Their words: ${run.record ?? ''}/. Don't start another review unless the person asks.`,
@@ -772,6 +799,7 @@ export function nextActionsOf(run: Run | null, now: number): NextAction[] {
   if (!run) return [start]
   if (run.phase === 'stopped') return [start]
   if (run.phase === 'done') {
+    if (run.ledger?.some(x => !x.outcome)) return [{ action: 'findings', by: 'claude', how: `${C} action "findings" with each finding's outcome (fixed, not-a-bug, wont-fix) and why, once you have checked and handled them` }, start]
     if (run.pr?.state === 'requested') return [{ action: 'pr-opened', by: 'claude', how: `once you opened the PR: ${C} action "pr-opened" with its link as url` }, start]
     if (run.pr?.state === 'handed') return [{ action: 'pr-opened', by: 'claude', how: `once the person says they opened it and gives the link: ${C} action "pr-opened"` }, start]
     return [start]
@@ -842,6 +870,7 @@ export function statsReport(run: Run, now: number): string[] {
     `Findings this round: ${by('blocker')} blocker, ${by('major')} major, ${by('minor')} minor; refuted by the skeptic so far: ${run.refuted?.length ?? 0}.`,
     `Tool calls the factory saw: ${calls || 'none'}; refused by its guard: ${s?.guardRefused ?? 0}.`,
     `Answers missing a marker their prompt asks for: ${s?.formatMisses.length ? s.formatMisses.join('; ') : 'none'}.`,
+    ...(run.ledger?.length ? [`Outcomes: ${outcomesLine(run.ledger)}`] : []),
   ]
 }
 

@@ -17,15 +17,16 @@ const LEGACY_RLE = '‫'
 // at least as many as LTR words: a tie goes to RTL.
 export const MIN_RTL_WORD_SHARE = 0.5
 
-// Every block Unicode assigns to right-to-left scripts (the ranges UAX #9
-// defaults to R/AL): Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan, Mandaic
+// The blocks Unicode assigns to right-to-left scripts (UAX #9 gives their unassigned code points
+// R/AL by default), less what in them isn't an RTL letter here: the Arabic-Indic digits (U+0660-0669,
+// U+06F0-06F9) and U+FEFF, the byte-order mark a paste can start with. Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan, Mandaic
 // and the Arabic supplements/extensions (U+0590-08FF), Hebrew and Arabic
 // presentation forms (U+FB1D-FDFF, U+FE70-FEFF), and the historic and modern
 // RTL scripts of planes 1 (U+10800-10FFF: Hanifi Rohingya, Yezidi, ...) and
 // U+1E800-1EFFF (Adlam, Arabic mathematical). Explicit ranges are ~4x faster
 // than \p{Script=...} lookups. Any other letter (Latin, Cyrillic, Greek, CJK,
 // ...) is LTR, so a Russian word counts against the RTL share like an English one.
-const RTL_RANGES = String.raw`\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}`
+const RTL_RANGES = String.raw`\u0590-\u065F\u066A-\u06EF\u06FA-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFE\u{10800}-\u{10FFF}\u{1E800}-\u{1EFFF}`
 const RTL_CHAR = new RegExp(`[${RTL_RANGES}]`, 'u')
 const RTL_WORDS_G = new RegExp(`[${RTL_RANGES}]+`, 'gu')
 // LTR word: a letter outside the RTL blocks (`[^\P{L}<rtl>]`), then more such
@@ -145,6 +146,9 @@ export function wrapLineIfNeeded(line: string, options: RtlOptions = {}): string
 
   const prefix = PREFIX_RE.exec(line)![0]
   const rest = line.slice(prefix.length)
+  // A table row inside a blockquote or a list item (> | a | ב |): a mark before its first | would be
+  // read as one more cell, and the table would stop being one. Its cells are marked, or it is left.
+  if (rest.startsWith('|')) return options.tableCells ? `${prefix}${wrapTableRow(rest)}` : line
   return needsMark(rest) ? `${prefix}${RLM}${rest}` : line
 }
 

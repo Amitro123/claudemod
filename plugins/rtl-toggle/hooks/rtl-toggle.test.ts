@@ -367,7 +367,9 @@ test('streaming a large message stays fast per chunk', () => {
   toRtl(full.slice(0, full.length - 100))
   const t = Date.now()
   for (let i = 99; i > 0; i -= 9) toRtl(full.slice(0, full.length - i))
-  expect(Date.now() - t).toBeLessThan(100)
+  // Linear work over ~880K characters, 11 times: a quadratic one would take seconds. The headroom
+  // keeps a slow CI runner from failing it.
+  expect(Date.now() - t).toBeLessThan(400)
 })
 
 // --- through the engine ---------------------------------------------------
@@ -530,3 +532,18 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await render($, 'AssistantMessage', L_FENCE('~~~'))).toBe(L_FENCE('~~~'))
   })
 }
+
+// --- what the whole-mod review found ---------------------------------------
+
+test('a table row inside a blockquote or a list item is not marked before its first |', () => {
+  for (const row of ['> | Step | תיאור |', '- | Step | תיאור |', '> > | a | ב |']) {
+    expect(wrapLineIfNeeded(row)).toBe(row)
+    expect(wrapLineIfNeeded(row, { tableCells: true }).startsWith(row.slice(0, row.indexOf('|') + 1))).toBe(true)
+  }
+})
+
+test('a byte-order mark and Arabic-Indic digits are not RTL words', () => {
+  expect(wrapLineIfNeeded('\uFEFFHello world')).toBe('\uFEFFHello world')
+  expect(wrapLineIfNeeded('Version \u0661\u0662\u0663')).toBe('Version \u0661\u0662\u0663')
+  expect(wrapLineIfNeeded('Note \u0645\u0631\u062D\u0628\u0627 \u0645\u0631\u062D\u0628\u0627')).toBe(`${RLM}Note \u0645\u0631\u062D\u0628\u0627 \u0645\u0631\u062D\u0628\u0627`)
+})
