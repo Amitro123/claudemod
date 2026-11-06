@@ -5,7 +5,7 @@ import type { Asking, Goal, Pace, Priority, Side, Task, TaskStatus } from '../ty
 import { TRACK_SIZE, trackSvg, trackText } from './art'
 import type { Pose } from './art'
 import { hasCommand, pick, projectOf } from './runtime'
-import { FACTORY_SOURCE, FACTORY_START_TOOL, factoryChosenForGoal, factoryPlanApprovedArgs, factoryPlanResultArgs, GOAL_REACHED, goalClosedNote, goalPrompt, goalReachedToast, parseDoneResult, parseStartPrompt, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, PLAN_WAITING_FOR_FACTORY, planChangesForFactory, toolText } from './texts'
+import { FACTORY_SOURCE, FACTORY_START_TOOL, factoryArgs, factoryChosenForGoal, factoryPlanApprovedArgs, factoryPlanResultArgs, GOAL_REACHED, goalClosedNote, goalPrompt, goalReachedToast, parseDoneResult, parseStartPrompt, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, PLAN_WAITING_FOR_FACTORY, planChangesForFactory, toolText } from './texts'
 // The goal-run tests import the start-prompt parser from here, as before it was shared.
 export { parseStartPrompt }
 
@@ -334,7 +334,7 @@ async function runAsFactory($: EngineInterface) {
   const g = await read($, goal)
   if (!g) return
   await setGoal($, cur => (cur ? { ...cur, source: FACTORY_SOURCE } : cur))
-  void $.command.run({ command: 'factory', args: g.text }).catch(async () => {
+  void $.command.run({ command: 'factory', args: factoryArgs(g.text) }).catch(async () => {
     await setGoal($, cur => (cur ? { ...cur, source: g.source } : cur))
     $.ui.toast(`Could not start the factory; run /factory ${g.text}`)
   })
@@ -627,6 +627,8 @@ export const register: Register = (on, options) => {
       // A new prompt, whoever sent it, may be nudged once again.
       isNudged = false
       await sync($).catch(() => {})
+      // Another session may have started or stopped a task: the runner's timer follows.
+      await syncTicking($).catch(() => {})
     }
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -680,7 +682,9 @@ export const register: Register = (on, options) => {
     const text = clip(String(input.goal ?? '').trim() || before?.text || 'Session goal', 200)
     // A plan with no goal set before it is a new goal, set now.
     const now = await $.clock.now()
-    const proposed = { setAt: now, ...replan(isFactory ? null : before, text, orderPlan(items)), planAt: now, ...(isFactory ? { source: FACTORY_SOURCE } : {}) }
+    // A plan after a goal that is done is a new goal: none of the finished one's tasks, tokens or setAt.
+    const fresh = isFactory || before?.status === 'done'
+    const proposed = { setAt: now, ...replan(fresh ? null : before, text, orderPlan(items)), planAt: now, ...(isFactory ? { source: FACTORY_SOURCE } : {}) }
     await update($, asking, () => null)
     await setGoal($, () => proposed)
     void $.ui.open({ id: PANE, title: PANE_TITLE })
@@ -767,8 +771,18 @@ export const register: Register = (on, options) => {
       answer = ''
     }
     if (answer === ADD_IT) {
-      await setGoal($, () => grown)
-      return { result: `Added ${task.id} (${priority} priority) as ${place}. ${reminder(grown)}` }
+      // Put in against the goal as it is now: an update, the tokens or a press in the pane while the
+      // question was open aren't lost, and a goal cleared meanwhile isn't brought back.
+      let added: { goal: Goal; task: Task } | null = null
+      await setGoal($, cur => {
+        if (!cur || cur.status === 'planning' || cur.status === 'proposed') return cur
+        const r = insertTask(cur, { title, priority, needs })
+        added = { goal: r.goal, task: r.task }
+        return r.goal
+      })
+      const got = added as { goal: Goal; task: Task } | null
+      if (!got) return { result: "The goal changed while the person was asked (cleared or replanned); the task wasn't added." }
+      return { result: `Added ${got.task.id} (${priority} priority) as ${place}. ${reminder(got.goal)}` }
     }
     if (answer && answer !== NOT_NOW) return { result: `Not added yet. The person says: ${answer}` }
     return { result: answer ? 'The person chose not to add it.' : "The person hasn't answered; it wasn't added." }
@@ -814,7 +828,11 @@ export const register: Register = (on, options) => {
   // A followups Start is a side job: no goal reminder beside it, its tokens counted apart, and the
   // person asked (in the band) whether its items join the goal. The person's own next prompt ends it.
   on('prompt.submit', async ($, e, next) => {
-    if (e.command) return next(e)
+    if (e.command) {
+      // A slash command's turn isn't nudged on the last prompt's origin.
+      isOurs = false
+      return next(e)
+    }
     const g = await read($, goal)
     if (e.origin.kind === 'plugin' && e.origin.name === TODO_PLUGIN) {
       const items = parseStartPrompt(e.text)

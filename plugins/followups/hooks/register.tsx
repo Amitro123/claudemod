@@ -139,7 +139,9 @@ export function openItems(text: string): string[] {
     if (h) {
       isOpen = OPEN_SECTIONS.includes(h.name)
       if (isOpen && h.rest) add(h.rest)
-    } else if (isOpen && line.trim()) add(line)
+    } else if (isOpen && /^\s*(?:[-*•]|\d+[.)])\s+\S/.test(line)) add(line)
+    // Prose after the list (a VERDICT line, "let me know if...") ends the section: never an item.
+    else if (isOpen && line.trim() && out.length) isOpen = false
   }
   return out.slice(0, 5)
 }
@@ -321,7 +323,7 @@ async function ask($: EngineInterface, flag: Flag): Promise<string> {
   const extra = [flag.detail, flag.where].filter(Boolean).join(' · ')
   let answer: string
   try {
-    answer = await $.ui.ask(`Claude noticed${flag.kind === 'bug' ? ' a bug' : ''}: "${flag.title}"${extra ? ` (${extra})` : ''}. Add it to your follow-ups?`, {
+    answer = await $.ui.ask(`Claude noticed${flag.kind === 'bug' ? ' a bug' : ''}: "${flag.title}"${extra ? ` (${extra})` : ''}. Add it to your follow-ups? (Typed under Other, your words become the item.)`, {
       header: 'Follow-up',
       options: [ADD, SKIP],
     })
@@ -336,7 +338,15 @@ async function ask($: EngineInterface, flag: Flag): Promise<string> {
     await turnDown($, flag.title)
     return `The person skipped "${flag.title}". Don't flag or raise it again. Carry on with the task.`
   }
-  const kept = answer === ADD ? flag : { ...flag, title: clip(answer.trim(), 120) }
+  // Typed under "Other": the item in the person's own wording (the question says so), one line like
+  // any field, and not a second copy of one already kept or turned down.
+  const title = answer === ADD ? flag.title : field(answer, 120)
+  if (!title) return `The person didn't give a wording; "${flag.title}" wasn't added. Carry on with the task.`
+  if (answer !== ADD) {
+    if ((await read($, skipped)).includes(norm(title))) return `The person had already said "${title}" isn't needed. Carry on with the task.`
+    if ((await read($, items)).some(i => norm(i.title) === norm(title))) return `"${title}" is already on the to-do list. Carry on with the task.`
+  }
+  const kept = { ...flag, title }
   await keep($, [kept])
   return `The person added "${kept.title}" to their follow-ups. Don't fix it now unless they ask. Carry on with the task.`
 }
@@ -510,7 +520,7 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     if (e.traits.includes('bare')) return r
     return { sections: [...r.sections, { id: 'followups:guidance', text: GUIDANCE, scope: 'session' as const }] }
-  })
+  }).catch(($, e, next) => next(e))
 
   // A new turn from the person (a continuation after a stop has no text) starts the check afresh.
   on('turn.start', async ($, e, next) => {
@@ -523,10 +533,13 @@ export const register: Register = (on, options) => {
       await sync($).catch(() => {})
     }
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: TOOL }, async ($, e) => {
-    isFlagged = true // any call counts, even one the person turns down
+    const fromAgent = (e as { agentId?: string }).agentId !== undefined
+    // Any main-loop call counts, even one the person turns down; a sub-agent's doesn't speak for
+    // the main answer's own loose ends.
+    if (!fromAgent) isFlagged = true
     const input = e as unknown as { title?: unknown; detail?: unknown; where?: unknown; kind?: unknown }
     const title = field(input.title, 120)
     if (!title) return { deny: 'A follow-up needs a title.' }
@@ -545,6 +558,11 @@ export const register: Register = (on, options) => {
       detail: field(input.detail, 300),
       where: field(input.where, 160),
       at,
+    }
+    // From a sub-agent: no dialog in the middle of its run; the flag waits above the prompt.
+    if (fromAgent) {
+      await update($, pending, list => [...list, flag])
+      return { result: `Flagged "${title}": it waits above the prompt for the person. Carry on with the task.` }
     }
     return { result: await ask($, flag) }
   })

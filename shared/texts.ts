@@ -5,9 +5,21 @@
 export type StartItem = { id: string; title: string; isBug?: boolean; detail?: string; where?: string }
 
 // followups: one line per item it hands Claude when the person presses Start.
-// The title is JSON-quoted, so one holding " — ", " (bug)" or "[where:" reads back whole.
+// The title, the detail and the place are JSON-quoted: one holding " — ", " (bug)" or "[where:" reads
+// back whole, and the detail (which a model may have written from text it read) reads as a quoted note
+// in the prompt, not as an instruction beside "Do the work".
 export const startLine = (i: { id: string; title: string; kind?: string; detail?: string; where?: string }) =>
-  `- id ${i.id}: ${JSON.stringify(i.title)}${i.kind === 'bug' ? ' (bug)' : ''}${i.detail ? ` — ${i.detail}` : ''}${i.where ? ` [where: ${i.where}]` : ''}`
+  `- id ${i.id}: ${JSON.stringify(i.title)}${i.kind === 'bug' ? ' (bug)' : ''}${i.detail ? ` — ${JSON.stringify(i.detail)}` : ''}${i.where ? ` [where: ${JSON.stringify(i.where)}]` : ''}`
+
+// A field quoted by startLine, or as an older start prompt wrote it.
+const unquote = (s: string) => {
+  if (!/^".*"$/.test(s)) return s
+  try {
+    return String(JSON.parse(s))
+  } catch {
+    return s
+  }
+}
 
 export function parseStartPrompt(text: string): StartItem[] {
   const out: StartItem[] = []
@@ -23,7 +35,7 @@ export function parseStartPrompt(text: string): StartItem[] {
         continue
       }
     }
-    out.push({ id: m[1]!, title: title.trim().slice(0, 120), ...(m[3] ? { isBug: true } : {}), ...(m[4] ? { detail: m[4] } : {}), ...(m[5] ? { where: m[5] } : {}) })
+    out.push({ id: m[1]!, title: title.trim().slice(0, 120), ...(m[3] ? { isBug: true } : {}), ...(m[4] ? { detail: unquote(m[4]) } : {}), ...(m[5] ? { where: unquote(m[5]) } : {}) })
   }
   return out
 }
@@ -123,7 +135,12 @@ export function parsePlanResultArgs(args: string): ReturnType<typeof parsePlanOu
 
 // followups → factory: a to-do item run through the factory carries its id in /factory's arguments,
 // so the run's PR prompt has Claude mark it done with followups' done tool.
-export const factoryArgs = (feature: string, followupId?: string) => (followupId ? `${feature} [followup:${followupId}]` : feature)
+// /factory reads a first word like approve, retry, stop or review as its own subcommand: a feature
+// that starts with one (a goal or a to-do title a model may have written) is sent as "Feature: ...",
+// so it starts a build, and never approves a plan or starts a review instead.
+const SUBCOMMAND = /^(approve|retry|stop|status|doctor|skip|abandon|checks-ok|review|base|rework|reviewers|plan-approved|plan-result)(\s|$)/i
+export const safeFeature = (feature: string) => (SUBCOMMAND.test(feature.trim()) ? `Feature: ${feature.trim()}` : feature)
+export const factoryArgs = (feature: string, followupId?: string) => (followupId ? `${safeFeature(feature)} [followup:${followupId}]` : safeFeature(feature))
 export function parseFactoryArgs(args: string): { feature: string; followupId?: string } {
   const m = /^([\s\S]*?)\s*\[followup:([\w-]+)\]\s*$/.exec(args)
   return m ? { feature: m[1]!.trim(), followupId: m[2]! } : { feature: args.trim() }
