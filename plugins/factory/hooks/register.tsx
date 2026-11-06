@@ -185,8 +185,8 @@ async function spawnRole($: EngineInterface, role: Role, prompt: string, { onSes
   const job = prompt
   // A builder started on a worktree that already has work: told what is there, from git.
   if (role === 'builder') {
-    const [log, status] = await Promise.all([git($, ['log', '--oneline', `${r.base}..HEAD`], r.worktree), git($, ['status', '--porcelain'], r.worktree)])
-    const note = progressNote(log.exitCode === 0 ? log.stdout : '', status.exitCode === 0 ? status.stdout : '')
+    const [log, status] = await Promise.all([git($, ['log', '--oneline', `${r.base}..HEAD`], r.worktree), git($, ['status', '--porcelain', '-uall'], r.worktree)])
+    const note = progressNote(log.exitCode === 0 ? log.stdout : '', status.exitCode === 0 ? status.stdout : '', [r.specFile])
     if (note) prompt = `${note}\n\n${prompt}`
   }
   const skills = skillsOf(role)
@@ -587,10 +587,10 @@ async function approveAuto($: EngineInterface, r: Run, cmds: string[][]): Promis
   }
   await patch($, cur => ({ ...cur, isAskingChecks: false, note: 'running the checks' }))
   if (answer === RUN_THEM) {
-    await patch($, cur => ({ ...cur, autoApproved: key }))
+    await patch($, cur => ({ ...cur, autoApproved: key, askedChecks: undefined }))
     return true
   }
-  await block($, { on: 'checks' }, 'The checks wait for your OK to run the commands the factory found: Retry asks again, or set the checks and setup options.', cur => ({ ...cur, steps: { ...cur.steps, checks: { ...cur.steps.checks, state: 'wait' } } }))
+  await block($, { on: 'checks' }, `The checks wait for your OK to run what the factory found: ${cmds.map(c => c.join(' ')).join('; ')}. /factory checks-ok runs them, Retry asks again, or set the checks and setup options.`, cur => ({ ...cur, askedChecks: key, steps: { ...cur.steps, checks: { ...cur.steps.checks, state: 'wait' } } }))
   return false
 }
 
@@ -710,6 +710,12 @@ async function startReviews($: EngineInterface) {
 // The reviewers of this round not started yet (all of them, or those a failed start left).
 async function spawnReviewers($: EngineInterface, r: Run) {
   const stat = await git($, ['diff', '--stat', r.base, 'HEAD'], r.worktree)
+  // The whole diff in a file the reviewers Read: their own git is refused with no one to approve it.
+  const diff = r.record ? await git($, ['diff', r.base, 'HEAD'], r.worktree) : null
+  if (diff && diff.exitCode === 0 && diff.stdout.trim()) {
+    const file = `${r.record}/diff-round-${r.round}.patch`
+    if (await $.fs.write(file, diff.stdout).then(() => true, () => false)) r = (await patch($, cur => ({ ...cur, diffFile: file }))) ?? r
+  }
   for (const x of r.reviews.filter(v => v.round === r.round && v.state === 'run' && !v.agentId)) {
     const prompt = reviewPrompt(r, x.role, stat.exitCode === 0 ? stat.stdout.trim() : '')
     const extra = r.extras?.find(e => e.name === x.role)
@@ -942,6 +948,20 @@ async function reworkNow($: EngineInterface, said: string): Promise<string> {
   if (r.steps.builder.state === 'wait') return 'Nothing is built yet: /factory retry runs the step that stopped.'
   void serial(() => startBuild($, [], [], said))
   return `Sent back to the builder: ${said}`
+}
+
+// /factory checks-ok: the person lets the commands the unanswered question named run, without the
+// question (a dismissed dialog, or a session with no one to answer it). Only those commands, as they
+// were then: when the files that define them changed since, the question comes again.
+async function checksOkNow($: EngineInterface): Promise<string> {
+  const r = await read($, run)
+  if (!r || r.phase !== 'needs-human' || r.blocked?.on !== 'checks' || !r.askedChecks) return 'No checks wait for your OK.'
+  const key = r.askedChecks
+  void serial(async () => {
+    await patch($, cur => ({ ...cur, autoApproved: key, askedChecks: undefined, checkRound: 0 }))
+    return runChecks($)
+  })
+  return `Running them: ${key.replace(/ @ \S*$/, '')}. Not asked again in this run until the files that define them change.`
 }
 
 // /factory base <branch>: the branch the work is on top of, when the run asked (or to correct it).
@@ -1271,6 +1291,7 @@ export const register: Register = (on, options) => {
     if (arg === 'stop') return { text: await stopNow($) }
     if (arg === 'status') return { text: await statusText($) }
     if (arg === 'doctor') return { text: await doctorText($) }
+    if (arg === 'checks-ok') return { text: await checksOkNow($) }
     if (arg === 'skip') return { text: await skipNow($) }
     if (arg === 'abandon') return { text: await abandonNow($, 'by the person') }
     if (arg.startsWith('reviewers ')) return { text: await addReviewers($, arg.slice(10).split(/[\s,]+/).filter(Boolean)) }
@@ -1288,7 +1309,7 @@ export const register: Register = (on, options) => {
     // A run going and one word that isn't a subcommand: a mistyped one (plan-approve), not a feature.
     const cur = await read($, run)
     if (cur && isLive(cur.phase) && /^[\w-]+$/.test(arg)) {
-      return { text: `"/factory ${arg}" isn't a factory command. While a run goes: /factory approve, plan-approved (the plan goal-run approved), retry, rework <what to change>, status, doctor, stop.` }
+      return { text: `"/factory ${arg}" isn't a factory command. While a run goes: /factory approve, plan-approved (the plan goal-run approved), retry, rework <what to change>, checks-ok, status, doctor, stop.` }
     }
     return { text: await start($, arg) }
   })

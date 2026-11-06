@@ -78,6 +78,12 @@ export type Run = {
   // The PR, once the run is done: asked of the main Claude (requested), opened (it reported the link
   // with the control tool), or handed to the person as commands when the feature says not to push.
   pr?: { state: 'requested' | 'opened' | 'handed'; url?: string }
+  // The commands the factory found that wait for the person's OK, when the question went unanswered
+  // (dismissed, or no one there to answer it): /factory checks-ok lets exactly these run.
+  askedChecks?: string
+  // This round's whole diff, written by the factory beside the record: the reviewers read it instead
+  // of running git, which a session with no one to approve it refuses.
+  diffFile?: string
   steps: Record<'spec' | 'builder' | 'checks' | 'approver', { state: StepState; tokens: number }>
   checks: Check[]
   // Why no check ran, or what detection warned about: what the reviewers and the approver are told.

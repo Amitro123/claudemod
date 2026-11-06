@@ -87,10 +87,11 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
       return err ? ({ value: { exitCode: 128, stdout: '', stderr: err } } as never) : ok()
     }
     if (cmd.startsWith('git diff --stat')) return ok(' src/mw.ts | 40 +++\n 1 file changed')
+    if (cmd === 'git diff abc123 HEAD') return ok('diff --git a/src/mw.ts b/src/mw.ts\n+export const limit = 10\n')
     // New files in the index (`stagedNew`, the builder's own git add), and new files committed since the base.
     if (cmd === 'git diff --cached --name-only --diff-filter=A -z') return ok(stagedNew.join('\0'))
     if (cmd === 'git diff --name-only --diff-filter=A -z abc123 HEAD') return ok(committedNew.join('\0'))
-    if (cmd === 'git status --porcelain') return ok(dirty ? ' M src/mw.ts\n?? src/limit/new.ts\n?? node_modules/\n?? .env\n?? certs/server.key\n' : '')
+    if (cmd === 'git status --porcelain' || cmd === 'git status --porcelain -uall') return ok(dirty ? ' M src/mw.ts\n?? src/limit/new.ts\n?? node_modules/\n?? .env\n?? certs/server.key\n' : '')
     // -z -uall: each untracked file on its own, NUL-separated, unquoted (a new folder's .env too).
     if (cmd === 'git status --porcelain -z -uall') return ok(dirty ? [' M src/mw.ts', '?? src/limit/new.ts', '?? src/limit/שלום.ts', '?? app/.env', '?? app/index.js', '?? node_modules/x/a.js', '?? .env', '?? certs/server.key', 'R  src/b.ts', 'src/a.ts', ''].join('\0') : '')
     if (cmd.startsWith('git log -1 --format=%H HEAD --')) return ok(`${configCommit}\n`)
@@ -1411,7 +1412,7 @@ describe('what the factory did, and the PR asked in the conversation', () => {
     const w = engine(on)
     await toReviews($)
     const files = Object.keys(w.written).filter(p => p.startsWith('/repo/.factory/rate-limiter.record/')).map(p => p.split('/').pop())
-    expect(files).toEqual(['01-spec-writer.md', '02-builder-round-1.md', '03-changes-after-builder-round-1.md', '04-checks.md'])
+    expect(files).toEqual(['01-spec-writer.md', '02-builder-round-1.md', '03-changes-after-builder-round-1.md', '04-checks.md', 'diff-round-1.patch'])
     expect(w.written['/repo/.factory/rate-limiter.record/02-builder-round-1.md']).toBe('# builder, round 1\n\nModel asked: sonnet; ran on: no step seen.\n\nbuilt\n')
     expect(w.written['/repo/.factory/rate-limiter.record/04-checks.md']).toMatch(/^# checks\n\n✓ npm test/)
     const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
@@ -2018,5 +2019,45 @@ describe('the doctor, and the next actions the status tool lists', () => {
     expect(nextActionsOf({ ...base, phase: 'done', pr: { state: 'requested' } } as never, 0).map(a => a.action)).toEqual(['pr-opened', 'start'])
     expect(nextActionsOf({ ...base, phase: 'done', pr: { state: 'opened', url: 'u' } } as never, 0).map(a => a.action)).toEqual(['start'])
     expect(nextActionsOf(null, 0).map(a => a.action)).toEqual(['start'])
+  })
+})
+
+describe('what the first real run found', () => {
+  test("the spec the spec-writer left uncommitted isn't a builder's work: the first builder gets no progress note", () => {
+    expect(progressNote('', '?? docs/specs/rate-limiter.md\n', ['docs/specs/rate-limiter.md'])).toBe('')
+    expect(progressNote('', '?? docs/specs/rate-limiter.md\n M src/mw.ts\n', ['docs/specs/rate-limiter.md'])).toMatch(/Uncommitted changes:\n- M src\/mw\.ts$/)
+  })
+
+  test('the checks question unanswered: /factory checks-ok runs exactly the commands it named, and the run goes on', async ($, on) => {
+    const w = engine(on, { files: ['package.json'], checksOk: null })
+    await toReviews($)
+    expect(w.ran).not.toContain('npm test')
+    const status = String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)
+    expect(status).toMatch(/The checks wait for your OK to run what the factory found: npm install; npm test\. \/factory checks-ok runs them/)
+    expect(status).toMatch(/Next actions:\n- checks-ok \(the person\): \/factory checks-ok: runs the commands the factory found \(npm install; npm test\); not yours to allow/)
+    const asked = w.asked.length
+    expect(await command($, 'checks-ok')).toBe('Running them: npm install; npm test. Not asked again in this run until the files that define them change.')
+    expect(w.asked.length).toBe(asked)
+    expect(w.ran).toContain('npm install')
+    expect(w.ran).toContain('npm test')
+    expect(w.spawned.map(s => s.subagentType)).toContain('factory:code-reviewer')
+    expect(await command($, 'checks-ok')).toBe('No checks wait for your OK.')
+  })
+})
+
+describe("the agents don't need git or a shell chain (what the first real run's refusals showed)", () => {
+  test('the reviewers and the skeptic read the diff from a file the factory wrote; every prompt says one plain command per call', async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    const file = '/repo/.factory/rate-limiter.record/diff-round-1.patch'
+    expect(w.written[file]).toContain('+export const limit = 10')
+    const review = w.spawned.find(s => s.subagentType === 'factory:code-reviewer')!.prompt
+    expect(review).toContain(`The whole diff is in ${file}: read it with the Read tool`)
+    for (const s of w.spawned) expect(s.prompt).toMatch(/In Bash, one plain command per call: no cd, no git -C, no &&/)
+    expect(w.spawned.find(s => s.subagentType === 'factory:builder')!.prompt).toMatch(/If a git or test command is refused, leave it: the factory commits what you leave/)
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', CHANGES)
+    expect(last(w).subagentType).toBe('factory:skeptic')
+    expect(last(w).prompt).toContain(`The whole diff is in ${file}`)
   })
 })
