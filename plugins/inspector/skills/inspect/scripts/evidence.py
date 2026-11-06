@@ -36,11 +36,11 @@ from dataclasses import dataclass, field
 STRONG = [
     r"^fix(\(.+\))?!?:", r"\bfix(es|ed|ing)?\b",
     r"\bbug(s|fix)?\b(?!\s+(marker|tracker|report(er|s)?|detective|label|template|icon|bounty))",
-    r"\bregress(ion|ed)?\b", r"\breview (fixes|findings)\b", r"\bwhat .{0,40}\bfound\b",
+    r"\bregress(ion|ed)?\b", r"\breview (fixes|findings)\b",
     r"\brevert(s|ed)?\b", r"\bhotfix\b", r"\bbroke(n)?\b", r"\bcrash(es|ed)?\b",
     r"תיקון|תוקן|באג|תקלה|נשבר|שבור",
 ]
-WEAK = [r"\bno longer\b", r"\bwrong\b", r"\bstale\b", r"\brace\b", r"\bleak(s|ed)?\b", r"\bNaN\b",
+WEAK = [r"\bno longer\b", r"\bwhat .{0,40}\bfound\b", r"\bwrong\b", r"\bstale\b", r"\brace\b", r"\bleak(s|ed)?\b", r"\bNaN\b",
         r"\bmissing\b", r"\b(doesn't|don't|didn't|isn't|wasn't|can't)\b", r"\binstead of\b"]
 # A feature says so first: "Add X", "feat: X", "factory 0.6.0: support Y" (after a "name 1.2.3:" prefix).
 FEATURE_START = re.compile(r"^(feat(\(.+\))?!?:|(add|adds|introduce|introduces|support|supports|implement|new)\b)", re.I)

@@ -59,9 +59,8 @@ One line each: what was checked, and how it is handled.
 
 ## Not investigated
 
-What you skipped and why: the units past the budget, the collector's Warnings (shallow,
+What you skipped and why: the units past the budget (by label, so a later run can scope to them), the collector's Warnings (shallow,
 truncated), no host access, binary files.
 
 Investigated through <sha>
-Unworked: <units, if any>
 ```

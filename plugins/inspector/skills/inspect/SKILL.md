@@ -20,7 +20,8 @@ leads**: bugs of a kind this project has already had, still in today's code.
    - **inferred**: a commit message, changelog or PR text says so.
 
    Raise a claim's level only by doing that level's work. A case card's level is the level of
-   its Mechanism line; a field below it says its own level in brackets.
+   its Mechanism line; a field whose own level is lower says so in brackets after it. Open leads
+   (step 5) use the first two levels too, with *suspect* and *clear* below them.
 2. **A bug is a broken promise.** Measure every fix against what the project's README and docs
    promise, not against your taste. A change you'd have written differently is not a case.
 3. **What you may change.** No tracked file, no working-tree file, no commit. You may write:
@@ -42,7 +43,7 @@ commit.
 | Argument | Work window | Collector flags (step 2) |
 |---|---|---|
 | none, no earlier case file | the last 200 units | (none) |
-| none, an earlier case file | the units after the sha it was investigated through, plus the ones it lists as unworked | `--since <sha>`, then add the unworked units by hand |
+| none, an earlier case file | the units after the sha it was investigated through | `--since <sha>` |
 | `#N` or a sha | that one unit: its culprits, and siblings of its bug in today's code | `--unit '#N'` or `--unit <sha>` |
 | `since <ref or YYYY-MM-DD>` | the units after it | `--since <ref or date>` |
 | a path (`plugins/x`, `src/auth`) | the units that touch it | `--path <path>` |
@@ -146,12 +147,9 @@ fixes two unrelated things is two cases. Split by hunk only when you must.
 4. one or two fixes picked at random from the rest, as a check on the order's bias;
 5. the rest, from titles only (*inferred*).
 
-If the Agent tool is there and more than 30 cases call for depth, offer once to split them by
-component across read-only sub-agents. Each gets the brief, its units (`--show`), the case card,
-ground rule 4, and the instruction to change nothing. Without an answer, or without the tool,
-work alone within the budget. A case spanning two components goes to the one its fix changed
-most. Afterwards, re-check two of their cards yourself: the two with the strongest claims. A
-card that doesn't hold is lowered to the level you could confirm.
+If the user raises the budget past about 30, you may split the cases by component across
+read-only sub-agents (ground rule 4 applies to what you hand them), then re-check two of their
+cards yourself.
 
 **For each case:**
 - Read the fix's diff: `git show <sha> -- <code paths>` for a commit or squash; for a merge,
@@ -196,7 +194,7 @@ Group the cards:
 - **By seam**: which pairs of components keep breaking each other, through what. A seam is
   where a bug lives, the class is what kind it is: count both.
 - **Chains**: `#A → #B → #C`, with what each link assumed.
-- **Timing**: fixes within the 5 units after a unit in the top tenth by insertions. A component
+- **Timing**: fixes that soon followed a large change (the timeline's `+/-` column). A component
   with no fixes and no tests is unknown, not healthy.
 - **What fixes lacked**: no test, fixed again later, one copy of several patched.
 
@@ -234,9 +232,9 @@ would prove it. Don't make the change.
 Write it to `docs/inspector/<YYYY-MM-DD>-case.md` unless the user named another place. If that
 file exists, add `-2`, `-3`. Create `docs/inspector/` if needed. Use
 `<skill_root>/references/case-file.md`. Write it in the language the user writes to you in;
-code, paths and quotes stay as they are. Its last lines:
-- `Investigated through <sha>`: the sha the collector read;
-- `Unworked: <units>`, if the budget left units unworked, so the next run takes them up.
+code, paths and quotes stay as they are. Its last line is
+`Investigated through <sha>`, the sha the collector read. The units the budget left unworked
+are listed under "Not investigated"; the user can run again with a scope for them.
 
 Before writing, check:
 - every card has its level;

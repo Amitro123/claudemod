@@ -109,7 +109,8 @@ def test_fix_detection(repo: Path) -> None:
     ("followups: fix blank pane, harden export, add tests", True),   # "add tests" inside a fix
     ("fix lint", False), ("Address review comments", False),
     ("factory 0.16.0: run review findings L1, L2", True),
-    ("factory 0.18.0: what the first real run found", True),
+    ("factory 0.18.0: what the first real run found", False),       # weak alone
+    ("factory 0.18.0: fixes from what the first real run found", True),
     ("Revert \"Add caching\"", True),
 ])
 def test_subject_verdict(subject: str, is_fix: bool) -> None:
