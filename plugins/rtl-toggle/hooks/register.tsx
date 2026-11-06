@@ -29,7 +29,7 @@ export const register: Register = on => {
     const arg = e.args.trim().toLowerCase()
     if (arg === 'status') return { text: statusText(await read($, rtlEnabled)) }
     if (arg && arg !== 'on' && arg !== 'off' && arg !== 'toggle') {
-      return { text: `Unknown argument "${arg}". Usage: /rtl [on|off|status]` }
+      return { text: `Unknown argument "${arg}". Usage: /rtl [on|off|toggle|status]` }
     }
     await update($, rtlEnabled, v => (arg === 'on' ? true : arg === 'off' ? false : !v))
     return { text: statusText(await read($, rtlEnabled)) }

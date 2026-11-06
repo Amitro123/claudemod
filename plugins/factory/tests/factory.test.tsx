@@ -979,6 +979,13 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     for (const a of [code, security]) expect(a.prompt).toMatch(/What this diff calls for[\s\S]*prompt injection/)
   })
 
+  test('a bare STANDS line does not swallow the ruling on the next line', () => {
+    const f = [{ severity: 'major' as const, where: 'a.ts:1', text: 'x' }, { severity: 'major' as const, where: 'b.ts:2', text: 'y' }]
+    const { kept, dropped } = applyRulings(f, 'F1: STANDS\nF2: REFUTED b.ts:2 the store is shared', () => false)
+    expect(kept).toEqual([f[0]])
+    expect(dropped).toEqual([{ finding: f[1], ruling: 'refuted', why: 'b.ts:2 the store is shared' }])
+  })
+
   test('the rulings: refuted needs evidence, a security blocker always stands, downgraded is minor, unruled stands', () => {
     const f = [
       { severity: 'major' as const, where: 'a.ts:1', text: 'x' },
@@ -1004,7 +1011,7 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     expect(await bandText($)).toMatch(/a skeptic checks 1 finding/)
     await answer($, 'a5', 'Read mw.ts.\nF1: REFUTED src/mw.ts:12 divides by 1000 before it sets the header')
     expect(last(w)).toMatchObject({ id: 'a6', subagentType: 'factory:approver' })
-    expect(last(w).prompt).toMatch(/refuted or downgraded with evidence[\s\S]*Retry-After is in ms, not seconds: refuted, src\/mw\.ts:12 divides by 1000/)
+    expect(last(w).prompt).toMatch(/the skeptic set aside with evidence[\s\S]*Retry-After is in ms, not seconds: refuted, src\/mw\.ts:12 divides by 1000/)
     expect(Object.entries(w.written).find(([k]) => /skeptic-rulings\.md$/.test(k))?.[1]).toMatch(/REFUTED: \[major\] src\/mw\.ts:12/)
     expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(1)
   })
@@ -2128,8 +2135,8 @@ describe('/factory review: the reviewers alone, on the change in your checkout',
     expect(w.spawned.map(s => s.subagentType)).not.toContain('factory:builder')
     expect(w.spawned.map(s => s.subagentType)).not.toContain('factory:approver')
     expect(w.sent.at(-1)).toMatch(/^The factory's reviewers \(security, code\) reviewed the change in \/repo against def999/)
-    expect(w.sent.at(-1)).toContain('Fix each of these in the checkout, then say what you changed:\n- code [major] src/mw.ts:3 the token is read from the query string')
-    expect(w.sent.at(-1)).toContain('Minor, fix when cheap:\n- security src/limit.ts:4 a name could be clearer')
+    expect(w.sent.at(-1)).toContain('Fix each of these in the checkout, then say what you changed:\n- F2 code [major] src/mw.ts:3 the token is read from the query string')
+    expect(w.sent.at(-1)).toContain('Minor, fix when cheap:\n- F1 security src/limit.ts:4 a name could be clearer')
     const status = String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)
     expect(status).toMatch(/Phase: done[^\n]*reviewed: 1 finding to fix, sent to Claude/)
     expect(status).toMatch(/A review of the checkout \/repo against origin\/HEAD \(def999\): reviewers only/)
@@ -2214,5 +2221,64 @@ describe('what the model-router review showed', () => {
     const w = engine(on)
     await toReviews($)
     expect(w.spawned.find(s => s.subagentType === 'factory:code-reviewer')!.prompt).toContain('path:line is a line of the file itself, as Read shows it, never a line of the diff file.')
+  })
+})
+
+describe("what became of each review finding: reported, kept, and added up over the repository", () => {
+  const CONTROL = 'mcp__factory__control'
+  const control = async ($: Engine, input: Record<string, unknown>) => String((await $.tool.call({ tool: CONTROL, ...input } as never)).result ?? '')
+
+  test('Claude reports fixed, not-a-bug or wont-fix per id; stats, the status and findings.jsonl say so', async ($, on) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    await answer($, 'a1', PASS)
+    await answer($, 'a2', 'VERDICT: CHANGES\nFINDINGS:\n- [major] src/mw.ts:3 the token is read from the query string\n- [major] src/mw.ts:9 the limit is per process')
+    await answer($, 'a3', 'F1: STANDS\nF2: REFUTED src/mw.ts:2 the store is shared (redis)')
+    const told = w.sent.at(-1)!
+    expect(told).toMatch(/report what became of every one, F1, F2, with mcp__factory__control action "findings"/)
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/- findings \(you\): mcp__factory__control action "findings"/)
+    expect(await control($, { action: 'findings', outcomes: [{ id: 'F9', outcome: 'fixed' }] })).toMatch(/^No outcome read/)
+    const said = await control($, { action: 'findings', outcomes: [{ id: 'F1', outcome: 'not-a-bug', why: 'a test shows the code reads the header' }, { id: 'F2', outcome: 'fixed' }] })
+    expect(said).toBe("Recorded 2 outcomes. 3 findings: 1 fixed, 1 not a bug, 1 refuted by the skeptic. False positives among those judged: 50% (1 of 2).")
+    const jsonl = w.written['/repo/.factory/findings.jsonl']!.trim().split('\n').map(l => JSON.parse(l))
+    expect(jsonl.map(x => [x.role, x.severity, x.outcome])).toEqual([['security', 'minor', 'not-a-bug'], ['code', 'major', 'fixed']])
+    expect(jsonl[0].why).toBe('a test shows the code reads the header')
+    expect(w.written[Object.keys(w.written).find(k => /review-.*\.record\/stats\.md$/.test(k))!]).toMatch(/Outcomes: 3 findings: 1 fixed, 1 not a bug, 1 refuted by the skeptic\./)
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/Review findings in this repository so far \(\.factory\/findings\.jsonl\): 2 findings: 1 fixed, 1 not a bug\. False positives among those judged: 50%/)
+  })
+
+  test('without a review that sent findings back, there is nothing to report', async ($, on) => {
+    engine(on)
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    expect(await control($, { action: 'findings', outcomes: [{ id: 'F1', outcome: 'fixed' }] })).toBe('No review findings wait for their outcomes.')
+  })
+})
+
+describe('the skeptic weighs both ways: a design choice and an unverified claim are set aside, not fixed', () => {
+  test('DESIGN and UNVERIFIED rulings are read, with their evidence', () => {
+    const f = [0, 1, 2].map(i => ({ severity: 'minor' as const, where: `a.ts:${i}`, text: `t${i}` }))
+    const { kept, dropped } = applyRulings(f, 'F1: DESIGN a.test.ts:4 asserts it\nF2: UNVERIFIED rests on the engine; a probe test would settle it\nF3: STANDS traced a.ts:2', () => false)
+    expect(kept).toEqual([f[2]])
+    expect(dropped.map(d => d.ruling)).toEqual(['design', 'unverified'])
+  })
+
+  test('in a review run the skeptic weighs minor findings too; what it sets aside goes back grouped, with its outcome', async ($, on) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    await answer($, 'a1', 'VERDICT: PASS\nFINDINGS:\n- [minor] src/a.ts:1 typed text becomes the title')
+    await answer($, 'a2', 'VERDICT: CHANGES\nFINDINGS:\n- [major] src/b.ts:2 the second call spawns twice\n- [major] src/c.ts:3 the token leaks')
+    const sk = last(w)
+    expect(sk.subagentType).toBe('factory:skeptic')
+    expect(sk.prompt).toContain('F1. security [minor] src/a.ts:1 typed text becomes the title')
+    expect(sk.prompt).toMatch(/F<n>: DESIGN <the test, comment or doc/)
+    expect(sk.prompt).toMatch(/F<n>: UNVERIFIED <what it rests on/)
+    await answer($, sk.id, 'F1: DESIGN src/a.test.ts:9 pins the rewording\nF2: UNVERIFIED rests on the engine re-running next; a probe test would settle it\nF3: STANDS c.ts:3 a bare GH_TOKEN=x shows on the card')
+    const told = w.sent.at(-1)!
+    expect(told).toMatch(/Fix each of these[\s\S]*src\/c\.ts:3 the token leaks/)
+    expect(told).toMatch(/make these deliberate \(the person's call[^\n]*\n- security src\/a\.ts:1 typed text becomes the title: src\/a\.test\.ts:9 pins the rewording/)
+    expect(told).toMatch(/couldn't check[^\n]*\n- code src\/b\.ts:2 the second call spawns twice: rests on the engine/)
+    expect(await $.tool.call({ tool: 'mcp__factory__control', action: 'findings', outcomes: [{ id: 'F1', outcome: 'fixed' }] } as never).then(r => String(r.result))).toMatch(/1 fixed, 1 a design choice \(the skeptic\), 1 unverified \(the skeptic\)/)
   })
 })

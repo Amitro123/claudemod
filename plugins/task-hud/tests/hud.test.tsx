@@ -523,3 +523,4 @@ describe('a Skill call with no skill named', () => {
     expect(activityOf('Skill', { skill: 'pdf' }).now).toBe('Reading the pdf skill')
   })
 })
+

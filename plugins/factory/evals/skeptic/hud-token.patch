@@ -1,0 +1,59 @@
+diff --git a/plugins/task-hud/hooks/register.tsx b/plugins/task-hud/hooks/register.tsx
+index eea2e76..6d4f22c 100644
+--- a/plugins/task-hud/hooks/register.tsx
++++ b/plugins/task-hud/hooks/register.tsx
+@@ -51,6 +51,13 @@ export function modelName(id: string): string {
+   return m[2] ? `${fam} ${m[2]}${m[3] ? `.${m[3]}` : ''}` : fam
+ }
+ 
++// A command's program name alone: after any leading VAR=value assignments, and never its arguments
++// (which can hold a token).
++const programOf = (command: string) => {
++  const rest = firstLine(command).replace(/^(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, '')
++  return base(rest.split(/\s+/)[0])
++}
++
+ // What a sub-agent's tool call reads as on its card.
+ export function activityOf(tool: string, input: Record<string, unknown>): Activity {
+   const file = base(input.file_path ?? input.notebook_path ?? input.path)
+@@ -59,8 +66,9 @@ export function activityOf(tool: string, input: Record<string, unknown>): Activi
+     case 'Read': return say('Reading', 'Read', file)
+     case 'Write': return say('Writing', 'Wrote', file)
+     case 'Edit':
++    case 'MultiEdit':
+     case 'NotebookEdit': return say('Editing', 'Edited', file)
+-    case 'Bash': return say('Running', 'Ran', String(input.description ?? firstLine(String(input.command ?? ''))))
++    case 'Bash': return say('Running', 'Ran', String(input.description ?? '').trim() || programOf(String(input.command ?? '')))
+     case 'Grep':
+     case 'Glob': return say('Searching for', 'Searched for', String(input.pattern ?? ''))
+     case 'WebSearch': return say('Searching the web for', 'Searched the web for', String(input.query ?? ''))
+@@ -76,7 +84,10 @@ export function activityOf(tool: string, input: Record<string, unknown>): Activi
+       const cur = list.find(t => t.status === 'in_progress')
+       return cur ? say('', '', cur.activeForm) : say('Planning', 'Planned', `${list.length} to-dos`)
+     }
+-    default: return say('Using', 'Used', tool.replace(/^mcp__[^_]+__/, ''))
++    default: {
++      const m = /^mcp__(.+?)__(.+)$/.exec(tool)
++      return m ? say('Using', 'Used', `${m[1]}: ${m[2]!.replace(/[_-]+/g, ' ')}`) : say('Using', 'Used', tool)
++    }
+   }
+ }
+ 
+diff --git a/plugins/task-hud/tests/hud.test.tsx b/plugins/task-hud/tests/hud.test.tsx
+index f9e1746..19a15ef 100644
+--- a/plugins/task-hud/tests/hud.test.tsx
++++ b/plugins/task-hud/tests/hud.test.tsx
+@@ -495,8 +495,11 @@ describe('text', () => {
+     expect(activityOf('Grep', { pattern: 'TODO' }).now).toBe('Searching for TODO')
+     expect(activityOf('WebFetch', { url: 'https://example.com/x?y=1' }).past).toBe('Fetched example.com')
+     expect(activityOf('Skill', { skill: 'pdf' }).now).toBe('Reading the pdf skill')
+-    expect(activityOf('mcp__github__get_file_contents', {}).now).toBe('Using get_file_contents')
+-    expect(activityOf('Bash', { command: 'git status\ngit log' }).now).toBe('Running git status')
++    expect(activityOf('mcp__github__get_file_contents', {})).toEqual({ now: 'Using github: get file contents', past: 'Used github: get file contents' })
++    expect(activityOf('MultiEdit', { file_path: '/w/a.ts' })).toEqual({ now: 'Editing a.ts', past: 'Edited a.ts' })
++    expect(activityOf('Bash', { command: 'git status\ngit log' }).now).toBe('Running git')
++    expect(activityOf('Bash', { command: 'A=1 TOKEN="x y" curl -H secret http://h' }).past).toBe('Ran curl')
++    expect(activityOf('Bash', { command: 'ls', description: 'List files' }).now).toBe('Running List files')
+   })
+ })
+ 

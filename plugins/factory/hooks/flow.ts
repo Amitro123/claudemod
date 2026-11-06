@@ -1,7 +1,7 @@
 // The factory's pure parts: what each role is told, how its answer is read, which checks run, and
 // how a run starts. The hooks module only spawns, runs and draws.
 
-import type { Check, Extra, Finding, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
+import type { Check, Extra, Finding, LedgerEntry, Outcome, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
 import { FACTORY_SOURCE } from './texts'
 
 export const REVIEWERS: Reviewer[] = ['security', 'code']
@@ -70,7 +70,11 @@ export const ROLE_PROMPTS: Record<Role, string> = {
   builder: `You are the builder of a software factory. You implement exactly what the spec asks, in the repository you are started in, with tests for each acceptance criterion. Keep the change focused; don't refactor beyond it. Commit your work to the current branch when you are done.`,
   security: `You are the security reviewer of a software factory. Review the change against the spec for: injection and unsafe input handling, authentication and authorization, secrets in code or logs, unsafe defaults, dependency risk, and data exposure. Report only real, specific problems.`,
   code: `You are the code reviewer of a software factory. Review the change against the spec for: correctness against each acceptance criterion, missing or weak tests, error handling, clarity, layering and design, and performance traps. Report only real, specific problems.`,
-  skeptic: `You are the skeptic of a software factory. Reviewers found problems in a change; before the builder is sent to fix them, you try to refute each one with evidence: the code at file:line, a definition, or a command's output. You change no file. A finding you can't refute stands: never refute one on opinion.`,
+  // Weighed in both directions, with two more rulings than refuted and downgraded: on real findings and
+  // known false positives from this repository's reviews (docs/bench/2026-11-07-skeptic.md, evals/skeptic),
+  // the old one-sided skeptic ("what you can't refute stands") left all 6 false-positive runs standing;
+  // this one set all 6 aside and kept all 10 real ones.
+  skeptic: `You are the skeptic of a software factory. Reviewers found problems in a change; you weigh each one before anyone acts on it, in both directions: look as hard for evidence that it is real as for evidence that it isn't. A finding stands only when you traced it: the input or event that triggers it, the code path at file:line, and the wrong result. A behaviour that a test pins, or that a comment or the docs say is deliberate, is a design choice for the person, not a bug. A claim that rests on what you can't see or run here (the host engine's behaviour, an external API, timing between calls) is unverified, not standing, but only once you looked for what in the repository settles it: other code that relies on the same behaviour, its tests, docs, notes. Where the repository shows it, rule on that. You change no file. Never rule on opinion: every ruling names its evidence.`,
   extra: `You are an extra reviewer of a software factory, added for this change. You review it through the one lens your job names, against the spec. Report only real, specific problems.`,
   approver: `You are the approver of a software factory. You decide whether a change that went through review can go to a pull request. You don't review the code again: you weigh the spec, the check results and the reviewers' verdicts and findings.`,
 }
@@ -432,6 +436,7 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
     '- [blocker|major|minor] <path:line> <what is wrong and why>',
     'NOT CHECKED:',
     '- <an acceptance criterion or part of the change in your area that you did not verify, and why>',
+    "Each finding names its trigger: the input or event that sets it off and the wrong result. blocker: an acceptance criterion not met, or a bug a real input reaches for sure. major: wrong behaviour, lost data or a security gap a real input can reach. minor: display, docs, style, a cheap improvement, or a finding you couldn't trace to a trigger.",
     "path:line is a line of the file itself, as Read shows it, never a line of the diff file. A finding that needs more than one line goes on, indented, under its own.",
     'A blocker or major finding means CHANGES. Write "FINDINGS: none" when there are none, and "NOT CHECKED: none" only when you verified everything in your area.',
   ].filter(Boolean).join('\n')
@@ -446,10 +451,14 @@ export function skepticPrompt(run: Run, findings: { role: Reviewer; finding: Fin
       : `The spec is ${specPathOf(run)}. The change is on branch ${run.branch}, since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD).`,
     whereLine(run),
     ...(run.diffFile ? [`The whole diff is in ${run.diffFile}: read it with the Read tool instead of running git.`] : []),
-    'The reviewers asked for changes over these findings. For each, try to refute it: read the code it names, the definitions it relies on, run a read-only command if that settles it. Refute only with evidence.',
+    'The reviewers raised these findings. Weigh each: read the code it names and the definitions it relies on, run a read-only command if that settles it, and search the tests and the comments around it for whether the behaviour is meant (a test that asserts it, a comment that says why).',
     ...findings.map((x, i) => `F${i + 1}. ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}`),
-    'End your answer with one line per finding, exactly:',
-    'F<n>: STANDS | REFUTED <evidence: file:line or command output> | DOWNGRADED <why it is only minor, with evidence>',
+    'End your answer with one line per finding, exactly one of:',
+    'F<n>: STANDS <the trigger, the path at file:line and the wrong result you traced>',
+    "F<n>: REFUTED <evidence that it doesn't happen: file:line or command output>",
+    'F<n>: DOWNGRADED <a blocker or major that is real, but only minor: why, with evidence>',
+    'F<n>: DESIGN <the test, comment or doc that makes the behaviour deliberate, at file:line>',
+    "F<n>: UNVERIFIED <what it rests on that can't be checked here, and what would settle it>",
   ].join('\n')
 }
 
@@ -469,7 +478,7 @@ export function approvePrompt(run: Run, stat = ''): string {
     whereLine(run),
     ...builderSaid(run),
     ...(run.route?.focus.length ? ['What this diff called for:', ...run.route.focus.map(f => `- ${f}`)] : []),
-    ...(run.refuted?.length ? ['Findings a skeptic refuted or downgraded with evidence (not fixed, on purpose):', ...run.refuted.map(x => `- ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}: ${x.ruling}, ${x.why}`)] : []),
+    ...(run.refuted?.length ? ["Findings the skeptic set aside with evidence (not fixed, on purpose): refuted, downgraded, a design choice (the person's call: name it in your reason) or unverified (what would settle it is given):", ...run.refuted.map(x => `- ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}: ${x.ruling}, ${x.why}`)] : []),
     `Checks the factory ran itself, in the worktree, after the last build: ${ranChecks(run).length ? run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ') : `NONE RAN. ${run.checksNote || 'none configured'}`}.${ranChecks(run).length ? ' A reviewer or the builder who says it couldn\'t run one of these is covered by this result.' : ''}`,
     ...(ranChecks(run).length && run.checksNote ? [`Check notes: ${run.checksNote}`] : []),
     ...(stat ? [`Files the change touched:\n${stat}`, "Hold them against the spec's Design and Code map: a file, dependency or public interface the spec doesn't name is scope it didn't ask for. Name it in your reason, and ESCALATE unless it is plainly needed to meet a criterion."] : []),
@@ -616,19 +625,53 @@ export function newReview(focus: string, at: number, base: string, root: string,
   }
 }
 
+// A review run's findings, numbered for their outcomes: what stands (F1...), then what the skeptic
+// refuted or downgraded, which comes with its outcome already.
+export function ledgerOf(run: Run): LedgerEntry[] {
+  const standing = run.reviews.flatMap(r => r.findings.map(f => ({ role: r.role, severity: f.severity, where: f.where, text: f.text })))
+  const ruled = (run.refuted ?? []).filter(x => x.ruling !== 'downgraded').map(x => ({ role: x.role, severity: x.finding.severity, where: x.finding.where, text: x.finding.text, outcome: (['design', 'unverified'].includes(x.ruling) ? x.ruling : 'refuted') as Outcome, why: x.why }))
+  return [...standing, ...ruled].map((x, i) => ({ id: `F${i + 1}`, ...x }))
+}
+
+export const OUTCOMES: Outcome[] = ['fixed', 'not-a-bug', 'wont-fix']
+const OUTCOME_WORDS: Record<Outcome, string> = { fixed: 'fixed', 'not-a-bug': 'not a bug', 'wont-fix': "won't fix", refuted: 'refuted by the skeptic', downgraded: 'downgraded by the skeptic', design: 'a design choice (the skeptic)', unverified: 'unverified (the skeptic)' }
+
+// The outcomes, counted: in stats.md, and over a repository's runs (its findings.jsonl).
+export function outcomesLine(entries: readonly { outcome?: Outcome }[]): string {
+  const n = (o?: Outcome) => entries.filter(e => e.outcome === o).length
+  const judged = n('fixed') + n('not-a-bug') + n('wont-fix')
+  const parts = (['fixed', 'not-a-bug', 'wont-fix', 'refuted', 'downgraded', 'design', 'unverified'] as Outcome[]).filter(o => n(o)).map(o => `${n(o)} ${OUTCOME_WORDS[o]}`)
+  const open = n(undefined)
+  return [
+    `${entries.length} finding${entries.length === 1 ? '' : 's'}: ${parts.join(', ') || 'none judged yet'}${open ? `, ${open} not reported yet` : ''}.`,
+    ...(judged ? [`False positives among those judged: ${Math.round((100 * n('not-a-bug')) / judged)}% (${n('not-a-bug')} of ${judged}).`] : []),
+  ].join(' ')
+}
+
+const setAside = (run: Run, ruling: string, title: string) => {
+  const list = (run.refuted ?? []).filter(x => x.ruling === ruling)
+  return list.length ? [title, ...list.map(x => `- ${x.role} ${x.finding.where} ${x.finding.text}: ${x.why}`)] : []
+}
+
 // What the main Claude is told once a review run's reviewers (and the skeptic) are done.
 export function reviewDonePrompt(run: Run): string {
-  const standing = run.reviews.flatMap(r => r.findings.map(f => ({ role: r.role, f })))
-  const fix = standing.filter(x => x.f.severity !== 'minor')
-  const minor = standing.filter(x => x.f.severity === 'minor')
+  const ledger = run.ledger ?? ledgerOf(run)
+  const standing = ledger.filter(x => !x.outcome)
+  const fix = standing.filter(x => x.severity !== 'minor')
+  const minor = standing.filter(x => x.severity === 'minor')
   const unverified = run.reviews.flatMap(r => (r.notChecked ?? []).map(t => `- ${r.role}: ${t}`))
   return [
     `The factory's reviewers (${run.reviews.map(r => reviewerLabel(r.role)).join(', ')}) reviewed the change in ${run.worktree} against ${run.base.slice(0, 12)}${run.feature ? ` (${titleOf(run.feature, 120)})` : ''}.`,
     ...(fix.length
-      ? ['Fix each of these in the checkout, then say what you changed:', ...fix.map(x => `- ${x.role} [${x.f.severity}] ${x.f.where} ${x.f.text}`)]
+      ? ['Fix each of these in the checkout, then say what you changed:', ...fix.map(x => `- ${x.id} ${x.role} [${x.severity}] ${x.where} ${x.text}`)]
       : ['No blocker or major finding.']),
-    ...(minor.length ? ['Minor, fix when cheap:', ...minor.map(x => `- ${x.role} ${x.f.where} ${x.f.text}`)] : []),
-    ...(run.refuted?.length ? ['A skeptic refuted or downgraded these with evidence (leave them):', ...run.refuted.map(x => `- ${x.role} ${x.finding.where} ${x.finding.text}: ${x.ruling}, ${x.why}`)] : []),
+    ...(minor.length ? ['Minor, fix when cheap:', ...minor.map(x => `- ${x.id} ${x.role} ${x.where} ${x.text}`)] : []),
+    ...(standing.length
+      ? [`Check each against the code before you act on it. Then report what became of every one, ${standing.map(x => x.id).join(', ')}, with ${CONTROL_TOOL_NAME} action "findings": outcomes [{ id, outcome: fixed | not-a-bug | wont-fix, why }]. not-a-bug is a finding that is wrong (say why: the code, a test, a design choice it missed); that is how the person learns how far the reviewers can be trusted.`]
+      : []),
+    ...setAside(run, 'refuted', 'The skeptic refuted these with evidence (leave them):'),
+    ...setAside(run, 'design', "The code's own tests or comments make these deliberate (the person's call, not a bug: ask them before changing it):"),
+    ...setAside(run, 'unverified', "These rest on what the review couldn't check (what would settle it is given; settle it, a probe test say, before acting on one):"),
     ...(unverified.length ? ['What the reviewers say they did not check:', ...unverified] : []),
     `Their words: ${run.record ?? ''}/. Don't start another review unless the person asks.`,
   ].join('\n')
@@ -772,6 +815,7 @@ export function nextActionsOf(run: Run | null, now: number): NextAction[] {
   if (!run) return [start]
   if (run.phase === 'stopped') return [start]
   if (run.phase === 'done') {
+    if (run.ledger?.some(x => !x.outcome)) return [{ action: 'findings', by: 'claude', how: `${C} action "findings" with each finding's outcome (fixed, not-a-bug, wont-fix) and why, once you have checked and handled them` }, start]
     if (run.pr?.state === 'requested') return [{ action: 'pr-opened', by: 'claude', how: `once you opened the PR: ${C} action "pr-opened" with its link as url` }, start]
     if (run.pr?.state === 'handed') return [{ action: 'pr-opened', by: 'claude', how: `once the person says they opened it and gives the link: ${C} action "pr-opened"` }, start]
     return [start]
@@ -842,6 +886,7 @@ export function statsReport(run: Run, now: number): string[] {
     `Findings this round: ${by('blocker')} blocker, ${by('major')} major, ${by('minor')} minor; refuted by the skeptic so far: ${run.refuted?.length ?? 0}.`,
     `Tool calls the factory saw: ${calls || 'none'}; refused by its guard: ${s?.guardRefused ?? 0}.`,
     `Answers missing a marker their prompt asks for: ${s?.formatMisses.length ? s.formatMisses.join('; ') : 'none'}.`,
+    ...(run.ledger?.length ? [`Outcomes: ${outcomesLine(run.ledger)}`] : []),
   ]
 }
 

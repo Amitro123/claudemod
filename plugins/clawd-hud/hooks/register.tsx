@@ -281,8 +281,11 @@ export const register: Register = (on, options) => {
   // The band above the prompt: the spark on the left, a battery per usage window beside it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    svgBand = e.surface !== 'terminal'
     const { Box, Text } = $.ui.resolve(e)
+    // The SVG scene only where the surface has Svg (desktop, vscode); any other surface, or one whose
+    // Svg is missing, gets the text face, and the idle redraw rate follows what is drawn.
+    const Svg = e.surface === 'desktop' || e.surface === 'vscode' ? ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null) : null
+    svgBand = !!Svg
     // What the mods beneath draw stays, under the spark's row: this band is shared.
     const below = await next(e)
     const { rl, enterprise, wins } = await planOf($, cfg)
@@ -308,7 +311,7 @@ export const register: Register = (on, options) => {
       return { ...w, ...leftOf(lim), has: !!lim, resets: lim && at !== null && t ? `resets in ${until(at - t)}` : 'no reading yet' }
     })
 
-    if (e.surface !== 'desktop' && e.surface !== 'vscode') {
+    if (!Svg) {
       const row = (
         <Box flexDirection="row" flexWrap="wrap" gap={3}>
           <Text bold color="#ffb547">{faceFor(shown, sceneT, idea)}</Text>
@@ -330,8 +333,6 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    const { Svg } = $.ui.resolve(e as typeof e & { surface: 'desktop' })
-
     const row = (
       <Box flexDirection="row" alignItems="center" gap={2} paddingX={1}>
         <Svg
@@ -377,7 +378,8 @@ export const register: Register = (on, options) => {
     const below = await next(e)
 
     // SessionMode is raised on the terminal and desktop alone.
-    if (e.surface !== 'desktop') {
+    const Svg = e.surface === 'desktop' ? ($.ui.resolve(e as typeof e & { surface: 'desktop' }).Svg ?? null) : null
+    if (!Svg) {
       return (
         <Box flexDirection="row" gap={1}>
           <Text color={cache.warm ? cache.color : undefined} dimColor={!cache.warm}>{`ϟ ${cache.label}`}</Text>
@@ -387,8 +389,6 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    const { Svg } = $.ui.resolve(e as typeof e & { surface: 'desktop' })
-
     return (
       <Box flexDirection="row" alignItems="center" gap={1}>
         <Svg source={boltSvg(cache.color)} alt="prompt cache" width={BOLT.width} height={BOLT.height} />

@@ -1,0 +1,75 @@
+[
+ {
+  "id": "fp-design-other",
+  "truth": "false-positive",
+  "kind": "design: a tested feature",
+  "repo": "08682ff",
+  "feature": "the followups mod (plugins/followups) as a whole",
+  "finding": "code [minor] plugins/followups/hooks/register.tsx:339 Anything typed under \"Other\" in the follow-up dialog becomes the item's title, so an answer like \"no, that's intentional\" is added to the to-do list as an item."
+ },
+ {
+  "id": "fp-design-noreading",
+  "truth": "false-positive",
+  "kind": "design: a comment says it is deliberate",
+  "repo": "d22cecd",
+  "feature": "the clawd-hud mod (plugins/clawd-hud) as a whole",
+  "finding": "code [minor] plugins/clawd-hud/hooks/register.tsx:65 When a window has a reading but its resetsAt can't be parsed, line 308 shows \"no reading yet\". That's wrong: the battery and the \"% left\" beside it come from that same reading. \"resets in –\" or leaving the countdown out would be accurate."
+ },
+ {
+  "id": "fp-engine-double-next",
+  "truth": "false-positive",
+  "kind": "engine assumption, disproved by a probe",
+  "repo": "d22cecd",
+  "feature": "the task-hud mod (plugins/task-hud) as a whole",
+  "finding": "code [major] plugins/task-hud/hooks/register.tsx:224 In the agent.spawn handler, next(e) starts the sub-agent first. If anything after it throws (the read or the update), the handler's .catch(($, e, next) => next(e)) calls next(e) again, so the same sub-agent is spawned a second time."
+ },
+ {
+  "id": "amb-slot-race",
+  "truth": "ambiguous",
+  "kind": "race the test engine does not reproduce",
+  "repo": "d22cecd",
+  "feature": "the task-hud mod (plugins/task-hud) as a whole",
+  "finding": "code [minor] plugins/task-hud/hooks/register.tsx:239 Two sub-agents spawned at once can get the same colour. The handler reads agents at line 226, works out slot as max+1, and only adds the card later in a separate update at line 248. Two parallel Agent calls both read the same list, so both get the same slot."
+ },
+ {
+  "id": "tp-goal-replan",
+  "truth": "real",
+  "kind": "logic bug",
+  "repo": "08682ff",
+  "feature": "the goal-run mod (plugins/goal-run) as a whole",
+  "finding": "code [major] plugins/goal-run/hooks/register.tsx:683 A regular plan for a new goal, proposed while the saved goal is already done, goes through replan(before, ...). Line 186 keeps all of the finished goal's done tasks, adds their tokens and keeps the old setAt, so the new goal opens with the old tasks done, above 0%, and other sessions merge it as the same goal."
+ },
+ {
+  "id": "tp-goal-add-stale",
+  "truth": "real",
+  "kind": "lost update",
+  "repo": "08682ff",
+  "feature": "the goal-run mod (plugins/goal-run) as a whole",
+  "finding": "code [major] plugins/goal-run/hooks/register.tsx:770 The add tool builds grown from g, read at line 754 before the $.ui.ask wait, then saves it with setGoal($, () => grown). Anything changed during the dialog (a parallel update, token counts, a goal cleared in the pane) is overwritten."
+ },
+ {
+  "id": "tp-brain-eval",
+  "truth": "real",
+  "kind": "config bug",
+  "repo": "10ef5f3",
+  "feature": "the brain-hud mod (plugins/brain-hud) as a whole",
+  "finding": "code [major] plugins/brain-hud/evals/logs-after-a-fix/prompt.md:5 The logs-after-a-fix eval can't pass: it grants only allowed_tools [Read, Glob, Grep, Skill], but its grader graders/entry-written.md needs a Type: mistake entry written into MISTAKES.md, which needs Edit or Write."
+ },
+ {
+  "id": "tp-rtl-table",
+  "truth": "real",
+  "kind": "rendering bug",
+  "repo": "d22cecd",
+  "feature": "the rtl-toggle mod (plugins/rtl-toggle) as a whole",
+  "finding": "code [minor] plugins/rtl-toggle/hooks/rtl.ts:143 A table inside a blockquote or list item gets broken. Only rows whose text starts with | count as table rows, so `> | Step | תיאור |` goes down the prose path, gets an RLM before its first |, and GFM reads the mark as an extra cell."
+ },
+ {
+  "id": "tp-hud-token",
+  "truth": "real",
+  "kind": "secret shown on screen",
+  "repo": "da8ba65",
+  "feature": "task-hud sub-agent cards: a Bash call with no description shows only the program's name, never its arguments, which can hold a token",
+  "finding": "security [major] plugins/task-hud/hooks/register.tsx:57 programOf strips VAR=value assignments only when whitespace follows them: a command that is only `GH_TOKEN=ghp_abc123`, or `AUTH=\"Bearer ghp_abc123\"; curl ...`, keeps the secret, and the card shows `Running GH_TOKEN=ghp_abc123`.",
+  "patch": "hud-token.patch"
+ }
+]

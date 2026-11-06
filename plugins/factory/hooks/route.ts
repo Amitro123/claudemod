@@ -197,13 +197,17 @@ export const forbiddenTool = (tool: string) => (REMOTE_WRITE.test(tool) && !READ
 // The blocker and major findings a skeptic is asked to refute, numbered F1, F2... in this order.
 export const disputable = (findings: Finding[]) => findings.filter(f => f.severity !== 'minor')
 
-export type Ruling = 'stands' | 'refuted' | 'downgraded'
+// design: the behaviour is deliberate (a test pins it, a comment says why): the person's call, not a
+// bug. unverified: it rests on what can't be seen or run here; what would settle it is named.
+export type Ruling = 'stands' | 'refuted' | 'downgraded' | 'design' | 'unverified'
 
 // The skeptic's answer: one line per finding, "F2: REFUTED <evidence>". A finding it didn't rule on
 // stands, and so does a security blocker, which only the security reviewer may take back.
 export function applyRulings(findings: Finding[], answer: string, isSecurity: (f: Finding) => boolean): { kept: Finding[]; dropped: { finding: Finding; ruling: Ruling; why: string }[] } {
   const rulings = new Map<number, { ruling: Ruling; why: string }>()
-  for (const m of answer.matchAll(/^\s*[-*]?\s*F(\d+)\s*[:.)-]\s*(STANDS|REFUTED|DOWNGRADED)\b[\s:—–-]*(.*)$/gim)) {
+  // Within one line only ([ \t], not \s): a bare "F1: STANDS" must not take the next line's ruling
+  // as its own evidence, and lose it.
+  for (const m of answer.matchAll(/^[ \t]*[-*]?[ \t]*F(\d+)[ \t]*[:.)-][ \t]*(STANDS|REFUTED|DOWNGRADED|DESIGN|UNVERIFIED)\b[ \t:—–-]*(.*)$/gim)) {
     rulings.set(Number(m[1]), { ruling: m[2]!.toLowerCase() as Ruling, why: m[3]!.trim() })
   }
   const kept: Finding[] = []

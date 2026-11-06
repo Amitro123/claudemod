@@ -40,6 +40,9 @@ export type Blocked =
   // The builder's branch no longer starts from the run's base: which branch it is on top of is asked.
   | { on: 'base' }
 
+export type Outcome = 'fixed' | 'not-a-bug' | 'wont-fix' | 'refuted' | 'downgraded' | 'design' | 'unverified'
+export type LedgerEntry = { id: string; role: Reviewer; severity: Severity; where: string; text: string; outcome?: Outcome; why?: string }
+
 export type Run = {
   feature: string
   slug: string
@@ -94,6 +97,10 @@ export type Run = {
   // The project's test commands as detection found them, for a review run (it runs no checks): the
   // reviewers are told them, so none guesses one.
   testCommands?: string[]
+  // What became of each finding a review run sent back (F1, F2...): fixed, not a bug (a false
+  // positive, with why), won't fix; or refuted/downgraded by the skeptic. The main Claude reports
+  // its outcomes with the control tool; each report goes to .factory/findings.jsonl too.
+  ledger?: LedgerEntry[]
   // How the run went, for its record and the status: builder starts, the run agents' tool calls the
   // mod saw (by role), the calls its guard refused, and answers that missed a marker their prompt asks for.
   stats?: { builderStarts: number; toolCalls: Record<string, number>; guardRefused: number; formatMisses: string[] }

@@ -218,3 +218,65 @@ describe('the loop detector', () => {
     expect(text).toContain("(@_@) ↻")
   })
 })
+
+describe('what the whole-mod review found', () => {
+  const idleFrames = async ($: Engine, on: On, surface: 'mobile' | 'desktop') => {
+    const count = { n: 0 }
+    on('state.set', (_, e, next) => {
+      if ((e as { key?: string }).key === 'frame') count.n++
+      return next(e)
+    })
+    const clock = mock.clock(on, { now: Date.UTC(2026, 9, 9, 12) })
+    on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: PERSONAL } }) as never)
+    on('session.start', () => ({ cwd: '.' }) as never)
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('ui.render', ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>another mod band</Text>
+    })
+    await band($, surface as never)
+    count.n = 0
+    await clock.advance(4_000)
+    return count.n
+  }
+
+  test('a surface with no SVG scene (mobile) gets the text face and redraws idle once a second', async ($, on) => {
+    expect(await idleFrames($, on, 'mobile')).toBeLessThanOrEqual(5)
+  })
+
+  test('the end of a turn: an answer sets off fireworks, an error a storm, an interrupt goes back to idle', async ($, on) => {
+    usage(on, PERSONAL)
+    on('turn.start', (_, e) => ({ turnId: e.turnId }))
+    on('turn.complete', (_, e) => ({ text: e.answer }) as never)
+    const alt = async () => {
+      const ui = await $.ui.mount({ plugin: 'clawd-hud', surface: 'desktop', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 160, scroll: { offset: 0, bodyRows: 9 }, view: {} } as never })
+      const a = String(((await ui.find({ type: 'Svg' } as never)) as { props?: { alt?: string } }).props?.alt)
+      await ui.unmount()
+      return a
+    }
+    await $.session.start({ cwd: '.' } as never)
+    for (const [end, expected] of [[{ reason: 'answer', isAborted: false }, /fireworks/], [{ reason: 'error', isAborted: false }, /storm cloud/], [{ reason: 'answer', isAborted: true }, /drifting/]] as const) {
+      await $.turn.start({ text: 'go', turnId: 't' } as never)
+      await $.turn.complete({ answer: 'ok', durationMs: 10, turnId: 't', ...end } as never)
+      expect(await alt()).toMatch(expected)
+    }
+  })
+
+  test('the cache label goes cold once its time is up', async ($, on) => {
+    const clock = mock.clock(on, { now: Date.UTC(2026, 9, 9, 12) })
+    on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: ENTERPRISE, cost: { usd: 1 } } }) as never)
+    on('session.start', () => ({ cwd: '.' }) as never)
+    on('ui.status', () => ({ value: undefined }) as never)
+    on('ui.toast', () => ({ value: undefined }) as never)
+    on('ui.render', ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>engine modes</Text>
+    })
+    on('session.measure', ($, e) => ({ changed: e.changed }) as never)
+    expect(await cacheLabel($, ENTERPRISE)).toMatch(/cache 5:00/)
+    await clock.advance(5 * 60_000 + 3_000)
+    const ui = await $.ui.mount({ plugin: 'clawd-hud', surface: 'terminal', component: 'SessionMode', props: { modes: [] } as never })
+    expect((await ui.findAll({ type: 'Text' })).map(t => JSON.stringify(t)).join(' | ')).toMatch(/cache cold/)
+  })
+})

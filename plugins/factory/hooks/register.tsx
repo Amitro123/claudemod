@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { ChecksIO, DetectedChecks } from './checks'
-import type { Blocked, Check, Extra, Finding, Phase, Reviewer, Role, Run } from '../types'
+import type { Blocked, Check, Extra, Finding, Outcome, Phase, Reviewer, Role, Run } from '../types'
 import type { DoctorItem } from './flow'
 import { buildRound, DIAGRAM, diagramSvg, pipelineLines } from './art'
 import type { Theme } from './art'
@@ -59,6 +59,9 @@ import {
   skillsLine,
   builtinSkill,
   lastLines,
+  ledgerOf,
+  OUTCOMES,
+  outcomesLine,
   statsReport,
   newReview,
   reviewDonePrompt,
@@ -768,11 +771,13 @@ async function onReview($: EngineInterface, role: Reviewer, agentId: string, ans
   const failed = mine.find(x => x.state === 'fail')
   if (failed) return block($, { on: 'start', role: failed.role }, `${failed.findings[0]?.text ?? 'The reviewer stopped.'} The ${failed.role} review didn't run; Retry runs it again.`)
   const changes = mine.filter(x => x.state === 'changes')
-  if (r.kind === 'review' && !changes.length) return finishReview($)
+  // A review run has no builder round to save: its skeptic weighs every finding, minor ones too,
+  // since a false positive there costs the person's time all the same.
+  if (r.kind === 'review' && !mine.some(x => x.findings.length)) return finishReview($)
   if (r.kind !== 'review' && (!changes.length || r.round >= maxRounds)) return startApprover($)
   // Before the builder goes back over the blocker and major findings, a skeptic tries to refute them:
   // a round spent on a finding that isn't real costs a whole builder pass.
-  const disputed = changes.flatMap(x => disputable(x.findings).map(finding => ({ role: x.role, finding })))
+  const disputed = r.kind === 'review' ? mine.flatMap(x => x.findings.map(finding => ({ role: x.role, finding }))) : changes.flatMap(x => disputable(x.findings).map(finding => ({ role: x.role, finding })))
   if (!skepticOn || !disputed.length) return r.kind === 'review' ? finishReview($) : startBuild($, openFindings(changes), [])
   const onSecurity = disputed.some(x => x.role === 'security')
   const next = await patch($, cur => ({ ...cur, disputed, note: `a skeptic checks ${disputed.length} finding${disputed.length === 1 ? '' : 's'}`, models: { ...cur.models, skeptic: onSecurity ? 'opus' : 'sonnet' } }))
@@ -797,12 +802,12 @@ async function onSkeptic($: EngineInterface, answer: string, why: string) {
     disputed: [],
     refuted: [...(cur.refuted ?? []), ...dropped.map(d => ({ role: disputed.find(x => x.finding === d.finding)!.role, finding: d.finding, ruling: d.ruling, why: d.why }))],
     reviews: cur.reviews.map(x => {
-      if (x.round !== cur.round || x.state !== 'changes') return x
+      if (x.round !== cur.round || (x.state !== 'changes' && cur.kind !== 'review')) return x
       const findings = x.findings.flatMap(f => {
         const d = gone.get(disputed.find(y => y.role === x.role && y.finding.where === f.where && y.finding.text === f.text)?.finding as never)
         return !d ? [f] : d.ruling === 'downgraded' ? [{ ...f, severity: 'minor' as const }] : []
       })
-      return { ...x, findings, state: findings.some(f => f.severity !== 'minor') ? x.state : 'pass' }
+      return { ...x, findings, state: x.state === 'changes' && findings.some(f => f.severity !== 'minor') ? x.state : x.state === 'changes' ? 'pass' : x.state }
     }),
   }))
   if (dropped.length) await record($, 'skeptic rulings', dropped.map(d => `${d.ruling.toUpperCase()}: [${d.finding.severity}] ${d.finding.where} ${d.finding.text}\n  ${d.why}`).join('\n'))
@@ -855,7 +860,7 @@ async function onApprover($: EngineInterface, answer: string, why: string) {
 async function finishReview($: EngineInterface) {
   const r = await patch($, cur => {
     const n = cur.reviews.reduce((k, x) => k + x.findings.filter(f => f.severity !== 'minor').length, 0)
-    return moveTo(cur, 'done', n ? `reviewed: ${n} finding${n === 1 ? '' : 's'} to fix, sent to Claude` : 'reviewed: no blocker or major finding')
+    return { ...moveTo(cur, 'done', n ? `reviewed: ${n} finding${n === 1 ? '' : 's'} to fix, sent to Claude` : 'reviewed: no blocker or major finding'), ledger: ledgerOf(cur) }
   })
   if (!r) return
   await record($, 'review findings', reviewDonePrompt(r))
@@ -908,6 +913,41 @@ async function startReview($: EngineInterface, focus: string, named = '', extras
   void $.ui.open({ id: PANE, title: PANE_TITLE })
   void serial(() => runChecks($))
   return `Factory review started: ${created.reviews.map(x => reviewerLabel(x.role)).join(', ')} on the checkout against ${found.ref} (${found.base.slice(0, 12)})${untracked.length ? `, with ${untracked.length} new file${untracked.length === 1 ? '' : 's'}` : ''}. The checks it finds run first, once you let them; then the reviewers, whose findings come back to Claude.`
+}
+
+// The main Claude says what became of the review's findings: kept on the run, in its stats, and in
+// the repository's .factory/findings.jsonl, where the status adds them up over every review.
+async function reportOutcomes($: EngineInterface, raw: unknown): Promise<string> {
+  const r = await read($, run)
+  if (!r?.ledger?.length) return 'No review findings wait for their outcomes.'
+  const given = (Array.isArray(raw) ? raw : []) as { id?: unknown; outcome?: unknown; why?: unknown }[]
+  const known = new Set(r.ledger.map(x => x.id))
+  const ok = given.filter(g => known.has(String(g.id ?? '').toUpperCase()) && OUTCOMES.includes(String(g.outcome ?? '') as Outcome))
+  if (!ok.length) return `No outcome read: give outcomes as [{ id: "F1", outcome: "fixed" | "not-a-bug" | "wont-fix", why }], for ${[...known].join(', ')}.`
+  const by = new Map(ok.map(g => [String(g.id).toUpperCase(), { outcome: String(g.outcome) as Outcome, why: String(g.why ?? '').trim().slice(0, 300) }]))
+  const after = await patch($, cur => ({ ...cur, ledger: (cur.ledger ?? []).map(x => (by.has(x.id) && !['refuted', 'downgraded'].includes(x.outcome ?? '') ? { ...x, ...by.get(x.id)!, ...(by.get(x.id)!.why ? {} : { why: undefined }) } : x)) }))
+  if (!after?.ledger) return 'No review findings wait for their outcomes.'
+  const at = new Date(await $.clock.now()).toISOString()
+  const lines = after.ledger.filter(x => by.has(x.id)).map(x => JSON.stringify({ at, feature: titleOf(after.feature, 80), kind: after.kind ?? 'run', role: x.role, severity: x.severity, where: x.where, outcome: x.outcome, why: x.why ?? '' }))
+  const file = `${after.kind === 'review' ? after.worktree : rootOf(after)}/.factory/findings.jsonl`
+  const before = await $.fs.read(file).then(t => String(t), () => '')
+  await $.fs.write(file, `${before}${before && !before.endsWith('\n') ? '\n' : ''}${lines.join('\n')}\n`).catch(() => {})
+  await recordStats($)
+  const open = after.ledger.filter(x => !x.outcome).map(x => x.id)
+  return `Recorded ${by.size} outcome${by.size === 1 ? '' : 's'}. ${outcomesLine(after.ledger)}${open.length ? ` Still to report: ${open.join(', ')}.` : ''}`
+}
+
+// Every outcome recorded in this repository, added up: what the status says of how far reviews hold.
+async function repoOutcomes($: EngineInterface, root: string): Promise<string> {
+  const text = await $.fs.read(`${root}/.factory/findings.jsonl`).then(t => String(t), () => '')
+  const entries = text.split('\n').filter(Boolean).flatMap(l => {
+    try {
+      return [JSON.parse(l) as { outcome?: Outcome }]
+    } catch {
+      return []
+    }
+  })
+  return entries.length ? `Review findings in this repository so far (.factory/findings.jsonl): ${outcomesLine(entries)}` : ''
 }
 
 // The main Claude opened the approved run's PR: it now reads as opened, with its link.
@@ -1157,7 +1197,8 @@ async function statusText($: EngineInterface): Promise<string> {
   // No run: whether one could start, which is what the person asks when it won't.
   if (!r) return `No factory run in this session.\n${await doctorText($)}\n${nextActionsText(nextActionsOf(null, 0))}`
   const files = r.record ? (await $.fs.list(r.record).catch(() => [])).map(f => f.name).sort() : []
-  return statusReport(r, await $.clock.now(), files)
+  const repo = await repoOutcomes($, r.kind === 'review' ? r.worktree : rootOf(r))
+  return [statusReport(r, await $.clock.now(), files), ...(repo ? [repo] : [])].join('\n')
 }
 
 // /factory doctor: what a run needs, checked without starting one or spending a token. Each line says
@@ -1311,11 +1352,12 @@ export const register: Register = (on, options) => {
     await $.tool
       .register({
         name: 'control',
-        description: "Steer the factory run for the person. skip-check: go on without the check (or install) running now. abandon-agent: give up on the agent the step waits on (a stuck one: no activity for long), so Retry starts a new one. add-reviewers: extra reviewers from the next round on (reviewers: lens names or { name, focus, agent }), only when the change needs that look. retry: run again the step that stopped the run. stop: end the run. pr-opened: the PR of an approved run is open (url: its link); only after you opened it, or the person did. Use it when the person asks, or when the status tool shows a step stuck, and tell the person what you did and why.",
+        description: "Steer the factory run for the person. skip-check: go on without the check (or install) running now. abandon-agent: give up on the agent the step waits on (a stuck one: no activity for long), so Retry starts a new one. add-reviewers: extra reviewers from the next round on (reviewers: lens names or { name, focus, agent }), only when the change needs that look. retry: run again the step that stopped the run. stop: end the run. pr-opened: the PR of an approved run is open (url: its link); only after you opened it, or the person did. findings: what became of each finding a review sent back (outcomes: fixed, not-a-bug with why, wont-fix). Use it when the person asks, or when the status tool shows a step stuck, and tell the person what you did and why.",
         inputSchema: {
           type: 'object',
           properties: {
-            action: { type: 'string', enum: ['skip-check', 'abandon-agent', 'add-reviewers', 'retry', 'stop', 'pr-opened'] },
+            action: { type: 'string', enum: ['skip-check', 'abandon-agent', 'add-reviewers', 'retry', 'stop', 'pr-opened', 'findings'] },
+            outcomes: { type: 'array', description: 'For findings: what became of each finding the review sent back', items: { type: 'object', properties: { id: { type: 'string', description: 'F1, F2...' }, outcome: { type: 'string', enum: ['fixed', 'not-a-bug', 'wont-fix'] }, why: { type: 'string' } }, required: ['id', 'outcome'] } },
             url: { type: 'string', description: "For pr-opened: the link of the PR you opened for the approved run" },
             reason: { type: 'string', description: 'Why, in a few words: the run records it' },
             reviewers: { type: 'array', description: 'For add-reviewers: lens names or { name, focus, agent }', items: {} },
@@ -1402,7 +1444,8 @@ export const register: Register = (on, options) => {
       case 'retry': return { result: await retryNow($) }
       case 'stop': return { result: await stopNow($) }
       case 'pr-opened': return { result: await prOpened($, String((input as { url?: unknown }).url ?? '')) }
-      default: return { deny: 'action is skip-check, abandon-agent, add-reviewers, retry, stop or pr-opened.' }
+      case 'findings': return { result: await reportOutcomes($, (input as { outcomes?: unknown }).outcomes) }
+      default: return { deny: 'action is skip-check, abandon-agent, add-reviewers, retry, stop, pr-opened or findings.' }
     }
   })
 
