@@ -2,7 +2,7 @@
 
 Invoked by `/brain-hud:mistake-brain promote`. Goal: catch the mistakes or success patterns that keep repeating despite being logged and routed, and turn them into something that actually changes future behavior — a rule in `CLAUDE.md` (if it should apply everywhere) or `.claude/rules/<slug>.md` (if it's scoped to one area).
 
-The reasoning: a lesson sitting in `.agent-brain/Areas/ci.md` only helps if something reads that file before touching CI. A rule in CLAUDE.md is read every session, unconditionally. That's a much stronger guarantee, which is exactly why it needs a much higher bar — three independent occurrences of the same pattern, not one bad (or one great) afternoon.
+The reasoning: a lesson sitting in `.agent-brain/shared/Areas/ci.md` only helps if something reads that file before touching CI. A rule in CLAUDE.md is read every session, unconditionally. That's a much stronger guarantee, which is exactly why it needs a much higher bar — three independent occurrences of the same pattern, not one bad (or one great) afternoon.
 
 **Two evidence sources, same bar:** a candidate rule can come from either of two directions, and both are held to the same 3x threshold:
 - **Repeated mistakes** — the same `Root cause` (Type: mistake entries) showing up 3+ times. This is the original, and still the more common, path.

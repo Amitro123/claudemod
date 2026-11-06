@@ -101,10 +101,13 @@ def _detect(
     if old_head is None:
         return None, None  # first run — just established baseline
 
-    # 1. HEAD moved → check if it's a revert commit
+    # 1. HEAD moved → check if it's a revert commit made here: git revert writes a "revert:" reflog
+    # entry, and a revert -n then git commit a "commit" one. A pull, merge or checkout that lands on
+    # someone else's revert writes "pull:", "merge" or "checkout:", and isn't this session's mistake.
     if new_head != old_head:
         msg = _git(["log", "-1", "--format=%s", new_head], project_dir) or ""
-        if msg.startswith("Revert"):
+        made_here = new_reflog.startswith(("revert:", "commit"))
+        if msg.startswith("Revert") and made_here:
             body = _git(["log", "-1", "--format=%b", new_head], project_dir) or ""
             m = re.search(r"This reverts commit ([0-9a-f]{7,})", body)
             suffix = f" (reverted {m.group(1)[:8]})" if m else ""
@@ -159,7 +162,7 @@ def _draft_entry(project_dir: Path, event_type: str, description: str) -> bool:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     verb = "Revert commit" if event_type == "revert" else "Hard reset"
     entry = (
-        f"## [{now}] [auto-draft] {verb} detected: `{description[:120]}`\n"
+        f"## [{now}] [auto-draft] {verb} detected: `{host_layout.safe_for_markdown(description, 120)}`\n"
         f"- **Type:** mistake\n"
         f"- **What happened:** [auto-draft, needs detail] {verb} ran — "
         f"this hook detected *that* it happened, not *why*. Fill in the real story.\n"
@@ -171,6 +174,14 @@ def _draft_entry(project_dir: Path, event_type: str, description: str) -> bool:
     )
     mistakes_path.write_text(host_layout.insert_entry(text, entry), encoding="utf-8")
     return True
+
+
+def _unrouted_note(project_dir: Path) -> str:
+    try:
+        return host_layout.unrouted_note((project_dir / "MISTAKES.md").read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
 
 
 def _emit(context: str) -> None:
@@ -210,8 +221,8 @@ def main() -> int:
         # hook types (ClassicResultFields: `Stop: 'additionalContext'`). Emitted once per revert: the
         # state file moves on, so the next Stop says nothing.
         _emit(
-            f"[mistake-brain] A revert in this turn was auto-drafted into MISTAKES.md: `{description}`\n"
-            "1 unrouted entry now in the inbox. "
+            f"[mistake-brain] A revert in this turn was auto-drafted into MISTAKES.md: `{host_layout.safe_for_markdown(description)}`\n"
+            f"{_unrouted_note(project_dir)}"
             "Before you finish, fill in its [auto-draft] placeholders and run "
             "/brain-hud:mistake-brain route to classify it into PARA memory."
         )

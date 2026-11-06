@@ -122,3 +122,20 @@ def test_a_reset_that_leaves_head_where_it_was_is_not_a_mistake(tmp_path, monkey
     monkeypatch.setattr(stop_hook, "_git", fake_git)
     monkeypatch.setattr(stop_hook, "_write_state", lambda *_args: None)
     assert stop_hook._detect(tmp_path, "same-head", "10") == (None, None)
+
+
+def test_a_revert_someone_else_made_is_not_this_sessions_mistake(tmp_path, monkeypatch):
+    """A pull or checkout that lands HEAD on a teammate's revert drafts nothing."""
+    for reflog in ("pull: Fast-forward", "checkout: moving from main to fix", "merge origin/main: Fast-forward"):
+        def fake_git(args, _cwd, reflog=reflog):
+            if args[:2] == ["rev-parse", "HEAD"]:
+                return "new-head"
+            if args[:2] == ["reflog", "-1"]:
+                return reflog
+            if args[:3] == ["log", "-1", "--format=%s"]:
+                return 'Revert "change"'
+            return None
+
+        monkeypatch.setattr(stop_hook, "_git", fake_git)
+        monkeypatch.setattr(stop_hook, "_write_state", lambda *_args: None)
+        assert stop_hook._detect(tmp_path, "old-head", "old-reflog") == (None, None), reflog

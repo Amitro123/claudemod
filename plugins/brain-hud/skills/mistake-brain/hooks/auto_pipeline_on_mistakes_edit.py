@@ -78,6 +78,20 @@ def _is_mistakes_edit(payload: dict, project_dir: Path = Path(".")) -> bool:
     return p is not None and p == (project_dir / "MISTAKES.md").resolve()
 
 
+_ROUTE_LINE = re.compile(r"^\s*- \*\*(Status|PARA route):\*\*")
+
+
+def _is_route_edit(payload: dict) -> bool:
+    """True when an Edit changed only Status or PARA-route lines: route at work."""
+    if payload.get("tool_name") != "Edit":
+        return False
+    inp = payload.get("tool_input") or {}
+    old, new = str(inp.get("old_string", "")).splitlines(), str(inp.get("new_string", "")).splitlines()
+    if len(old) != len(new) or old == new:
+        return False
+    return all(a == b or (_ROUTE_LINE.match(a) and _ROUTE_LINE.match(b)) for a, b in zip(old, new))
+
+
 def _count_unrouted(mistakes_path: Path) -> int:
     if not mistakes_path.exists():
         return 0
@@ -200,6 +214,10 @@ def process(payload: dict, project_dir: Path) -> str | None:
     mistakes_path = project_dir / "MISTAKES.md"
     unrouted = _count_unrouted(mistakes_path)
 
+    # Route flips each entry's Status (and PARA route) one Edit at a time: telling it to start
+    # routing again after each one is noise, and can send it back to the start.
+    if unrouted >= 3 and _is_route_edit(payload):
+        return None
     if unrouted >= 3:
         violations = _run_validate(project_dir)
         violation_note = (

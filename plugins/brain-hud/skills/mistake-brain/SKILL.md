@@ -12,7 +12,7 @@ when_to_use: 'A fix just landed (yours, or one the user tells you they made, wit
 Persistent memory for this agent — not just of its mistakes, but of anything worth carrying into a future session: mistakes, confirmed successes, real decisions, and handoffs. It combines two ideas into one pipeline:
 
 1. **MISTAKES.md** — a flat, append-only inbox, despite the name (kept for continuity — see `format-spec.md` for why). Every event gets logged in a fixed format the moment it happens, with zero judgment calls at write time. A `Type` field (`mistake` / `success` / `decision` / `handoff`) selects which fields follow. Fast to write, cheap to never lose anything.
-2. **PARA memory** (`.agent-brain/shared/`) — where lessons actually *live*, organized as Projects / Areas / Resources / Archives. Claude Code and Cursor each keep their own index of that same store.
+2. **PARA memory** (`.agent-brain/shared/`) — where lessons actually *live*, organized as Projects / Areas / Resources / Archives. Claude Code and Cursor share it, and its one index, `.agent-brain/shared/MEMORY.md`.
 
 MISTAKES.md entries that repeat the same root cause (mistakes) or the same confirmed pattern (successes) 3+ times graduate into hard rules in CLAUDE.md or `.claude/rules/`. That promotion step is the payoff: without it you just have a diary; with it, patterns become enforced behavior instead of things you vaguely remember happened before. `decision` and `handoff` entries route into PARA like everything else but are never promotion candidates — see `promote.md` for why.
 

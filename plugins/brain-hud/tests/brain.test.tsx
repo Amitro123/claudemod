@@ -5,7 +5,7 @@ import type { On } from 'claude-code'
 import { claudeCells, sceneSvg } from '../hooks/art'
 import { GRAPH, graphSvg, routeOf, shownFiles } from '../hooks/graph'
 import { diffBrain, logPrompt, paraStats, parseMemory, parseMistakes, withListing } from '../hooks/brain'
-import { handoffEntry, HANDOFF_TITLE, insertBelowMarker, journalText, looseEnds, reportSections, workerEntry } from '../hooks/journal'
+import { handoffEntry, HANDOFF_TITLE, insertBelowMarker, journalText, looseEnds, quoted, reportSections, workerEntry } from '../hooks/journal'
 import type { JournalEntry } from '../hooks/journal'
 import type { Brain } from '../types'
 // The wording followups and goal-run write, from the copy of shared/texts.ts they use too.
@@ -972,4 +972,12 @@ describe("the journal's git exclude", () => {
     expect(w.git).toHaveLength(1)
   })
 
+})
+
+describe('worker text quoted into MISTAKES.md or context has its secrets redacted', () => {
+  test('a token, a key or a password in what a worker said is never written', () => {
+    const q = quoted('found it: export GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 and sk-ant-abcdefghijklmnopqrst, --password hunter2, https://u:pw@x.com')
+    for (const s of ['ghp_abcdef', 'sk-ant-', 'hunter2', 'u:pw@']) expect(q).not.toContain(s)
+    expect(q).toMatch(/^`found it: export GH_TOKEN=\[redacted\]/)
+  })
 })

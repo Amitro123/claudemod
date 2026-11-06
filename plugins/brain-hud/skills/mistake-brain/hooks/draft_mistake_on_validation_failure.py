@@ -30,11 +30,10 @@ After Claude diagnoses and fixes:
 
 ## Project isolation -- fail-closed
 
-Starting directory from CLAUDE_PROJECT_DIR env var, then payload.cwd.
-Actual project root ALWAYS resolved via git rev-parse --show-toplevel.
-If git resolution fails: exits 0, emits visible warning, no write.
-All project-local paths derive from the resolved git root.
-Project A failure cannot write state into project B.
+The project root is host_layout.project_root(payload), the same resolution every mistake-brain hook
+uses. Outside a mistake-brain project (no MISTAKES.md there) and in a factory run's worktree the hook
+exits 0 and writes nothing. All project-local paths derive from that root, so a failure in project A
+cannot write state into project B. The command and the error are stored with secrets redacted.
 
 ## Validation allowlist -- deliberately narrow
 
@@ -84,28 +83,6 @@ VALIDATION_PATTERNS = [
     re.compile(r"\bvitest\b"),
     re.compile(r"\bjest\b"),
 ]
-
-
-def _resolve_git_root(start: Path) -> "Path | None":
-    """Return absolute git root via git rev-parse --show-toplevel.
-
-    Fails closed: returns None if not inside a git repo, git unavailable,
-    or any subprocess error. Never falls back to start itself.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=start,
-        )
-        if result.returncode != 0:
-            return None
-        resolved = result.stdout.strip()
-        return Path(resolved) if resolved else None
-    except Exception:
-        return None
 
 
 def _matched_pattern(command: str) -> "str | None":
@@ -187,8 +164,10 @@ def main() -> int:
     candidates = _load_candidates(pending_path)
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    safe_command = command.strip().replace("\n", " ")[:300]
-    error_summary = error.split("\n")[0][:120]
+    # The command and its error, secrets redacted: the candidates file can be committed when the
+    # project's MISTAKES.md came without running init (which keeps it out of git).
+    safe_command = host_layout.safe_for_markdown(command, 300)
+    error_summary = host_layout.safe_for_markdown(error.split("\n")[0], 120)
 
     same = next((c for c in candidates if c.get("command") == safe_command), None)
     if same is not None:
