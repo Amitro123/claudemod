@@ -513,17 +513,17 @@ const checksIO = ($: EngineInterface): ChecksIO => ({
 // worktree and the commands in the spec's acceptance criteria. Never throws; says why when it finds none.
 async function checkCommands($: EngineInterface, r: Run): Promise<DetectedChecks> {
   try {
-    const diff = await git($, ['diff', '--name-only', r.base, 'HEAD'], r.worktree)
-    const touched = diff.exitCode === 0 ? diff.stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : []
+    const diff = await git($, ['diff', '--name-only', ...spanOf(r)], r.worktree)
+    const touched = [...(diff.exitCode === 0 ? diff.stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : []), ...(r.untracked ?? [])]
     const specPath = /^([A-Za-z]:|\/)/.test(r.specFile) ? r.specFile : `${r.worktree}/${r.specFile}`
-    const spec = checksOption.trim() ? null : await $.fs.read(specPath).then(t => String(t), () => null)
+    const spec = checksOption.trim() || r.kind === 'review' ? null : await $.fs.read(specPath).then(t => String(t), () => null)
     const io: ChecksIO = {
       list: async dir => (await $.fs.list(dir).catch(() => [])).map(f => ({ name: f.name, isDir: String((f as { kind?: string }).kind) === 'dir' || String((f as { kind?: string }).kind) === 'directory' })),
       read: path => $.fs.read(path).then(t => String(t), () => null),
     }
     // The person's checks file sits in the main repository; .factory/ is git-excluded, so a worktree
     // never has it, and one the builder writes there must not count.
-    const checksFile = await $.fs.read(`${rootOf(r)}/.factory/checks.json`).then(t => String(t), () => null)
+    const checksFile = await $.fs.read(`${r.kind === 'review' ? r.worktree : rootOf(r)}/.factory/checks.json`).then(t => String(t), () => null)
     return await detectProjectChecks(io, r.worktree, { explicit: checksOption, touched, spec, checksFile })
   } catch (e) {
     return { checks: [], warnings: [String(e)], sources: {}, reason: `${NOTHING_RAN} Warning: ${String(e).slice(0, 120)}` }
@@ -533,7 +533,8 @@ async function checkCommands($: EngineInterface, r: Run): Promise<DetectedChecks
 // A fresh worktree has no dependencies installed: the `setup` option, or the lockfile's install, runs
 // once a run before its first checks. Its failure is the person's to look at, not the builder's.
 async function setUp($: EngineInterface, r: Run, files: string[]): Promise<boolean> {
-  if (r.setupDone) return true
+  // A review runs in the person's own checkout: nothing is installed there.
+  if (r.setupDone || r.kind === 'review') return true
   // What was untracked before the install: whatever it adds beside (a lockfile npm install writes
   // where there was none) is the setup's, not the change's, and never goes into its commits.
   const before = await git($, ['status', '--porcelain', '-z', '-uall'], r.worktree)
@@ -579,7 +580,7 @@ const RUN_THEM = 'Run them'
 // Commands the factory found itself run outside the session's permission prompts, in a worktree the
 // builder just wrote: the person lets them run first, and again whenever the files that define them
 // change. Commands set in the checks and setup options are the person's own and aren't asked about.
-async function approveAuto($: EngineInterface, r: Run, cmds: string[][]): Promise<boolean> {
+async function approveAuto($: EngineInterface, r: Run, cmds: string[][], orGoOn = false): Promise<boolean> {
   const last = await git($, ['log', '-1', '--format=%H', 'HEAD', '--', ...CHECK_CONFIGS], r.worktree)
   const key = `${cmds.map(c => c.join(' ')).join('; ')} @ ${last.stdout.trim()}`
   if (r.autoApproved === key) return true
@@ -607,6 +608,7 @@ async function approveAuto($: EngineInterface, r: Run, cmds: string[][]): Promis
     await patch($, cur => ({ ...cur, autoApproved: key, askedChecks: undefined }))
     return true
   }
+  if (orGoOn) return false
   await block($, { on: 'checks' }, `The checks wait for your OK to run what the factory found: ${cmds.map(c => c.join(' ')).join('; ')}. /factory checks-ok runs them, Retry asks again, or set the checks and setup options.`, cur => ({ ...cur, askedChecks: key, steps: { ...cur.steps, checks: { ...cur.steps.checks, state: 'wait' } } }))
   return false
 }
@@ -638,17 +640,22 @@ async function stillIn($: EngineInterface, phase: Run['phase']) {
 async function runChecks($: EngineInterface) {
   const r = await patch($, cur => ({
     ...moveTo(cur, 'checks', 'running the checks'),
-    steps: { ...cur.steps, builder: { ...cur.steps.builder, state: 'pass' }, checks: { ...cur.steps.checks, state: 'run' } },
-    checkRound: cur.checkRound + 1,
+    steps: { ...cur.steps, builder: cur.kind === 'review' ? cur.steps.builder : { ...cur.steps.builder, state: 'pass' }, checks: { ...cur.steps.checks, state: 'run' } },
+    checkRound: cur.kind === 'review' ? 0 : cur.checkRound + 1,
   }))
   if (!r) return
   const files = await namesIn($, r.worktree)
   const found = await checkCommands($, r)
   const auto = [
-    ...(!r.setupDone && !setupOption.trim() ? [detectSetup(files)].filter((c): c is string[] => c !== null) : []),
+    ...(!r.setupDone && !setupOption.trim() && r.kind !== 'review' ? [detectSetup(files)].filter((c): c is string[] => c !== null) : []),
     ...(!checksOption.trim() ? found.checks : []),
   ]
-  if (auto.length && !(await approveAuto($, r, auto))) return
+  if (auto.length && !(await approveAuto($, r, auto, r.kind === 'review'))) {
+    if (r.kind !== 'review') return
+    // A review whose checks the person didn't let run goes on without them: the reviewers are told.
+    await patch($, cur => ({ ...cur, checks: [], checksNote: `The person didn't let the found commands run (${auto.map(c => c.join(' ')).join('; ')}), so no check ran.`, checking: null, steps: { ...cur.steps, checks: { ...cur.steps.checks, state: 'skip' } } }))
+    return startReviews($)
+  }
   if (!(await setUp($, r, files))) return
   const cmds = found.checks
   await patch($, cur => ({ ...cur, note: 'running the checks' }))
@@ -693,7 +700,8 @@ async function runChecks($: EngineInterface) {
   if (timedOut.length) {
     return block($, { on: 'checks' }, `${timedOut.map(c => c.cmd).join(', ')} didn't finish in ${mmss(checkTimeoutMs)}. It may be slow or hung: run it yourself in ${r.worktree}, then Retry. A suite that needs longer than that is run as narrower commands with the checks option.`)
   }
-  if (!failed.length) return startReviews($)
+  // A review has no builder: failing checks are for the reviewers, and for Claude after them.
+  if (!failed.length || after.kind === 'review') return startReviews($)
   if (after.checkRound < MAX_CHECK_ROUNDS) return startBuild($, [], failed)
   await block($, { on: 'checks' }, `The checks still fail after ${after.checkRound} builder passes: ${failed.map(c => c.cmd).join(', ')}.`)
 }
@@ -898,9 +906,8 @@ async function startReview($: EngineInterface, focus: string, named = '', extras
   await update($, run, () => ({ ...created, ...(route ? { route, ...(route.deep ? { models: { ...created.models, code: 'opus' } } : {}) } : {}) }))
   await ensureTicking($)
   void $.ui.open({ id: PANE, title: PANE_TITLE })
-  const now = await read($, run)
-  if (now) await serial(() => spawnReviewers($, now))
-  return `Factory review started: ${created.reviews.map(x => reviewerLabel(x.role)).join(', ')} on the checkout against ${found.ref} (${found.base.slice(0, 12)})${untracked.length ? `, with ${untracked.length} new file${untracked.length === 1 ? '' : 's'}` : ''}. Their findings come back to Claude.`
+  void serial(() => runChecks($))
+  return `Factory review started: ${created.reviews.map(x => reviewerLabel(x.role)).join(', ')} on the checkout against ${found.ref} (${found.base.slice(0, 12)})${untracked.length ? `, with ${untracked.length} new file${untracked.length === 1 ? '' : 's'}` : ''}. The checks it finds run first, once you let them; then the reviewers, whose findings come back to Claude.`
 }
 
 // The main Claude opened the approved run's PR: it now reads as opened, with its link.
