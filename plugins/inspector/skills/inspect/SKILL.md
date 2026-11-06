@@ -34,7 +34,9 @@ leads**: bugs of a kind this project has already had, still in today's code.
 
 Paths: `<skill_root>` is this skill's folder (the "Base directory for this skill" shown when it
 loaded). `<scratch>` is the session's scratchpad directory if your instructions name one, else a
-new folder from `mktemp -d`; never a folder inside the repository. A **unit** is one step of the
+new folder from `mktemp -d`; never a folder inside the repository. If no such folder can be
+written, run the collector with `--md /dev/stdout` and no `--json`, and keep the brief in your
+answer. A **unit** is one step of the
 branch's first-parent history: a merged PR (its merge commit, or a squash commit) or a direct
 commit.
 
@@ -228,6 +230,12 @@ Decide each lead:
 - **suspect**: the pattern fits; you can't name the failing input;
 - **clear**: you looked and it's handled. One line each, under "Checked and clear".
 
+**The gate.** Each lead names what it breaks, in the table's Breaks column: a promise from the
+brief (quote it), or the fixed bug it is a sibling of (the case). A finding that names neither is
+not a lead, however odd or however easy to reproduce: an input no promise mentions, a missing
+feature, a style choice. It goes under Recommendations, as the question the project should
+answer.
+
 Rank reproduced, read and suspect leads:
 1. a broken promise a user hits;
 2. a seam with a fix-of-fix history;
@@ -239,8 +247,8 @@ would prove it. Don't make the change.
 
 ## 6. The case file
 
-Write it to `docs/inspector/<YYYY-MM-DD>-case.md` unless the user named another place. If that
-file exists, add `-2`, `-3`. Create `docs/inspector/` if needed. Use
+If the user named a path for the case file, write it there, exactly that path. Otherwise write
+`docs/inspector/<YYYY-MM-DD>-case.md`, adding `-2`, `-3` if that file exists. Create `docs/inspector/` if needed. Use
 `<skill_root>/references/case-file.md`. Write it in the language the user writes to you in;
 code, paths and quotes stay as they are. Its last line is
 `Investigated through <sha>`, the sha the collector read. The units the budget left unworked

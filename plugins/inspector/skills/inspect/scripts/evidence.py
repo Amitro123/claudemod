@@ -53,6 +53,8 @@ def starts_as_feature(subject: str) -> bool:
 CHORE = re.compile(r"\bfix(es|ed)?\s+(the\s+)?(lint|typo|tests?|ci|build|types?|format(ting)?|review)\b"
                    r"|\baddress(ed)?\s+review\b|\breview (comments|feedback)\b", re.I)
 
+BUMP = re.compile(r"^(bump|release|prepare release|chore\(release\))\b|\bbump (the )?versions?\b", re.I)
+
 JSON_VERSION = re.compile(r'^([+-])(\s{0,4})"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)"')
 TOML_VERSION = re.compile(r'^([+-])()version\s*=\s*"(\d+)\.(\d+)\.(\d+)"')
 PR_PATTERNS = [
@@ -248,9 +250,11 @@ def judge(u: Unit) -> None:
         u.is_fix, u.why = True, ["patch version bump"]
     elif n_fix:
         u.why = [f"{n_fix}/{len(u.commits)} commits say fix (a feature unit: fixes inside are not worked)"]
-    if u.is_fix and not any(c.get("is_fix") for c in u.commits):
-        for c in u.commits:            # a fix by title or by version: every commit is the fix
-            c["is_fix"] = True
+    if u.is_fix and (t_fix or patch):
+        # A fix by its title ("review fixes", "Fix the findings F1-F13") or a patch release: each of
+        # its commits is one of the fixes, whatever its own subject says, except housekeeping.
+        for c in u.commits:
+            c["is_fix"] = not (CHORE.search(c["subject"]) or BUMP.search(c["subject"]))
     code = [f for f in u.files if blamed(f["path"])]
     if u.files and not code:
         u.tags.append("docs-only")
