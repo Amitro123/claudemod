@@ -371,6 +371,23 @@ export async function detectProjectChecks(io: ChecksIO, root: string, opts: Dete
           if (top) detected.push(['python', '-m', 'pytest', '-q', top])
         }
       }
+      // A Claude Code plugin (a .claude-plugin/plugin.json beside it): its tests run with claude plugin
+      // test. The root when it is one, and each the change touched (a marketplace of plugins: only those).
+      const isPlugin = async (dir: string) => {
+        if (!(listings.get(dir) ?? []).some(e => e.name === '.claude-plugin')) return false
+        try {
+          return (await io.list(abs(join(dir, '.claude-plugin')))).some(e => e?.name === 'plugin.json')
+        } catch {
+          return false
+        }
+      }
+      try {
+        for (const dir of ['', ...[...touchedDirs].sort()]) {
+          if (await isPlugin(dir)) detected.push(['claude', 'plugin', 'test', dir || '.'])
+        }
+      } catch (e) {
+        warnings.push(`plugin detector failed: ${msg(e)}`)
+      }
     }
 
     // The project's own list wins over detection; it is read only when the root has a .factory folder.

@@ -32,7 +32,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[] } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[] } = {}) {
   // Files the install writes in the worktree (`setupMakes`, a lockfile npm install made): untracked from then on.
   const made: string[] = []
   const spawned: Spawned[] = []
@@ -82,6 +82,11 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     ran.push(cmd)
     limits[cmd] = (e as { init?: { timeoutMs?: number } }).init?.timeoutMs ?? 0
     if (cmd === hold) await held
+    // A review of the checkout: where the branch left origin's default branch, and the change since it.
+    if (cmd === 'git merge-base HEAD origin/HEAD' && mergeBase) return ok(`${mergeBase}\n`)
+    if (cmd.startsWith('git diff --quiet ')) return { value: { exitCode: reviewChange ? 1 : 0, stdout: '', stderr: '' } } as never
+    if (cmd === 'git ls-files --others --exclude-standard -z') return ok(newFiles.join('\0'))
+    if (mergeBase && cmd === `git diff ${mergeBase}`) return ok('diff --git a/src/mw.ts b/src/mw.ts\n+const token = req.query.token\n')
     if (cmd === 'git rev-parse --show-toplevel') return noRepo ? ({ value: { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' } } as never) : ok('/repo\n')
     if (cmd === 'git rev-parse HEAD') return ok('abc123\n')
     if (cmd.startsWith('git worktree add')) {
@@ -2085,5 +2090,61 @@ describe('what the setup writes is not the change (the second bench round)', () 
     await answer($, last(w).id, 'fixed')
     expect(w.ran.filter(c => c.startsWith('git add --'))).toEqual([])
     expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).not.toMatch(/FAILED/)
+  })
+})
+
+describe('/factory review: the reviewers alone, on the change in your checkout', () => {
+  const REVIEW = 'mcp__factory__review'
+  const begin = async ($: Engine) => $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+
+  test('no change against the base: nothing to review, nothing started', async ($, on) => {
+    const w = engine(on)
+    await begin($)
+    expect(await command($, 'review')).toMatch(/^Nothing to review: the checkout has no change against HEAD/)
+    expect(w.spawned).toEqual([])
+  })
+
+  test('the checkout against where it left the default branch: reviewers only, no worktree or spec; what stands goes to Claude', async ($, on) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true, newFiles: ['src/new.ts', '.env'] })
+    await begin($)
+    const said = await command($, 'review add a token check to the middleware')
+    expect(said).toMatch(/^Factory review started: security, code on the checkout against origin\/HEAD \(def999\), with 1 new file\./)
+    expect(w.ran.some(c => c.startsWith('git worktree add'))).toBe(false)
+    expect(w.spawned.map(s => s.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
+    const p = w.spawned[1]!.prompt
+    expect(p).toContain('Review the change for: add a token check to the middleware')
+    expect(p).toMatch(/There is no spec[^\n]*The change is the checkout \/repo against def999, uncommitted work included/)
+    expect(p).toContain('New files not yet in git (not in the diff; read them whole): src/new.ts')
+    expect(p).toMatch(/The whole diff is in \/repo\/\.factory\/review-[\w-]+\.record\/diff-round-1\.patch/)
+    expect(p).toMatch(/change nothing/)
+    expect(w.spawned[1]!.cwd).toBe('/repo')
+    // A review's agent can't edit the person's checkout.
+    expect(await $.tool.call({ tool: 'Edit', agentId: 'a2', file_path: '/repo/src/mw.ts' } as never).then(r => JSON.stringify(r))).toMatch(/A factory review changes no file/)
+    await answer($, 'a1', PASS)
+    await answer($, 'a2', 'VERDICT: CHANGES\nFINDINGS:\n- [major] src/mw.ts:3 the token is read from the query string, so it lands in logs')
+    // The skeptic first; what stands goes back to the main Claude, with no builder or approver.
+    expect(last(w).subagentType).toBe('factory:skeptic')
+    await answer($, 'a3', 'F1: STANDS')
+    expect(w.spawned.map(s => s.subagentType)).not.toContain('factory:builder')
+    expect(w.spawned.map(s => s.subagentType)).not.toContain('factory:approver')
+    expect(w.sent.at(-1)).toMatch(/^The factory's reviewers \(security, code\) reviewed the change in \/repo against def999/)
+    expect(w.sent.at(-1)).toContain('Fix each of these in the checkout, then say what you changed:\n- code [major] src/mw.ts:3 the token is read from the query string')
+    expect(w.sent.at(-1)).toContain('Minor, fix when cheap:\n- security src/limit.ts:4 a name could be clearer')
+    const status = String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)
+    expect(status).toMatch(/Phase: done[^\n]*reviewed: 1 finding to fix, sent to Claude/)
+    expect(status).toMatch(/A review of the checkout \/repo against origin\/HEAD \(def999\): reviewers only/)
+  })
+
+  test('with the skeptic off, a clean review says so; the tool starts one, a sub-agent cannot', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true })
+    await begin($)
+    expect(String((await $.tool.call({ tool: REVIEW, focus: 'x', agentId: 'zz' } as never)).deny ?? '')).toMatch(/Only the main conversation/)
+    expect(String((await $.tool.call({ tool: REVIEW, focus: 'rate limiter', reviewers: ['performance'] } as never)).result)).toMatch(/^Factory review started: security, code, performance/)
+    await settled()
+    await answer($, 'a1', PASS)
+    await answer($, 'a2', PASS)
+    await answer($, 'a3', 'VERDICT: PASS\nFINDINGS: none')
+    expect(w.sent.at(-1)).toContain('No blocker or major finding.')
+    expect(await command($, 'review base=nope x')).toBe('No commit or branch named nope.')
   })
 })

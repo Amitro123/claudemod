@@ -59,6 +59,8 @@ import {
   skillsLine,
   builtinSkill,
   lastLines,
+  newReview,
+  reviewDonePrompt,
   doctorReport,
   nextActionsOf,
   nextActionsText,
@@ -93,6 +95,7 @@ const FRAME_MS = 700
 const ACCENT = '#2563eb'
 const START_TOOL = FACTORY_START_TOOL
 const STATUS_TOOL = 'mcp__factory__status'
+const REVIEW_TOOL = 'mcp__factory__review'
 const CONTROL_TOOL = 'mcp__factory__control'
 const FROM_CONVERSATION = `Start a factory run on the work this conversation is about: call ${START_TOOL} with the feature (what to build, in a short paragraph, naming the file, issue or to-do item it comes from; a to-do item's id as followupId). If there is no such work yet, ask me what the factory should build. Don't do the work yourself.`
 const STARTED_NOTE = "The factory does the work from here: don't start it yourself or propose a plan. Tell the person in one line, and that its plan comes up for their approval."
@@ -691,8 +694,8 @@ async function runChecks($: EngineInterface) {
 // Every reviewer looks at every round: a fix for one reviewer is new code for the others too.
 // What the diff calls for: the files and lines it changed, read with git; unreadable, the deepest review.
 async function routeOf($: EngineInterface, r: Run) {
-  const names = await git($, ['diff', '--name-status', '-z', r.base, 'HEAD'], r.worktree)
-  const diff = await git($, ['diff', '-U0', r.base, 'HEAD'], r.worktree)
+  const names = await git($, ['diff', '--name-status', '-z', ...spanOf(r)], r.worktree)
+  const diff = await git($, ['diff', '-U0', ...spanOf(r)], r.worktree)
   const readable = names.exitCode === 0 && diff.exitCode === 0 && diff.stdout.length < 5_000_000
   return routeReview(names.exitCode === 0 ? changedOf(names.stdout) : [], readable ? diffLines(diff.stdout) : [], readable)
 }
@@ -715,10 +718,14 @@ async function startReviews($: EngineInterface) {
 }
 
 // The reviewers of this round not started yet (all of them, or those a failed start left).
+// What a run's diff spans: its branch's commits since the base, or, for a review of the person's
+// checkout, the working tree against the base (uncommitted work included).
+const spanOf = (r: Run) => (r.kind === 'review' ? [r.base] : [r.base, 'HEAD'])
+
 async function spawnReviewers($: EngineInterface, r: Run) {
-  const stat = await git($, ['diff', '--stat', r.base, 'HEAD'], r.worktree)
+  const stat = await git($, ['diff', '--stat', ...spanOf(r)], r.worktree)
   // The whole diff in a file the reviewers Read: their own git is refused with no one to approve it.
-  const diff = r.record ? await git($, ['diff', r.base, 'HEAD'], r.worktree) : null
+  const diff = r.record ? await git($, ['diff', ...spanOf(r)], r.worktree) : null
   if (diff && diff.exitCode === 0 && diff.stdout.trim()) {
     const file = `${r.record}/diff-round-${r.round}.patch`
     if (await $.fs.write(file, diff.stdout).then(() => true, () => false)) r = (await patch($, cur => ({ ...cur, diffFile: file }))) ?? r
@@ -742,17 +749,18 @@ async function onReview($: EngineInterface, role: Reviewer, agentId: string, ans
   const failed = mine.find(x => x.state === 'fail')
   if (failed) return block($, { on: 'start', role: failed.role }, `${failed.findings[0]?.text ?? 'The reviewer stopped.'} The ${failed.role} review didn't run; Retry runs it again.`)
   const changes = mine.filter(x => x.state === 'changes')
-  if (!changes.length || r.round >= maxRounds) return startApprover($)
+  if (r.kind === 'review' && !changes.length) return finishReview($)
+  if (r.kind !== 'review' && (!changes.length || r.round >= maxRounds)) return startApprover($)
   // Before the builder goes back over the blocker and major findings, a skeptic tries to refute them:
   // a round spent on a finding that isn't real costs a whole builder pass.
   const disputed = changes.flatMap(x => disputable(x.findings).map(finding => ({ role: x.role, finding })))
-  if (!skepticOn || !disputed.length) return startBuild($, openFindings(changes), [])
+  if (!skepticOn || !disputed.length) return r.kind === 'review' ? finishReview($) : startBuild($, openFindings(changes), [])
   const onSecurity = disputed.some(x => x.role === 'security')
   const next = await patch($, cur => ({ ...cur, disputed, note: `a skeptic checks ${disputed.length} finding${disputed.length === 1 ? '' : 's'}`, models: { ...cur.models, skeptic: onSecurity ? 'opus' : 'sonnet' } }))
   if (next && !(await spawnRole($, 'skeptic', skepticPrompt(next, disputed)))) {
     // No skeptic could start: the findings go to the builder as they are.
     await patch($, cur => ({ ...cur, phase: 'review', blocked: null }))
-    return startBuild($, openFindings(changes), [])
+    return r.kind === 'review' ? finishReview($) : startBuild($, openFindings(changes), [])
   }
 }
 
@@ -780,6 +788,7 @@ async function onSkeptic($: EngineInterface, answer: string, why: string) {
   }))
   if (dropped.length) await record($, 'skeptic rulings', dropped.map(d => `${d.ruling.toUpperCase()}: [${d.finding.severity}] ${d.finding.where} ${d.finding.text}\n  ${d.why}`).join('\n'))
   if (!after || after.phase !== 'review') return
+  if (after.kind === 'review') return finishReview($)
   const changes = after.reviews.filter(x => x.round === after.round && x.state === 'changes')
   if (changes.length) return startBuild($, openFindings(changes), [])
   await startApprover($)
@@ -820,6 +829,61 @@ async function onApprover($: EngineInterface, answer: string, why: string) {
   await patch($, r => ({ ...moveTo(r, 'ready', `approved${reason ? `: ${reason}` : ''}. Open the PR when you're ready`), steps: { ...r.steps, approver: { ...r.steps.approver, state: 'pass' } } }))
   $.ui.toast('The approver approved the change: Open PR in the factory band, /factory approve, or /factory rework <what to change>')
   void askPr($)
+}
+
+// A review run is done: its findings (what the skeptic left standing) go to the main Claude to fix.
+async function finishReview($: EngineInterface) {
+  const r = await patch($, cur => {
+    const n = cur.reviews.reduce((k, x) => k + x.findings.filter(f => f.severity !== 'minor').length, 0)
+    return moveTo(cur, 'done', n ? `reviewed: ${n} finding${n === 1 ? '' : 's'} to fix, sent to Claude` : 'reviewed: no blocker or major finding')
+  })
+  if (!r) return
+  await record($, 'review findings', reviewDonePrompt(r))
+  void $.prompt.submit({ text: reviewDonePrompt(r) }).catch(() => $.ui.toast(`The review is done: ${r.note}. /factory status lists the findings.`))
+}
+
+// The base a review compares the checkout with: the one named, else where the branch left the
+// repository's default branch (or its upstream); on that branch itself, the last commit, so only
+// uncommitted work is reviewed.
+async function reviewBase($: EngineInterface, root: string, named: string): Promise<{ base: string; ref: string } | { error: string }> {
+  if (named) {
+    const v = await git($, ['rev-parse', '--verify', '--quiet', `${named}^{commit}`], root)
+    return v.exitCode === 0 ? { base: v.stdout.trim(), ref: named } : { error: `No commit or branch named ${named}.` }
+  }
+  const head = (await git($, ['rev-parse', 'HEAD'], root)).stdout.trim()
+  for (const ref of ['@{upstream}', 'origin/HEAD', 'origin/main', 'origin/master', 'main', 'master']) {
+    const mb = await git($, ['merge-base', 'HEAD', ref], root)
+    const at = mb.stdout.trim()
+    if (mb.exitCode === 0 && at && at !== head) return { base: at, ref: ref === '@{upstream}' ? 'the upstream' : ref }
+  }
+  return { base: head, ref: 'HEAD' }
+}
+
+// /factory review [base=<ref>] [what the change is for]: the reviewers alone, on the checkout's change.
+async function startReview($: EngineInterface, focus: string, named = '', extras: Extra[] = []): Promise<string> {
+  const ready = await preflight($)
+  if ('error' in ready) return ready.error
+  const { root } = ready
+  const found = await reviewBase($, root, named.trim())
+  if ('error' in found) return found.error
+  const diff = await git($, ['diff', '--quiet', found.base], root)
+  const others = await git($, ['ls-files', '--others', '--exclude-standard', '-z'], root)
+  const untracked = others.exitCode === 0 ? others.stdout.split('\0').filter(p => p && !p.startsWith('.factory/') && !neverCommit(p)) : []
+  if (diff.exitCode === 0 && !untracked.length) return `Nothing to review: the checkout has no change against ${found.ref}${found.ref === 'HEAD' ? ' (the last commit)' : ''}. /factory review base=<branch> names what to compare with.`
+  const at = await $.clock.now()
+  const feature = cleanFeature(focus) || 'the change in this checkout'
+  const slug = `review-${slugOf(feature).slice(0, 30)}-${Math.floor(at / 1000).toString(36).slice(-5)}`
+  const base = newReview(feature, at, found.base, root, slug, untracked)
+  const created: Run = { ...base, baseRef: found.ref, ...(extras.length ? { extras, reviews: [...base.reviews, ...extras.map(e => ({ ...reviewOf(e.name), state: 'run' as const, round: 1 }))] } : {}) }
+  await keepOutOfGit($, root)
+  await readTheme($)
+  const route = await routeOf($, created)
+  await update($, run, () => ({ ...created, ...(route ? { route, ...(route.deep ? { models: { ...created.models, code: 'opus' } } : {}) } : {}) }))
+  await ensureTicking($)
+  void $.ui.open({ id: PANE, title: PANE_TITLE })
+  const now = await read($, run)
+  if (now) await serial(() => spawnReviewers($, now))
+  return `Factory review started: ${created.reviews.map(x => reviewerLabel(x.role)).join(', ')} on the checkout against ${found.ref} (${found.base.slice(0, 12)})${untracked.length ? `, with ${untracked.length} new file${untracked.length === 1 ? '' : 's'}` : ''}. Their findings come back to Claude.`
 }
 
 // The main Claude opened the approved run's PR: it now reads as opened, with its link.
@@ -1152,7 +1216,7 @@ export const register: Register = (on, options) => {
     // A job of an earlier session that never settled (a question nobody answered) doesn't hold this one's.
     queue = Promise.resolve()
     skipRunning = null
-    await $.command.register({ name: 'factory', description: 'Run a feature through the software factory: spec, plan, build, checks, reviews, approval', argumentHint: '<feature> | approve | retry | rework <note> | status | doctor | stop' })
+    await $.command.register({ name: 'factory', description: 'Run a feature through the software factory: spec, plan, build, checks, reviews, approval', argumentHint: '<feature> | review [base=<ref>] [what it is for] | approve | retry | rework <note> | status | doctor | stop' })
     for (const role of Object.keys(ROLES) as Role[]) {
       const spec = ROLES[role]
       await $.agent
@@ -1184,6 +1248,22 @@ export const register: Register = (on, options) => {
       },
       isDeferred: false,
     })
+      .catch(() => {})
+    await $.tool
+      .register({
+        name: 'review',
+        description: "Have the factory's reviewers (security and code, plus any extra you name) review the change already in this checkout, against where its branch left the default branch (uncommitted work included), with no spec, build or approver: a skeptic checks their blocker and major findings, and what stands comes back to you to fix. Call it when the person asks for a factory review, or once you finished a sizeable change yourself; not for a one-line fix.",
+        inputSchema: {
+          type: 'object',
+          properties: {
+            focus: { type: 'string', description: 'What the change is for, in a sentence: the reviewers judge it against this' },
+            base: { type: 'string', description: 'Optional: the branch or commit to compare with, when not the default branch' },
+            reviewers: { type: 'array', description: `Optional extra reviewers, as for the start tool: ${Object.keys(LENSES).join(', ')}, or { name, focus, agent }`, items: {} },
+          },
+          required: ['focus'],
+        },
+        isDeferred: false,
+      })
       .catch(() => {})
     await $.tool
       .register({
@@ -1228,6 +1308,8 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) {
       const r = await read($, run)
       if ((r?.agents[e.agentId] && !isLive(r.phase)) || (await read($, stoppedAgents)).includes(e.agentId)) return { deny: STOPPED_DENY }
+      // A review's agents look at the person's own checkout: they never change a file in it.
+      if (r?.agents[e.agentId] && r.kind === 'review' && ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(e.tool)) return { deny: "A factory review changes no file: report what you found, and Claude fixes it." }
       // Pushing, publishing, deploying or deleting outside the worktree is never a run agent's job.
       // A guard that fails refuses the call, for the run's agents only.
       if (r?.agents[e.agentId]) {
@@ -1250,6 +1332,13 @@ export const register: Register = (on, options) => {
     }
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: REVIEW_TOOL }, async ($, e) => {
+    if ((e as { agentId?: string }).agentId !== undefined) return { deny: 'Only the main conversation starts a factory review.' }
+    const input = e as unknown as { focus?: unknown; base?: unknown; reviewers?: unknown }
+    const { extras } = extrasFrom(input.reviewers)
+    return { result: await startReview($, String(input.focus ?? ''), String(input.base ?? ''), extras) }
+  })
 
   // The main Claude asks where a run stands: what it waits on, what failed and where to read more.
   on('tool.call', { tool: STATUS_TOOL }, async $ => ({ result: await statusText($) }))
@@ -1299,6 +1388,11 @@ export const register: Register = (on, options) => {
     if (arg === 'status') return { text: await statusText($) }
     if (arg === 'doctor') return { text: await doctorText($) }
     if (arg === 'checks-ok') return { text: await checksOkNow($) }
+    if (arg === 'review' || arg.startsWith('review ')) {
+      const rest = arg.slice(6).trim()
+      const named = /^base=(\S+)\s*/.exec(rest)
+      return { text: await startReview($, named ? rest.slice(named[0].length) : rest, named?.[1] ?? '') }
+    }
     if (arg === 'skip') return { text: await skipNow($) }
     if (arg === 'abandon') return { text: await abandonNow($, 'by the person') }
     if (arg.startsWith('reviewers ')) return { text: await addReviewers($, arg.slice(10).split(/[\s,]+/).filter(Boolean)) }
@@ -1316,7 +1410,7 @@ export const register: Register = (on, options) => {
     // A run going and one word that isn't a subcommand: a mistyped one (plan-approve), not a feature.
     const cur = await read($, run)
     if (cur && isLive(cur.phase) && /^[\w-]+$/.test(arg)) {
-      return { text: `"/factory ${arg}" isn't a factory command. While a run goes: /factory approve, plan-approved (the plan goal-run approved), retry, rework <what to change>, checks-ok, status, doctor, stop.` }
+      return { text: `"/factory ${arg}" isn't a factory command. While a run goes: /factory approve, plan-approved (the plan goal-run approved), retry, rework <what to change>, checks-ok, status, doctor, stop. /factory review reviews the checkout's change.` }
     }
     return { text: await start($, arg) }
   })

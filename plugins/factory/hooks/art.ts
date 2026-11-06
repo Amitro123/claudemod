@@ -127,6 +127,11 @@ export function prLabel(run: Run, state: StepState): string {
 export function pipelineLines(run: Run): string[] {
   const st = states(run)
   const line = (state: StepState, label: string, extra = '') => `${MARK[state]} ${label}${extra ? ` · ${extra}` : ''}`
+  if (run.kind === 'review')
+    return [
+      ...run.reviews.map(r => line(r.state, `${reviewerLabel(r.role)} (${reviewerModel(run, r.role)})`, r.state === 'changes' ? `${r.findings.length} findings` : r.state === 'pass' ? 'PASS' : '')),
+      line(run.phase === 'done' ? 'pass' : 'wait', 'findings to Claude'),
+    ]
   return [
     line(run.steps.spec.state, `spec-writer (${modelOf(run, 'spec')})`, run.tasks.length ? `${run.tasks.length} tasks${run.size ? `, ${run.size}` : ''}` : ''),
     line(st.planState, 'plan approval (you)'),
