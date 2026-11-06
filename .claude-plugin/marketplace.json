@@ -4,7 +4,7 @@
     "name": "Amit Rosen",
     "url": "https://github.com/Amitro123"
   },
-  "description": "Claude Code mods: a pixel spark HUD, a task/sub-agent HUD, a follow-ups tracker, an RTL toggle, a session goal runner, an agent-memory view and a software factory",
+  "description": "Claude Code mods: a pixel spark HUD, a task/sub-agent HUD, a follow-ups tracker, an RTL toggle, a session goal runner, an agent-memory view, a software factory and a bug detective for the history",
   "plugins": [
     {
       "name": "clawd-hud",
@@ -40,6 +40,11 @@
       "name": "factory",
       "source": "./plugins/factory",
       "description": "A software factory: spec, your approval of its plan, build on a branch, checks, parallel reviews and an approver agent, then your Open PR"
+    },
+    {
+      "name": "inspector",
+      "source": "./plugins/inspector",
+      "description": "A bug detective: reads what the project promises, traces every fix PR back to the change that broke it, classifies the bugs and writes a case file of what still needs fixing"
     }
   ]
 }
