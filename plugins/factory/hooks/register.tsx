@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { ChecksIO, DetectedChecks } from './checks'
 import type { Blocked, Check, Extra, Finding, Phase, Reviewer, Role, Run } from '../types'
+import type { DoctorItem } from './flow'
 import { buildRound, DIAGRAM, diagramSvg, pipelineLines } from './art'
 import type { Theme } from './art'
 import {
@@ -58,6 +59,9 @@ import {
   skillsLine,
   builtinSkill,
   lastLines,
+  doctorReport,
+  nextActionsOf,
+  nextActionsText,
   forbidsPush,
   parseBuilderTests,
   summaryOf,
@@ -1017,9 +1021,59 @@ async function addReviewers($: EngineInterface, raw: unknown): Promise<string> {
 
 async function statusText($: EngineInterface): Promise<string> {
   const r = await read($, run)
-  if (!r) return 'No factory run in this session.'
+  // No run: whether one could start, which is what the person asks when it won't.
+  if (!r) return `No factory run in this session.\n${await doctorText($)}\n${nextActionsText(nextActionsOf(null, 0))}`
   const files = r.record ? (await $.fs.list(r.record).catch(() => [])).map(f => f.name).sort() : []
   return statusReport(r, await $.clock.now(), files)
+}
+
+// /factory doctor: what a run needs, checked without starting one or spending a token. Each line says
+// what is wrong and what to do; read-only (git and the project's files).
+async function doctorText($: EngineInterface): Promise<string> {
+  const items: DoctorItem[] = []
+  const cur = await read($, run)
+  if (cur && isLive(cur.phase)) items.push({ level: 'block', text: `A run is going: ${titleOf(cur.feature, 80)} (${cur.note}). One run at a time: /factory stop ends it.` })
+  const top = await git($, ['rev-parse', '--show-toplevel'], await $.session.root())
+  if (top.exitCode !== 0) {
+    items.push({ level: 'block', text: 'Not a git repository: the factory builds on a branch, in a worktree. git init, and commit.' })
+    return doctorReport(items)
+  }
+  const root = top.stdout.trim()
+  const head = await git($, ['rev-parse', 'HEAD'], root)
+  if (head.exitCode !== 0) {
+    items.push({ level: 'block', text: 'No commit yet to build from: commit first.' })
+    return doctorReport(items)
+  }
+  const branch = (await git($, ['rev-parse', '--abbrev-ref', 'HEAD'], root)).stdout.trim()
+  items.push({ level: 'ok', text: `Git repository ${root}, ${branch && branch !== 'HEAD' ? `on ${branch}` : 'detached HEAD'} at ${head.stdout.trim().slice(0, 12)}; runs build in ${root}/.factory/<name>.` })
+  const dirty = await git($, ['status', '--porcelain'], root)
+  const changed = dirty.exitCode === 0 ? dirty.stdout.split('\n').filter(l => l.trim() && !/^\?\? \.factory\//.test(l)).length : 0
+  if (changed) items.push({ level: 'warn', text: `${changed} uncommitted change${changed === 1 ? '' : 's'} in your checkout: a run builds from the last commit, without them. Commit first if the feature needs them.` })
+  // Commits not on the upstream would go into the run's PR under its description (L4).
+  const ahead = await git($, ['rev-list', '--count', '@{upstream}..HEAD'], root)
+  const n = ahead.exitCode === 0 ? Number(ahead.stdout.trim()) : 0
+  if (n > 0) items.push({ level: 'warn', text: `${branch} is ${n} commit${n === 1 ? '' : 's'} ahead of its upstream: they would be in the run's PR too. Push them first, or start from a branch that has none.` })
+  if (await goalRunThere($)) items.push({ level: 'ok', text: 'goal-run is installed: you approve the plan there.' })
+  else items.push({ level: 'warn', text: "goal-run isn't installed: the factory asks for the plan's approval in its own band." })
+  // The checks, as detection finds them in the checkout (a run's worktree holds the same files).
+  try {
+    const io: ChecksIO = {
+      list: async dir => (await $.fs.list(dir).catch(() => [])).map(f => ({ name: f.name, isDir: String((f as { kind?: string }).kind) === 'dir' || String((f as { kind?: string }).kind) === 'directory' })),
+      read: path => $.fs.read(path).then(t => String(t), () => null),
+    }
+    const checksFile = await $.fs.read(`${root}/.factory/checks.json`).then(t => String(t), () => null)
+    const found = await detectProjectChecks(io, root, { explicit: checksOption, touched: [], spec: null, checksFile })
+    if (found.checks.length) items.push({ level: 'ok', text: `Checks${checksOption.trim() ? ' (the checks option)' : checksFile ? ' (.factory/checks.json)' : ' found'}: ${found.checks.map(c => c.join(' ')).join('; ')}.` })
+    else items.push({ level: 'warn', text: `No checks: ${found.reason || 'none found'} A run's approval then goes to you, since nothing ran. Set the checks option or .factory/checks.json.` })
+    for (const w of found.warnings.slice(0, 5)) items.push({ level: 'warn', text: `Checks: ${w}` })
+  } catch (e) {
+    items.push({ level: 'warn', text: `Couldn't look for checks: ${String(e).slice(0, 120)}` })
+  }
+  const gh = await $.process.run(['gh', '--version'], { cwd: root, timeoutMs: 10_000 }).catch(() => null)
+  items.push(gh && gh.exitCode === 0
+    ? { level: 'ok', text: 'gh is installed: Claude can open the PR with it.' }
+    : { level: 'warn', text: "gh isn't installed here: Claude opens the PR through another GitHub access it has, or gives you the commands." })
+  return doctorReport(items)
 }
 
 async function stopNow($: EngineInterface): Promise<string> {
@@ -1071,7 +1125,7 @@ export const register: Register = (on, options) => {
     // A job of an earlier session that never settled (a question nobody answered) doesn't hold this one's.
     queue = Promise.resolve()
     skipRunning = null
-    await $.command.register({ name: 'factory', description: 'Run a feature through the software factory: spec, plan, build, checks, reviews, approval', argumentHint: '<feature> | approve | retry | rework <note> | stop' })
+    await $.command.register({ name: 'factory', description: 'Run a feature through the software factory: spec, plan, build, checks, reviews, approval', argumentHint: '<feature> | approve | retry | rework <note> | status | doctor | stop' })
     for (const role of Object.keys(ROLES) as Role[]) {
       const spec = ROLES[role]
       await $.agent
@@ -1124,7 +1178,7 @@ export const register: Register = (on, options) => {
     await $.tool
       .register({
         name: 'status',
-        description: "Where the factory run stands: its step and for how long, the agent's last action, the checks with their output, the reviewers' findings, what it waits on, and the folder with each step's own words. Call it when the person asks how the factory run is going or why it seems stuck, before guessing.",
+        description: "Where the factory run stands: its step and for how long, the agent's last action, the checks with their output, the reviewers' findings, what it waits on, and the folder with each step's own words. It ends with the next actions: which are yours (through the control tool) and which are the person's to take. With no run, it checks whether one could start (git, checks, goal-run, gh). Call it when the person asks how the factory run is going, why it seems stuck or why it won't start, before guessing.",
         inputSchema: { type: 'object', properties: {} },
         isDeferred: false,
       })
@@ -1216,6 +1270,7 @@ export const register: Register = (on, options) => {
     if (arg === 'retry') return { text: await retryNow($) }
     if (arg === 'stop') return { text: await stopNow($) }
     if (arg === 'status') return { text: await statusText($) }
+    if (arg === 'doctor') return { text: await doctorText($) }
     if (arg === 'skip') return { text: await skipNow($) }
     if (arg === 'abandon') return { text: await abandonNow($, 'by the person') }
     if (arg.startsWith('reviewers ')) return { text: await addReviewers($, arg.slice(10).split(/[\s,]+/).filter(Boolean)) }
@@ -1233,7 +1288,7 @@ export const register: Register = (on, options) => {
     // A run going and one word that isn't a subcommand: a mistyped one (plan-approve), not a feature.
     const cur = await read($, run)
     if (cur && isLive(cur.phase) && /^[\w-]+$/.test(arg)) {
-      return { text: `"/factory ${arg}" isn't a factory command. While a run goes: /factory approve, plan-approved (the plan goal-run approved), retry, rework <what to change>, stop.` }
+      return { text: `"/factory ${arg}" isn't a factory command. While a run goes: /factory approve, plan-approved (the plan goal-run approved), retry, rework <what to change>, status, doctor, stop.` }
     }
     return { text: await start($, arg) }
   })
