@@ -269,9 +269,11 @@ export function slugOf(feature: string): string {
 // Where each agent works, by absolute path (L9): a feature that names the main checkout's paths once
 // drew the agents out of the worktree, and the spec landed in the person's checkout.
 export const specPathOf = (run: Pick<Run, 'worktree' | 'specFile'>) => (run.worktree ? `${run.worktree}/${run.specFile}` : run.specFile)
-export const whereLine = (run: Pick<Run, 'worktree' | 'slug'>) =>
+export const whereLine = (run: Pick<Run, 'worktree' | 'slug' | 'kind'>) =>
   !run.worktree
     ? ''
+    : run.kind === 'review'
+      ? `The change is in the person's checkout ${run.worktree}: read it there by absolute paths, with the Read, Grep and Glob tools rather than shell commands, and change nothing. ${SHELL_LINE}`
     : `Work only in the worktree ${run.worktree}: read and edit files there by their absolute paths, with the Read, Grep, Glob and Edit tools rather than shell commands. The main checkout ${rootOf(run)} is the person's: never cd into it or change anything in it, even where the feature names a path under it; use the same path under the worktree. ${SHELL_LINE}`
 // What a real run showed (2026-11-06): the agents start in the session's directory, not the worktree,
 // and with no one to approve them a command that changes directory (cd, git -C) or chains several
@@ -387,13 +389,18 @@ const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' 
 export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
   return [
     `Review the change for: ${run.feature}`,
-    `The spec is ${specPathOf(run)}. The change is the commits on branch ${run.branch} since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD): exactly what will be pushed.`,
+    ...(run.kind === 'review'
+      ? [
+          `There is no spec: review the change against what it is for and against the code around it. The change is the checkout ${run.worktree} against ${run.base.slice(0, 12)}, uncommitted work included.`,
+          ...(run.untracked?.length ? [`New files not yet in git (not in the diff; read them whole): ${run.untracked.join(', ')}`] : []),
+        ]
+      : [`The spec is ${specPathOf(run)}. The change is the commits on branch ${run.branch} since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD): exactly what will be pushed.`]),
     whereLine(run),
     ...(run.diffFile ? [`The whole diff is in ${run.diffFile}: read it with the Read tool (by range when it is long) instead of running git.`] : []),
     stat ? `Files changed:\n${stat}` : '',
     ...builderSaid(run),
     ...(!ranChecks(run).length && run.checksNote ? [`No checks ran for this change: ${run.checksNote} Nothing was verified by running it, so weigh the tests you read accordingly.`] : []),
-    `Start from the diff and the spec's "Code map". Read a changed file whole when it is short (under about 400 lines), else around the changed lines; search before reading anything else.`,
+    `Start from the diff${run.kind === 'review' ? '' : ` and the spec's "Code map"`}. Read a changed file whole when it is short (under about 400 lines), else around the changed lines; search before reading anything else.`,
     'Check every API field, input or type the change, or an acceptance criterion, relies on against its real definition (search for it and read the definition), not against the spec\'s wording: a criterion built on a field that doesn\'t exist is a blocker, and a test that only feeds a made-up fixture doesn\'t prove it.',
     ...(run.route?.focus.length ? ['What this diff calls for (from its files and lines, checked by the factory): look at each of these closely.', ...run.route.focus.map(f => `- ${f}`)] : []),
     ...(isExtra(role) ? [`You are the ${role} reviewer: look at ${run.extras?.find(e => e.name === role)?.focus ?? role}.`] : []),
@@ -415,7 +422,9 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
 export function skepticPrompt(run: Run, findings: { role: Reviewer; finding: Finding }[]): string {
   return [
     `A change for: ${run.feature}`,
-    `The spec is ${specPathOf(run)}. The change is on branch ${run.branch}, since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD).`,
+    run.kind === 'review'
+      ? `There is no spec. The change is the checkout ${run.worktree} against ${run.base.slice(0, 12)}, uncommitted work included.`
+      : `The spec is ${specPathOf(run)}. The change is on branch ${run.branch}, since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD).`,
     whereLine(run),
     ...(run.diffFile ? [`The whole diff is in ${run.diffFile}: read it with the Read tool instead of running git.`] : []),
     'The reviewers asked for changes over these findings. For each, try to refute it: read the code it names, the definitions it relies on, run a read-only command if that settles it. Refute only with evidence.',
@@ -568,6 +577,44 @@ export function untrackedOf(porcelainZ: string): string[] {
 
 export const reviewOf = (role: Reviewer): Review => ({ role, state: 'wait', findings: [], tokens: 0, round: 0, agentId: null })
 
+// A review run: the reviewers on the change in the person's checkout, against `base`.
+export function newReview(focus: string, at: number, base: string, root: string, slug: string, untracked: string[] = []): Run {
+  const r = newRun(focus, at, base, root, slug)
+  const skip = { state: 'skip' as StepState, tokens: 0 }
+  return {
+    ...r,
+    kind: 'review',
+    phase: 'review',
+    round: 1,
+    branch: '',
+    worktree: root.replace(/[\\/]+$/, ''),
+    specFile: '',
+    steps: { spec: skip, builder: skip, checks: skip, approver: skip },
+    reviews: r.reviews.map(x => ({ ...x, state: 'run', round: 1 })),
+    note: 'the reviewers are reviewing the change',
+    gate: 'factory',
+    ...(untracked.length ? { untracked: untracked.slice(0, 40) } : {}),
+  }
+}
+
+// What the main Claude is told once a review run's reviewers (and the skeptic) are done.
+export function reviewDonePrompt(run: Run): string {
+  const standing = run.reviews.flatMap(r => r.findings.map(f => ({ role: r.role, f })))
+  const fix = standing.filter(x => x.f.severity !== 'minor')
+  const minor = standing.filter(x => x.f.severity === 'minor')
+  const unverified = run.reviews.flatMap(r => (r.notChecked ?? []).map(t => `- ${r.role}: ${t}`))
+  return [
+    `The factory's reviewers (${run.reviews.map(r => reviewerLabel(r.role)).join(', ')}) reviewed the change in ${run.worktree} against ${run.base.slice(0, 12)}${run.feature ? ` (${titleOf(run.feature, 120)})` : ''}.`,
+    ...(fix.length
+      ? ['Fix each of these in the checkout, then say what you changed:', ...fix.map(x => `- ${x.role} [${x.f.severity}] ${x.f.where} ${x.f.text}`)]
+      : ['No blocker or major finding.']),
+    ...(minor.length ? ['Minor, fix when cheap:', ...minor.map(x => `- ${x.role} ${x.f.where} ${x.f.text}`)] : []),
+    ...(run.refuted?.length ? ['A skeptic refuted or downgraded these with evidence (leave them):', ...run.refuted.map(x => `- ${x.role} ${x.finding.where} ${x.finding.text}: ${x.ruling}, ${x.why}`)] : []),
+    ...(unverified.length ? ['What the reviewers say they did not check:', ...unverified] : []),
+    `Their words: ${run.record ?? ''}/. Don't start another review unless the person asks.`,
+  ].join('\n')
+}
+
 export function newRun(feature: string, at: number, base: string, root: string, slug = slugOf(feature)): Run {
   const step = (): { state: StepState; tokens: number } => ({ state: 'wait', tokens: 0 })
   return {
@@ -676,7 +723,9 @@ export function statusReport(run: Run, now: number, recordFiles: string[] = []):
   return [
     `Factory run: ${run.feature}`,
     `Phase: ${run.phase}${run.blocked ? ` (blocked on ${run.blocked.on})` : ''} · ${progressOf(run)}% · ${statusOf(run, now)}${run.phaseSince ? ` · in this phase for ${mmss(now - run.phaseSince)}` : ''}`,
-    `Branch ${run.branch}, worktree ${run.worktree}, based on ${run.baseRef ? `${run.baseRef} (${run.base.slice(0, 12)})` : run.base.slice(0, 12)}; spec ${run.specFile}.`,
+    run.kind === 'review'
+      ? `A review of the checkout ${run.worktree} against ${run.baseRef ? `${run.baseRef} (${run.base.slice(0, 12)})` : run.base.slice(0, 12)}: reviewers only, no spec or build.`
+      : `Branch ${run.branch}, worktree ${run.worktree}, based on ${run.baseRef ? `${run.baseRef} (${run.base.slice(0, 12)})` : run.base.slice(0, 12)}; spec ${run.specFile}.`,
     ...(run.activity ? [`Last agent action: ${run.activity.role} ${run.activity.text}, ${mmss(now - run.activity.at)} ago (${run.activity.calls} tool calls this step).`] : []),
     `Steps: ${(Object.keys(run.steps) as (keyof Run['steps'])[]).map(k => `${k} ${run.steps[k].state}`).join(', ')}; reviews round ${run.round}: ${run.reviews.map(x => `${x.role} ${x.state}`).join(', ')}.`,
     ...(run.stat ? [`Changed: ${run.stat}`] : []),

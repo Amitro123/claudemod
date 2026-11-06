@@ -84,6 +84,13 @@ export type Run = {
   // This round's whole diff, written by the factory beside the record: the reviewers read it instead
   // of running git, which a session with no one to approve it refuses.
   diffFile?: string
+  // New files the setup command wrote in the worktree (a lockfile npm install made): never committed.
+  setupFiles?: string[]
+  // review: only the reviewers (and the skeptic), on the change already in the person's checkout,
+  // against `base`; no spec, build, checks or approver. Their findings go back to the main Claude.
+  // `worktree` is then that checkout, and `untracked` its new files git doesn't diff.
+  kind?: 'review'
+  untracked?: string[]
   steps: Record<'spec' | 'builder' | 'checks' | 'approver', { state: StepState; tokens: number }>
   checks: Check[]
   // Why no check ran, or what detection warned about: what the reviewers and the approver are told.

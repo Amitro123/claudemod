@@ -9,6 +9,13 @@ import { argvs, pkg, repo } from './support/checks-repo'
 const run = (files: Record<string, string>, opts = {}) => detectProjectChecks(repo(files), '/r', opts)
 
 describe('chk-01 detection (S1-S6, D1)', () => {
+  test("a Claude Code plugin's tests: the root when it is one, and each plugin the change touched in a marketplace", async () => {
+    expect(argvs(await run({ '.claude-plugin/plugin.json': '{}', 'hooks/register.tsx': '' }))).toEqual(['claude plugin test .'])
+    const market = { '.claude-plugin/marketplace.json': '{}', 'plugins/a/.claude-plugin/plugin.json': '{}', 'plugins/a/hooks/x.ts': '', 'plugins/b/.claude-plugin/plugin.json': '{}', 'plugins/b/hooks/y.ts': '' }
+    expect(argvs(await run(market, { touched: ['plugins/a/hooks/x.ts'] }))).toEqual(['claude plugin test plugins/a'])
+    expect(argvs(await run(market))).toEqual([])
+  })
+
   test('root node project: test and lint found', async () => {
     const r = await run({ 'package.json': pkg({ test: 'vitest', lint: 'eslint .' }) })
     expect(argvs(r)).toEqual(['npm test', 'npm run lint'])
