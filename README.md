@@ -383,13 +383,26 @@ Fix enough bugs in a project whose parts work together, and the fixes start brea
 /inspector:inspect plugins/factory      # only fixes touching a path
 ```
 
-- **The brief.** It reads the README (changelog entries are symptoms in your words), `CLAUDE.md`, the docs and any memory the project keeps (`MISTAKES.md`, follow-ups), and writes down what the project promises and where its parts meet. A bug is a broken promise, not a style it would have chosen.
-- **The evidence.** `scripts/evidence.py` (stdlib Python, read-only, offline) walks the first-parent history: each merged PR or direct commit is a unit, with its files, components, version bumps and a fix score. For each likely fix it runs `git blame` on the fix's parent over the lines the fix deleted or changed, so it knows which earlier PR wrote them: the suspect. A fix whose lines came from an earlier fix is a **fix-of-fix**; a fix spanning two components is an integration bug; files fixes keep returning to are hotspots. Manifests, docs and lockfiles aren't blamed (their lines name the last release, not the bug). On a shallow clone it says so: blame stops at the boundary. PR bodies and review comments come from GitHub when the session has it.
-- **The cases.** Fix-of-fix chains first, then cross-component fixes, then hotspots. Each case gets a card: the symptom, the promise it broke, the culprit and what it assumed, the mechanism at `path:line`, a class (seam, contract drift, copy drift, lifecycle, ordering, edge input, false premise, error path, environment, config, prompt/model, security, performance, test gap, docs drift), what the fix changed and whether it's complete. Every claim is marked *confirmed* (code read or run), *blame* or *inferred* (from a message only).
-- **The open leads.** For each pattern it sweeps today's code for the same bug not yet fixed: the replaced expression elsewhere, other consumers of a changed format, other mods on the same seam. Each lead is confirmed (it names the input that breaks it) or suspect, with the change it needs and the test that would prove it. It changes no code.
-- **The case file** goes to `docs/inspector/<date>-case.md`, in the language you write in, and ends with the sha it investigated through, so the next run starts there. In the chat: the verdict, the top leads, and an offer to fix them (one `/factory` run each, with factory installed), flag them (followups) or turn a class that recurred 3+ times into a rule (brain-hud's `promote`).
+- **The brief.** It reads the READMEs (changelog entries are symptoms in your words), `CLAUDE.md`, the docs and any memory the project keeps (`MISTAKES.md`, follow-ups), and writes down what the project promises and where its parts meet (the seams). A bug is a broken promise, not a style it would have chosen.
+- **The evidence.** `scripts/evidence.py` (stdlib Python, read-only, offline) walks the first-parent history. Each merged PR or direct commit is a unit, with its files, components, version bumps and a fix verdict with its reason: the title or most commit subjects say fix in strong words, or it is a patch release and nothing else ("fix lint" and "address review" don't count). For each fix commit it runs `git blame` on the commit's parent over the lines it deleted or changed, following renames, so it knows which earlier PR wrote them: the suspect. Blame maps to the last 500 units, so a culprit before the window you asked for is still known. A fix whose lines came from an earlier fix is a **fix-of-fix**. Other things it flags: fixes spanning two components, and hotspot files (tests counted apart). Instruction files (`SKILL.md`, `CLAUDE.md`, agents, prompts) are blamed like code. READMEs, changelogs, manifests and lockfiles aren't: their lines name a release, not a bug. It warns on a shallow clone and when the window was cut at `--max`. `--unit`, `--path` and `--since` set the scope; `--show '#N'` prints one unit. PR bodies and review comments come from GitHub when the session has it.
+- **The cases.** At most 12 in depth (you can ask for more), one per bug, not per PR. The order: fix-of-fix chains, then fixes across components and seams, then hotspots, then one or two picked at random as a check on that order. Each case gets a card:
+  - the symptom, the promise it broke, the culprit and what it assumed;
+  - the mechanism at `path:line`;
+  - a class (interference, contract drift, copy drift, lifecycle, ordering, edge input, false premise, error path, environment, config, prompt/model, security, performance, test gap, docs drift) and the seam it happened at;
+  - what the fix changed and whether it's complete.
 
-Tests: `python -m pytest plugins/inspector/tests` (they build a small repository with a bug, its fix and a fix of that fix, and check the blame finds the chain). CI runs them.
+  Every claim carries its level: *reproduced* (it ran something and saw it fail), *read* (it traced the code), *blame* or *inferred* (from a message only). It can check a fix's test in a temporary worktree: does the test fail without the fix?
+- **The open leads.** For each pattern it sweeps today's code for the same bug not yet fixed: the replaced expression elsewhere, other readers of a changed format, other components on the same seam. Each lead is reproduced, read or suspect, with the change it needs and the test that would prove it. What it checked and found handled is listed too. It changes no code.
+- **The case file** goes to `docs/inspector/<date>-case.md`, in the language you write in. It ends with the sha it investigated through and the units it left unworked, so the next run starts there. In the chat: the verdict, the top leads, and an offer to fix them (one `/factory` run each, with factory installed), flag them (followups) or turn a class that recurred 3+ times into a rule (brain-hud's `promote`).
+- **Limits.** It finds siblings of bug kinds the history already shows, not new kinds. A lead it didn't reproduce was never seen failing. In a repository that rebase-merges, each commit is its own unit.
+
+Tests: `python -m pytest plugins/inspector/tests`. They build small repositories and check:
+- a bug, its fix and a fix of that fix;
+- a feature PR with a "fix lint" commit;
+- a rename, an octopus merge, an instruction file;
+- a shallow clone, the scopes, and the attribution beyond `--since`.
+
+CI runs them.
 
 ## Developing
 

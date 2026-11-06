@@ -1,7 +1,7 @@
 {
   "name": "inspector",
-  "version": "0.1.0",
-  "description": "A bug detective for a repository's history: /inspector:inspect reads what the README and docs promise, collects every fix PR, traces each one back to the change that broke it (git blame on the fix's parent), classifies the bugs, finds fix-of-fix chains and the seams between components, sweeps today's code for the same bugs, and writes a case file of what still needs fixing",
+  "version": "0.2.0",
+  "description": "Investigates a repository's history of bug fixes: /inspector:inspect reads what the project promises, finds the PRs that fixed something, traces each fix to the change whose lines it undid (git blame on the fix's parent), classifies the bugs and the seams they cluster at, sweeps today's code for the same bugs, and writes a case file of what still needs fixing",
   "author": {
     "name": "Amit Rosen",
     "url": "https://github.com/Amitro123"
