@@ -135,17 +135,25 @@ has its commit messages only.
 rest, worked from their titles and diffstat only and marked *inferred*, under "Not
 investigated". The case file says how many of each.
 
-**What counts as a case.** One bug, not one PR. A PR whose commits each fix something ("review
-fixes: #1 ... #9") is one case per commit, with that commit's own `introduced_by`. A commit that
-fixes two unrelated things is two cases. Split by hunk only when you must.
+**What counts as a case.** One bug, not one PR:
+- A PR whose commits each fix something ("review fixes: #1 ... #9") is one case per commit, with
+  that commit's own `introduced_by`.
+- One commit that fixes several listed things ("F1-F13") is one case per item, and only for the
+  items that blame ties to an earlier unit or that sit on a seam. The rest go with the titles-only
+  units.
+- Two commits that fix the same bug are one case.
+- A feature unit's fix commits can be cases; the feature itself isn't one. A unit that only
+  describes fixes (a README or changelog entry) isn't a fix.
 
-**Order**, taking cases until the budget runs out:
+**Order.** Two of the 12 always go to fixes picked at random from those the order below doesn't
+reach, as a check on its bias. The other 10 are taken in this order:
 
-1. fix-of-fix units (`↺`): follow each chain back to its first link (one case per link);
+1. fix-of-fix units (`↺`): follow each chain back to its first link, at most 4 cases per chain;
+   the chain's other links go in its paragraph on the pattern board;
 2. fixes spanning components, and fixes in seam files from the brief;
-3. fixes in the top 5 hotspot files;
-4. one or two fixes picked at random from the rest, as a check on the order's bias;
-5. the rest, from titles only (*inferred*).
+3. fixes in the top 5 hotspot files.
+
+The rest are worked from their titles only (*inferred*).
 
 If the user raises the budget past about 30, you may split the cases by component across
 read-only sub-agents (ground rule 4 applies to what you hand them), then re-check two of their
@@ -213,7 +221,9 @@ whose "Complete?" found a gap:
 
 Decide each lead:
 
-- **reproduced**: you ran it and it fails (a probe, a test you wrote in `<scratch>`, a command);
+- **reproduced**: you ran it and it fails: a probe, a test you wrote in `<scratch>`, a command.
+  Running a copy of the function counts if you say so ("reproduced, on a copy of `mergeGoal`").
+  Run the repository's Python with `PYTHONDONTWRITEBYTECODE=1`, so nothing lands in it;
 - **read**: you traced the mechanism and can name the input that breaks it, without running it;
 - **suspect**: the pattern fits; you can't name the failing input;
 - **clear**: you looked and it's handled. One line each, under "Checked and clear".
