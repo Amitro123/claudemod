@@ -270,7 +270,15 @@ export function slugOf(feature: string): string {
 // drew the agents out of the worktree, and the spec landed in the person's checkout.
 export const specPathOf = (run: Pick<Run, 'worktree' | 'specFile'>) => (run.worktree ? `${run.worktree}/${run.specFile}` : run.specFile)
 export const whereLine = (run: Pick<Run, 'worktree' | 'slug'>) =>
-  !run.worktree ? '' : `Work only in the worktree ${run.worktree}, your working directory: read and edit files there and run git there (git -C ${run.worktree} ...). The main checkout ${rootOf(run)} is the person's: never cd into it or change anything in it, even where the feature names a path under it; use the same path under the worktree.`
+  !run.worktree
+    ? ''
+    : `Work only in the worktree ${run.worktree}: read and edit files there by their absolute paths, with the Read, Grep, Glob and Edit tools rather than shell commands. The main checkout ${rootOf(run)} is the person's: never cd into it or change anything in it, even where the feature names a path under it; use the same path under the worktree. ${SHELL_LINE}`
+// What a real run showed (2026-11-06): the agents start in the session's directory, not the worktree,
+// and with no one to approve them a command that changes directory (cd, git -C) or chains several
+// (&&, ;, a variable) is refused. So: one plain command per Bash call, and no git of the agent's own.
+export const SHELL_LINE =
+  "In Bash, one plain command per call: no cd, no git -C, no &&, ; or variables; a command like that is refused when no one is there to approve it. If one is refused, don't try it another way: say what you couldn't run."
+
 // The repository's own rules bind the change (L1): a generated file edited by hand fails its CI.
 export const RULES_LINE =
   "Read the repository's own rules first: CLAUDE.md at the worktree's root (AGENTS.md and CONTRIBUTING.md too, if there) and any CLAUDE.md in a folder the change touches. A change that breaks one (a file it says is generated, edited by hand; a check it says CI runs, that would now fail) is a blocker. Run that read-only check (a --check, a lint) when it settles it."
@@ -316,10 +324,12 @@ export const resumePrompt = (why: string) =>
   `You stopped before finishing${why ? ` (${why})` : ''}. Carry on from where you stopped: check \`git status\` and \`git log\` in this worktree for what you already did, and don't redo it. Commit when done, and end as your job said: ${BUILDER_END.join(' ')}`
 
 // A new builder on a worktree that already has work in it (the one before stopped and couldn't be
-// sent on): what is there, from git, so it starts from it instead of reading its way back.
-export function progressNote(log: string, status: string): string {
+// sent on): what is there, from git, so it starts from it instead of reading its way back. `ignore`:
+// files that aren't a builder's work, the spec the spec-writer left uncommitted above all (a first
+// builder was once told a builder before it had stopped, over the spec alone).
+export function progressNote(log: string, status: string, ignore: readonly string[] = []): string {
   const commits = log.trim().split('\n').filter(Boolean)
-  const changed = status.trim().split('\n').filter(Boolean)
+  const changed = status.split('\n').filter(l => l.trim() && !ignore.includes(l.slice(3).trim().replace(/^"|"$/g, '')))
   if (!commits.length && !changed.length) return ''
   return [
     'A builder before you started this job and stopped; its work is in this worktree. Start from it, check it against the spec, and do what is left; don\'t redo it.',
@@ -344,6 +354,7 @@ export function buildPrompt(run: Run, findings: Finding[], failed: Check[], { ag
         `You are on branch ${run.branch}, in its own worktree. Commit your work to this branch when done.`,
         whereLine(run),
         "Follow the repository's CLAUDE.md (read it first): its rules on generated files and the commands it says to run before a commit.",
+        "If a git or test command is refused, leave it: the factory commits what you leave in the worktree and runs the checks itself. Say in your TESTS line what you couldn't run.",
         `For each of the spec's Open questions, say in your closing summary how you settled it.`,
         `Start from the spec's "Code map": read the files it lists by the ranges it gives. Search (Grep) before reading anything it doesn't list, and never read a large file (type definitions, generated code, lockfiles) whole.`,
         // Marked in goal-run only when its plan is the session goal: when goal-run kept the person's own
@@ -378,6 +389,7 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
     `Review the change for: ${run.feature}`,
     `The spec is ${specPathOf(run)}. The change is the commits on branch ${run.branch} since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD): exactly what will be pushed.`,
     whereLine(run),
+    ...(run.diffFile ? [`The whole diff is in ${run.diffFile}: read it with the Read tool (by range when it is long) instead of running git.`] : []),
     stat ? `Files changed:\n${stat}` : '',
     ...builderSaid(run),
     ...(!ranChecks(run).length && run.checksNote ? [`No checks ran for this change: ${run.checksNote} Nothing was verified by running it, so weigh the tests you read accordingly.`] : []),
@@ -405,6 +417,7 @@ export function skepticPrompt(run: Run, findings: { role: Reviewer; finding: Fin
     `A change for: ${run.feature}`,
     `The spec is ${specPathOf(run)}. The change is on branch ${run.branch}, since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD).`,
     whereLine(run),
+    ...(run.diffFile ? [`The whole diff is in ${run.diffFile}: read it with the Read tool instead of running git.`] : []),
     'The reviewers asked for changes over these findings. For each, try to refute it: read the code it names, the definitions it relies on, run a read-only command if that settles it. Refute only with evidence.',
     ...findings.map((x, i) => `F${i + 1}. ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}`),
     'End your answer with one line per finding, exactly:',
@@ -429,7 +442,7 @@ export function approvePrompt(run: Run, stat = ''): string {
     ...builderSaid(run),
     ...(run.route?.focus.length ? ['What this diff called for:', ...run.route.focus.map(f => `- ${f}`)] : []),
     ...(run.refuted?.length ? ['Findings a skeptic refuted or downgraded with evidence (not fixed, on purpose):', ...run.refuted.map(x => `- ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}: ${x.ruling}, ${x.why}`)] : []),
-    `Checks: ${ranChecks(run).length ? run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ') : `NONE RAN. ${run.checksNote || 'none configured'}`}.`,
+    `Checks the factory ran itself, in the worktree, after the last build: ${ranChecks(run).length ? run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ') : `NONE RAN. ${run.checksNote || 'none configured'}`}.${ranChecks(run).length ? ' A reviewer or the builder who says it couldn\'t run one of these is covered by this result.' : ''}`,
     ...(ranChecks(run).length && run.checksNote ? [`Check notes: ${run.checksNote}`] : []),
     ...(stat ? [`Files the change touched:\n${stat}`, "Hold them against the spec's Design and Code map: a file, dependency or public interface the spec doesn't name is scope it didn't ask for. Name it in your reason, and ESCALATE unless it is plainly needed to meet a criterion."] : []),
     "Read the spec's Open questions: one the change settled by guessing, rather than the way the spec or the builder's summary says, is the person's to decide: ESCALATE.",
@@ -710,6 +723,12 @@ export function nextActionsOf(run: Run | null, now: number): NextAction[] {
       return [{ action: 'open-pr', by: 'person', how: '/factory approve, or Open PR in the band; not yours to approve' }, rework, stop]
     case 'needs-human': {
       const b = run.blocked
+      if (b?.on === 'checks' && run.askedChecks)
+        return [
+          { action: 'checks-ok', by: 'person', how: `/factory checks-ok: runs the commands the factory found (${run.askedChecks.replace(/ @ \S*$/, '')}); not yours to allow` },
+          { action: 'retry', by: 'claude', how: `${C} action "retry": asks the person the question again` },
+          stop,
+        ]
       if (b?.on === 'escalate') return [{ action: 'approve-pr', by: 'person', how: `/factory approve, or Approve PR, over the approver's escalation; not yours to approve` }, rework, stop]
       if (b?.on === 'base') return [{ action: 'base', by: 'person', how: '/factory base <branch>: the branch the work is on top of' }, stop]
       return [
