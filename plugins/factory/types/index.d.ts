@@ -40,7 +40,7 @@ export type Blocked =
   // The builder's branch no longer starts from the run's base: which branch it is on top of is asked.
   | { on: 'base' }
 
-export type Outcome = 'fixed' | 'not-a-bug' | 'wont-fix' | 'refuted' | 'downgraded'
+export type Outcome = 'fixed' | 'not-a-bug' | 'wont-fix' | 'refuted' | 'downgraded' | 'design' | 'unverified'
 export type LedgerEntry = { id: string; role: Reviewer; severity: Severity; where: string; text: string; outcome?: Outcome; why?: string }
 
 export type Run = {

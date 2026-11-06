@@ -771,11 +771,13 @@ async function onReview($: EngineInterface, role: Reviewer, agentId: string, ans
   const failed = mine.find(x => x.state === 'fail')
   if (failed) return block($, { on: 'start', role: failed.role }, `${failed.findings[0]?.text ?? 'The reviewer stopped.'} The ${failed.role} review didn't run; Retry runs it again.`)
   const changes = mine.filter(x => x.state === 'changes')
-  if (r.kind === 'review' && !changes.length) return finishReview($)
+  // A review run has no builder round to save: its skeptic weighs every finding, minor ones too,
+  // since a false positive there costs the person's time all the same.
+  if (r.kind === 'review' && !mine.some(x => x.findings.length)) return finishReview($)
   if (r.kind !== 'review' && (!changes.length || r.round >= maxRounds)) return startApprover($)
   // Before the builder goes back over the blocker and major findings, a skeptic tries to refute them:
   // a round spent on a finding that isn't real costs a whole builder pass.
-  const disputed = changes.flatMap(x => disputable(x.findings).map(finding => ({ role: x.role, finding })))
+  const disputed = r.kind === 'review' ? mine.flatMap(x => x.findings.map(finding => ({ role: x.role, finding }))) : changes.flatMap(x => disputable(x.findings).map(finding => ({ role: x.role, finding })))
   if (!skepticOn || !disputed.length) return r.kind === 'review' ? finishReview($) : startBuild($, openFindings(changes), [])
   const onSecurity = disputed.some(x => x.role === 'security')
   const next = await patch($, cur => ({ ...cur, disputed, note: `a skeptic checks ${disputed.length} finding${disputed.length === 1 ? '' : 's'}`, models: { ...cur.models, skeptic: onSecurity ? 'opus' : 'sonnet' } }))
@@ -800,12 +802,12 @@ async function onSkeptic($: EngineInterface, answer: string, why: string) {
     disputed: [],
     refuted: [...(cur.refuted ?? []), ...dropped.map(d => ({ role: disputed.find(x => x.finding === d.finding)!.role, finding: d.finding, ruling: d.ruling, why: d.why }))],
     reviews: cur.reviews.map(x => {
-      if (x.round !== cur.round || x.state !== 'changes') return x
+      if (x.round !== cur.round || (x.state !== 'changes' && cur.kind !== 'review')) return x
       const findings = x.findings.flatMap(f => {
         const d = gone.get(disputed.find(y => y.role === x.role && y.finding.where === f.where && y.finding.text === f.text)?.finding as never)
         return !d ? [f] : d.ruling === 'downgraded' ? [{ ...f, severity: 'minor' as const }] : []
       })
-      return { ...x, findings, state: findings.some(f => f.severity !== 'minor') ? x.state : 'pass' }
+      return { ...x, findings, state: x.state === 'changes' && findings.some(f => f.severity !== 'minor') ? x.state : x.state === 'changes' ? 'pass' : x.state }
     }),
   }))
   if (dropped.length) await record($, 'skeptic rulings', dropped.map(d => `${d.ruling.toUpperCase()}: [${d.finding.severity}] ${d.finding.where} ${d.finding.text}\n  ${d.why}`).join('\n'))
