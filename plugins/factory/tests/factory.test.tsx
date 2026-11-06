@@ -4,7 +4,7 @@ import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenTool, routeReview } from '../hooks/route'
 import { extrasFrom, LENSES } from '../hooks/flow'
-import { forbidsPush, parseBuilderTests, parseNotChecked, parseUnderstood, summaryOf } from '../hooks/flow'
+import { nextActionsOf, forbidsPush, parseBuilderTests, parseNotChecked, parseUnderstood, summaryOf } from '../hooks/flow'
 import { cleanFeature, couldNotStart, detectChecks, detectSetup, leftOut, neverCommit, slugOf, untrackedOf, modelsFor, parseDecision, parseSize, parseSkills, progressNote, titleOf, parseTasks, parseVerdict, planPrompt, specPrompt, splitChecks } from '../hooks/flow'
 import { factoryArgs, goalPrompt, startLine, factoryPlanApprovedArgs, factoryPlanResultArgs, PLAN_APPROVED_FOR_FACTORY, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, planChangesForFactory } from '../hooks/texts'
 
@@ -1954,5 +1954,69 @@ describe('what the run review of 2026-10-29 found (L1, L2, L3, L9, L10)', () => 
     expect(sent).toMatch(/git -C \/repo\/\.factory\/[\w-]+ push -u origin factory\//)
     expect(sent).not.toMatch(/^Push branch/m)
     expect(await paneText($)).toMatch(/PR: commands handed to you/)
+  })
+})
+
+describe('the doctor, and the next actions the status tool lists', () => {
+  const STATUS = 'mcp__factory__status'
+  const status = async ($: Engine) => String((await $.tool.call({ tool: STATUS } as never)).result)
+
+  test('/factory doctor: the repository, the checks found, goal-run and gh, without starting a run', async ($, on) => {
+    const w = engine(on)
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    const t = await command($, 'doctor')
+    expect(t).toMatch(/^Factory doctor: ready to run\./)
+    expect(t).toMatch(/✓ Git repository \/repo, detached HEAD at abc123/)
+    expect(t).toMatch(/✓ Checks found: npm test\./)
+    expect(t).toMatch(/✓ goal-run is installed/)
+    expect(t).toMatch(/✓ gh is installed/)
+    expect(w.spawned).toEqual([])
+    expect(w.ran.some(c => c.startsWith('git worktree'))).toBe(false)
+  })
+
+  test('the doctor names a blocker and what to do; no checks and no goal-run are warnings', async ($, on) => {
+    engine(on, { noRepo: true })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    expect(await command($, 'doctor')).toMatch(/1 blocker[^\n]*\n✗ Not a git repository[^\n]*git init/)
+  })
+
+  test('warnings: no checks, no goal-run, uncommitted work', async ($, on) => {
+    engine(on, { files: [], pkg: '{}', goalRun: false, dirty: true })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    const t = await command($, 'doctor')
+    expect(t).toMatch(/^Factory doctor: a run can start; \d+ things to know/)
+    expect(t).toMatch(/! \d+ uncommitted changes in your checkout: a run builds from the last commit/)
+    expect(t).toMatch(/! goal-run isn't installed/)
+    expect(t).toMatch(/! No checks:/)
+  })
+
+  test('the status tool with no run: the doctor, and starting one as the next action', async ($, on) => {
+    engine(on)
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    const t = await status($)
+    expect(t).toMatch(/^No factory run in this session\.\nFactory doctor: ready to run/)
+    expect(t).toMatch(/Next actions:\n- start \(you\): mcp__factory__start/)
+  })
+
+  test("an escalation's next actions are the person's: approve or rework, never a retry", async ($, on) => {
+    engine(on)
+    await toReviews($)
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    expect(await status($)).toMatch(/Next actions:\n- add-reviewers|Next actions:\n- stop/)
+    await answer($, 'a5', 'DECISION: ESCALATE\nREASON: touches auth')
+    const t = await status($)
+    expect(t).toMatch(/Next actions:\n- approve-pr \(the person\): \/factory approve[^\n]*not yours to approve\n- rework \(the person\)/)
+    expect(t).not.toMatch(/- retry/)
+  })
+
+  test('next actions by phase: the plan is the person\'s, a stopped step is retried, a requested PR waits for its link', () => {
+    const base = { phase: 'plan', gate: 'goal-run', steps: { builder: { state: 'wait' } }, blocked: null } as never as Parameters<typeof nextActionsOf>[0] & object
+    expect(nextActionsOf(base, 0).map(a => `${a.action}:${a.by}`)).toEqual(['approve-plan:person', 'stop:claude'])
+    expect(nextActionsOf({ ...base, phase: 'needs-human', blocked: { on: 'start', role: 'approver' }, steps: { builder: { state: 'pass' } } } as never, 0).map(a => a.action)).toEqual(['retry', 'rework', 'stop'])
+    expect(nextActionsOf({ ...base, phase: 'needs-human', blocked: { on: 'base' } } as never, 0).map(a => a.action)).toEqual(['base', 'stop'])
+    expect(nextActionsOf({ ...base, phase: 'done', pr: { state: 'requested' } } as never, 0).map(a => a.action)).toEqual(['pr-opened', 'start'])
+    expect(nextActionsOf({ ...base, phase: 'done', pr: { state: 'opened', url: 'u' } } as never, 0).map(a => a.action)).toEqual(['start'])
+    expect(nextActionsOf(null, 0).map(a => a.action)).toEqual(['start'])
   })
 })

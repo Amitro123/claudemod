@@ -674,6 +674,71 @@ export function statusReport(run: Run, now: number, recordFiles: string[] = []):
     ...(findings.length ? ['Findings this round:', ...findings.flatMap(x => x.findings.map(f => `- ${x.role} [${f.severity}] ${f.where} ${f.text}`))] : []),
     ...(waitsOnYou(run) ? [`Waits on the person: ${run.note}`] : []),
     ...(run.record ? [`What each step said: ${run.record}/${recordFiles.length ? ` (${recordFiles.join(', ')})` : ''}`] : []),
+    nextActionsText(nextActionsOf(run, now)),
+  ].join('\n')
+}
+
+// What can be done about the run now, and by whom: the main Claude through its tools (only when the
+// person asks, or a step is plainly stuck), or the person, whose decisions these are. The status
+// tool lists them, so Claude doesn't guess (a Retry on an escalation, say).
+export type NextAction = { action: string; by: 'claude' | 'person'; how: string }
+
+export function nextActionsOf(run: Run | null, now: number): NextAction[] {
+  const C = CONTROL_TOOL_NAME
+  const start: NextAction = { action: 'start', by: 'claude', how: 'mcp__factory__start with the feature, when the person asks for a run' }
+  const stop: NextAction = { action: 'stop', by: 'claude', how: `${C} action "stop", only when the person asks (or /factory stop)` }
+  if (!run) return [start]
+  if (run.phase === 'stopped') return [start]
+  if (run.phase === 'done') {
+    if (run.pr?.state === 'requested') return [{ action: 'pr-opened', by: 'claude', how: `once you opened the PR: ${C} action "pr-opened" with its link as url` }, start]
+    if (run.pr?.state === 'handed') return [{ action: 'pr-opened', by: 'claude', how: `once the person says they opened it and gives the link: ${C} action "pr-opened"` }, start]
+    return [start]
+  }
+  const rework: NextAction = { action: 'rework', by: 'person', how: '/factory rework <what to change>: sends the change back to the builder' }
+  switch (run.phase) {
+    case 'plan':
+      return [
+        run.gate === 'goal-run'
+          ? { action: 'approve-plan', by: 'person', how: "in goal-run's dialog or the Goal pane (/session-goal); not yours to approve" }
+          : { action: 'approve-plan', by: 'person', how: "/factory approve, or Approve plan in the factory's band; not yours to approve" },
+        stop,
+      ]
+    case 'checks':
+      if (run.isAskingChecks) return [{ action: 'answer-checks', by: 'person', how: "the open question on which commands to run; not yours to answer" }, stop]
+      return [...(run.checking ? [{ action: 'skip-check', by: 'claude' as const, how: `${C} action "skip-check", when ${run.checking.cmd} hangs` }] : []), stop]
+    case 'ready':
+      return [{ action: 'open-pr', by: 'person', how: '/factory approve, or Open PR in the band; not yours to approve' }, rework, stop]
+    case 'needs-human': {
+      const b = run.blocked
+      if (b?.on === 'escalate') return [{ action: 'approve-pr', by: 'person', how: `/factory approve, or Approve PR, over the approver's escalation; not yours to approve` }, rework, stop]
+      if (b?.on === 'base') return [{ action: 'base', by: 'person', how: '/factory base <branch>: the branch the work is on top of' }, stop]
+      return [
+        { action: 'retry', by: 'claude', how: `${C} action "retry" (or /factory retry): runs the step that stopped again${b?.on === 'checks' || b?.on === 'setup' ? ', once the cause is fixed' : ''}` },
+        ...(run.steps.builder.state !== 'wait' ? [rework] : []),
+        stop,
+      ]
+    }
+    default:
+      return [
+        ...(isQuiet(run, now) ? [{ action: 'abandon-agent', by: 'claude' as const, how: `${C} action "abandon-agent": the agent has been quiet for long; Retry then starts a new one` }] : []),
+        ...(run.phase === 'build' || run.phase === 'review' ? [{ action: 'add-reviewers', by: 'claude' as const, how: `${C} action "add-reviewers", only when the change needs that look` }] : []),
+        stop,
+      ]
+  }
+}
+
+export const nextActionsText = (list: NextAction[]) =>
+  ['Next actions:', ...list.map(a => `- ${a.action} (${a.by === 'claude' ? 'you' : 'the person'}): ${a.how}`)].join('\n')
+
+// The doctor's findings, a line each: ok, a warning (the run works, with a catch) or a blocker.
+export type DoctorItem = { level: 'ok' | 'warn' | 'block'; text: string }
+export function doctorReport(items: DoctorItem[]): string {
+  const mark = { ok: '✓', warn: '!', block: '✗' } as const
+  const blocked = items.filter(i => i.level === 'block').length
+  const warned = items.filter(i => i.level === 'warn').length
+  return [
+    `Factory doctor: ${blocked ? `${blocked} blocker${blocked === 1 ? '' : 's'}: a run can't start until ${blocked === 1 ? 'it is' : 'they are'} fixed` : warned ? `a run can start; ${warned} thing${warned === 1 ? '' : 's'} to know` : 'ready to run'}.`,
+    ...items.map(i => `${mark[i.level]} ${i.text}`),
   ].join('\n')
 }
 
