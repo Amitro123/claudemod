@@ -26,7 +26,8 @@ const PANE = {
 const USAGE = (n: number) => ({ model: 'm', input_tokens: n, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })
 
 // The engine beneath: clock, store, the side calls, prompts the mod submits, and the plan dialog's answers.
-function engine(on: On, { saved = {} as Record<string, unknown>, answers = [] as (string | null)[] } = {}) {
+// An answer can be a function: what happens while the dialog is open, then the answer.
+function engine(on: On, { saved = {} as Record<string, unknown>, answers = [] as (string | null | (() => Promise<string>))[] } = {}) {
   const sent: string[] = []
   const toasts: string[] = []
   const asked: string[] = []
@@ -53,10 +54,11 @@ function engine(on: On, { saved = {} as Record<string, unknown>, answers = [] as
     sent.push(e.text)
     return { text: e.text, context: e.context }
   })
-  on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+  on('tool.call', { tool: 'AskUserQuestion' }, async (_, e) => {
     const q = e.questions[0]!.question
     asked.push(q)
-    const a = answers.shift()
+    const next = answers.shift()
+    const a = typeof next === 'function' ? await next() : next
     if (a === null || a === undefined) throw new Error('dismissed')
     return { result: { questions: e.questions, answers: { [q]: a } } } as never
   })
@@ -634,7 +636,7 @@ describe('the order of the plan', () => {
 describe('adding a task mid-goal', () => {
   const ADD = 'mcp__goal-run__add'
   // An approved plan: t1 high (done), t2 high, t3 medium, t4 low.
-  async function underway($: Engine, on: On, answers: (string | null)[]) {
+  async function underway($: Engine, on: On, answers: (string | null | (() => Promise<string>))[]) {
     const w = engine(on, { answers: ['Approve, run through', ...answers] })
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
     await $.command.run({ command: 'session-goal', args: 'Ship it' } as never)
@@ -1210,5 +1212,41 @@ describe('a re-plan and concurrent adds across sessions', () => {
     const b = insertTask(g, { title: 'From B', priority: 'medium', needs: [] }, 'bbbb').goal
     const m = mergeGoal(g, a, b)
     expect(m.tasks.map(t => [t.id, t.title])).toEqual([['t1', 'A'], ['t2-aaaa', 'From A'], ['t2-bbbb', 'From B']])
+  })
+})
+
+describe('what the whole-mod review found', () => {
+  test("a plan for a new goal after one that is done starts clean: none of its tasks, tokens or setAt", async ($, on) => {
+    const w = engine(on, { answers: ['Approve, run through', 'Approve, run through'] })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    await $.command.run({ command: 'session-goal', args: 'Ship it' } as never)
+    await $.tool.call({ tool: PLAN, goal: 'Ship it', tasks: ['One'] } as never)
+    await step($, w, 7_000)
+    await $.tool.call({ tool: UPDATE, id: 't1', status: 'done' } as never)
+    const done = w.saved['goal:/repo'] as Goal & { setAt?: number }
+    expect(done.status).toBe('done')
+    await w.clock.advance(60_000)
+    await $.tool.call({ tool: PLAN, goal: 'Write the docs', tasks: ['Draft', 'Review'] } as never)
+    const next = w.saved['goal:/repo'] as Goal & { setAt?: number }
+    expect(next.text).toBe('Write the docs')
+    expect(next.tasks.map(t => t.title)).toEqual(['Draft', 'Review'])
+    expect(next.tasks.every(t => t.status !== 'done' && t.tokens === 0)).toBe(true)
+    expect(next.setAt).not.toBe(done.setAt)
+  })
+
+  test('an added task goes into the goal as it is after the dialog: a status changed meanwhile stays', async ($, on) => {
+    const answers: (string | null | (() => Promise<string>))[] = ['Approve, run through', async () => {
+      await $.tool.call({ tool: UPDATE, id: 't2', status: 'in_progress' } as never)
+      return 'Add it'
+    }]
+    const w = engine(on, { answers })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    await $.command.run({ command: 'session-goal', args: 'Ship it' } as never)
+    await $.tool.call({ tool: PLAN, tasks: [{ title: 'A', priority: 'high' }, { title: 'B', priority: 'high' }] } as never)
+    const r = await $.tool.call({ tool: 'mcp__goal-run__add', title: 'Rotate the key', priority: 'low' } as never)
+    expect(String(r.result)).toMatch(/^Added /)
+    const g = w.saved['goal:/repo'] as Goal
+    expect(g.tasks.find(t => t.id === 't2')!.status).toBe('in_progress')
+    expect(g.tasks.map(t => t.title)).toContain('Rotate the key')
   })
 })
