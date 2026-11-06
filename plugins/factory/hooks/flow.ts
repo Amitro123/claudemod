@@ -442,7 +442,7 @@ export function approvePrompt(run: Run, stat = ''): string {
     ...builderSaid(run),
     ...(run.route?.focus.length ? ['What this diff called for:', ...run.route.focus.map(f => `- ${f}`)] : []),
     ...(run.refuted?.length ? ['Findings a skeptic refuted or downgraded with evidence (not fixed, on purpose):', ...run.refuted.map(x => `- ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}: ${x.ruling}, ${x.why}`)] : []),
-    `Checks: ${ranChecks(run).length ? run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ') : `NONE RAN. ${run.checksNote || 'none configured'}`}.`,
+    `Checks the factory ran itself, in the worktree, after the last build: ${ranChecks(run).length ? run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ') : `NONE RAN. ${run.checksNote || 'none configured'}`}.${ranChecks(run).length ? ' A reviewer or the builder who says it couldn\'t run one of these is covered by this result.' : ''}`,
     ...(ranChecks(run).length && run.checksNote ? [`Check notes: ${run.checksNote}`] : []),
     ...(stat ? [`Files the change touched:\n${stat}`, "Hold them against the spec's Design and Code map: a file, dependency or public interface the spec doesn't name is scope it didn't ask for. Name it in your reason, and ESCALATE unless it is plainly needed to meet a criterion."] : []),
     "Read the spec's Open questions: one the change settled by guessing, rather than the way the spec or the builder's summary says, is the person's to decide: ESCALATE.",

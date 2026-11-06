@@ -1778,7 +1778,7 @@ describe('with no check run, an approval is the person\'s call', () => {
     await toReviews($)
     await answer($, 'a3', PASS)
     await answer($, 'a4', PASS)
-    expect(last(w).prompt).toContain('Checks: NONE RAN.')
+    expect(last(w).prompt).toContain('after the last build: NONE RAN.')
     expect(last(w).prompt).toContain('No check ran: an APPROVE goes to the person as an escalation')
     await answer($, 'a5', 'DECISION: APPROVE\nREASON: tests read fine')
     const t = await bandText($)
@@ -2059,5 +2059,13 @@ describe("the agents don't need git or a shell chain (what the first real run's 
     await answer($, 'a4', CHANGES)
     expect(last(w).subagentType).toBe('factory:skeptic')
     expect(last(w).prompt).toContain(`The whole diff is in ${file}`)
+  })
+
+  test("the approver is told the checks are the factory's own run, covering a reviewer who couldn't run them", async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', PASS)
+    expect(last(w).prompt).toContain("Checks the factory ran itself, in the worktree, after the last build: npm test passed. A reviewer or the builder who says it couldn't run one of these is covered by this result.")
   })
 })
