@@ -6,5 +6,5 @@ allowed_tools: [Read, Glob, Grep, Skill, Bash, Write]
 tags: [inspector]
 ---
 
-Use the inspector's inspect skill. This project has had a few bug fixes. Investigate its history and tell me what still needs fixing.
+This project has had a few bug fixes. Investigate its history and tell me what still needs fixing.
 Work at most 4 cases. Write the case file to docs/inspector/case.md, in English. Nobody can answer questions during this run: where you would ask, take the default. Change no other file.
