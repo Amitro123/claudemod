@@ -2156,11 +2156,31 @@ describe('what every run measures, and the test commands every agent is given', 
     expect(w.spawned.find(s => s.subagentType === 'factory:code-reviewer')!.prompt).toContain("The project's checks, which the factory ran itself after the last build: npm test passed. To run tests yourself, use exactly these commands.")
   })
 
-  test('a review run tells its reviewers the test commands detection found, not run', async ($, on) => {
+  test('a review run runs the checks it found on the checkout first, once the person lets it; the reviewers get the result', async ($, on) => {
     const w = engine(on, { mergeBase: 'def999', reviewChange: true })
     await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
     await command($, 'review x')
-    expect(w.spawned[0]!.prompt).toContain("The project's test commands (not run by the factory): npm test. To run tests yourself, use exactly these.")
+    expect(w.asked.at(-1)).toMatch(/^Before the factory runs the checks it found in the project, in \/repo:\n\$ npm test/)
+    expect(w.ran).toContain('npm test')
+    expect(w.spawned[0]!.prompt).toContain("The project's checks, which the factory ran itself on the checkout: npm test passed. To run tests yourself, use exactly these commands.")
+  })
+
+  test("a review whose checks the person doesn't let run goes on without them; failing ones go to the reviewers, not a builder; nothing is installed", async ($, on) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true, checksOk: null, files: ['package.json'] })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    expect(w.ran).not.toContain('npm test')
+    expect(w.ran).not.toContain('npm install')
+    expect(w.spawned.map(s => s.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
+    expect(w.spawned[0]!.prompt).toMatch(/No checks ran for this change: The person didn't let the found commands run \(npm test\)/)
+  })
+
+  test('a failing check in a review: the reviewers are told, and no builder is sent', { options: { checks: 'npm test' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true, fails: 1 })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    expect(w.spawned.map(s => s.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
+    expect(w.spawned[0]!.prompt).toContain('on the checkout: npm test FAILED')
   })
 
   test('the stats: time, iterations, findings, tool calls and the answers that missed a marker, in the status and the record', async ($, on) => {
@@ -2178,5 +2198,21 @@ describe('what every run measures, and the test commands every agent is given', 
     expect(stats).toMatch(/Tool calls the factory saw: security 1; refused by its guard: 0\./)
     expect(stats).toContain('Answers missing a marker their prompt asks for: builder (round 1): no TESTS line; security review (round 1): no UNDERSTOOD, NOT CHECKED.')
     expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/Stats: Iterations: 1 builder start/)
+  })
+})
+
+describe('what the model-router review showed', () => {
+  test('a finding that runs over indented lines is read whole; the next finding or a blank line ends it', () => {
+    const v = parseVerdict('VERDICT: CHANGES\nFINDINGS:\n- [minor] README.md:12 The README is out of date in three places:\n  - it says off means pass through\n  - it names a retired bundle\n- [major] a.ts:3 wrong\n\nNOT CHECKED: none')
+    expect(v.findings).toEqual([
+      { severity: 'minor', where: 'README.md:12', text: 'The README is out of date in three places: - it says off means pass through - it names a retired bundle' },
+      { severity: 'major', where: 'a.ts:3', text: 'wrong' },
+    ])
+  })
+
+  test("the reviewers cite the file's own lines, not the diff file's", async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    expect(w.spawned.find(s => s.subagentType === 'factory:code-reviewer')!.prompt).toContain('path:line is a line of the file itself, as Read shows it, never a line of the diff file.')
   })
 })

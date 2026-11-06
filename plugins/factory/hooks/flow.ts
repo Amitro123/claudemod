@@ -179,9 +179,16 @@ export function parseNotChecked(answer: string): string[] | undefined {
 export function parseVerdict(answer: string): { state: 'pass' | 'changes'; findings: Finding[]; understood?: string; notChecked?: string[] } {
   const verdict = marker(answer, 'VERDICT', 'PASS|CHANGES', 'CHANGES')
   const findings: Finding[] = []
+  // A finding may run over several lines: the indented lines under it (a list of its own included)
+  // are part of it, up to a blank line, the next finding or a marker.
+  let open: Finding | null = null
   for (const raw of answer.split('\n')) {
     const m = FINDING.exec(raw)
-    if (m) findings.push({ severity: m[1]!.toLowerCase() as Severity, where: m[2]!, text: m[3]!.trim() })
+    if (m) {
+      open = { severity: m[1]!.toLowerCase() as Severity, where: m[2]!, text: m[3]!.trim() }
+      findings.push(open)
+    } else if (open && /^\s+\S/.test(raw) && !/^\s*[A-Z][A-Z ]+:/.test(raw)) open.text = `${open.text} ${raw.trim()}`.slice(0, 1200)
+    else open = null
   }
   const understood = parseUnderstood(answer)
   const notChecked = parseNotChecked(answer)
@@ -287,9 +294,9 @@ export const RULES_LINE =
 
 // The project's own test commands, so no agent guesses one (bun test, in a repo that runs claude
 // plugin test): those the factory ran with their result, else those detection found.
-export function testsLine(run: Pick<Run, 'checks' | 'testCommands'>): string[] {
+export function testsLine(run: Pick<Run, 'checks' | 'testCommands' | 'kind'>): string[] {
   const ran = ranChecks(run as Run)
-  if (ran.length) return [`The project's checks, which the factory ran itself after the last build: ${run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ')}. To run tests yourself, use exactly these commands.`]
+  if (ran.length) return [`The project's checks, which the factory ran itself ${run.kind === 'review' ? 'on the checkout' : 'after the last build'}: ${run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ')}. To run tests yourself, use exactly these commands.`]
   if (run.testCommands?.length) return [`The project's test commands (not run by the factory): ${run.testCommands.join('; ')}. To run tests yourself, use exactly these.`]
   return []
 }
@@ -425,6 +432,7 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
     '- [blocker|major|minor] <path:line> <what is wrong and why>',
     'NOT CHECKED:',
     '- <an acceptance criterion or part of the change in your area that you did not verify, and why>',
+    "path:line is a line of the file itself, as Read shows it, never a line of the diff file. A finding that needs more than one line goes on, indented, under its own.",
     'A blocker or major finding means CHANGES. Write "FINDINGS: none" when there are none, and "NOT CHECKED: none" only when you verified everything in your area.',
   ].filter(Boolean).join('\n')
 }
@@ -595,14 +603,14 @@ export function newReview(focus: string, at: number, base: string, root: string,
   return {
     ...r,
     kind: 'review',
-    phase: 'review',
-    round: 1,
+    // The checks first (the person lets the found commands run, or not), then the reviewers.
+    phase: 'checks',
+    round: 0,
     branch: '',
     worktree: root.replace(/[\\/]+$/, ''),
     specFile: '',
-    steps: { spec: skip, builder: skip, checks: skip, approver: skip },
-    reviews: r.reviews.map(x => ({ ...x, state: 'run', round: 1 })),
-    note: 'the reviewers are reviewing the change',
+    steps: { spec: skip, builder: skip, checks: { state: 'wait', tokens: 0 }, approver: skip },
+    note: 'running the checks before the review',
     gate: 'factory',
     ...(untracked.length ? { untracked: untracked.slice(0, 40) } : {}),
   }
