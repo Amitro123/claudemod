@@ -91,6 +91,12 @@ export type Run = {
   // `worktree` is then that checkout, and `untracked` its new files git doesn't diff.
   kind?: 'review'
   untracked?: string[]
+  // The project's test commands as detection found them, for a review run (it runs no checks): the
+  // reviewers are told them, so none guesses one.
+  testCommands?: string[]
+  // How the run went, for its record and the status: builder starts, the run agents' tool calls the
+  // mod saw (by role), the calls its guard refused, and answers that missed a marker their prompt asks for.
+  stats?: { builderStarts: number; toolCalls: Record<string, number>; guardRefused: number; formatMisses: string[] }
   steps: Record<'spec' | 'builder' | 'checks' | 'approver', { state: StepState; tokens: number }>
   checks: Check[]
   // Why no check ran, or what detection warned about: what the reviewers and the approver are told.

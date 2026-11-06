@@ -2148,3 +2148,35 @@ describe('/factory review: the reviewers alone, on the change in your checkout',
     expect(await command($, 'review base=nope x')).toBe('No commit or branch named nope.')
   })
 })
+
+describe('what every run measures, and the test commands every agent is given', () => {
+  test("the reviewers get the project's checks the factory ran, and are told to use exactly those", async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    expect(w.spawned.find(s => s.subagentType === 'factory:code-reviewer')!.prompt).toContain("The project's checks, which the factory ran itself after the last build: npm test passed. To run tests yourself, use exactly these commands.")
+  })
+
+  test('a review run tells its reviewers the test commands detection found, not run', async ($, on) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    expect(w.spawned[0]!.prompt).toContain("The project's test commands (not run by the factory): npm test. To run tests yourself, use exactly these.")
+  })
+
+  test('the stats: time, iterations, findings, tool calls and the answers that missed a marker, in the status and the record', async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    await $.tool.call({ tool: 'Edit', agentId: 'a3', file_path: '/repo/.factory/rate-limiter/src/mw.ts' } as never)
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', 'UNDERSTOOD: a limiter.\nVERDICT: PASS\nFINDINGS: none\nNOT CHECKED: none')
+    await answer($, 'a5', 'DECISION: APPROVE\nREASON: ok')
+    await command($, 'approve')
+    const stats = w.written['/repo/.factory/rate-limiter.record/stats.md']
+    expect(stats).toMatch(/^# stats\n\nTime: \d+:\d\d from start\./)
+    expect(stats).toContain('Iterations: 1 builder start, 1 review round.')
+    expect(stats).toContain('Findings this round: 0 blocker, 0 major, 1 minor; refuted by the skeptic so far: 0.')
+    expect(stats).toMatch(/Tool calls the factory saw: security 1; refused by its guard: 0\./)
+    expect(stats).toContain('Answers missing a marker their prompt asks for: builder (round 1): no TESTS line; security review (round 1): no UNDERSTOOD, NOT CHECKED.')
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/Stats: Iterations: 1 builder start/)
+  })
+})

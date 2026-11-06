@@ -59,6 +59,7 @@ import {
   skillsLine,
   builtinSkill,
   lastLines,
+  statsReport,
   newReview,
   reviewDonePrompt,
   doctorReport,
@@ -215,7 +216,7 @@ async function spawnRole($: EngineInterface, role: Role, prompt: string, { onSes
     ...cur,
     agents: { ...cur.agents, [id]: role },
     activity: { role, text: 'starting', at: t0, calls: 0 },
-    ...(role === 'builder' ? { builderId: id } : {}),
+    ...(role === 'builder' ? { builderId: id, stats: bump(cur, s => ({ ...s, builderStarts: s.builderStarts + 1 })).stats } : {}),
     reviews: cur.reviews.map(x => (x.role === (review || role) ? { ...x, agentId: id } : x)),
   }))
   spawns.set(id, { role, prompt: job, hasModel: !onSessionModel && !agentType, isRetry: onSessionModel, asked: onSessionModel ? 'the session model' : agentType ? `${agentType}'s own` : modelOf(r, role), review, agentType })
@@ -502,6 +503,12 @@ async function namesIn($: EngineInterface, dir: string) {
   return (await $.fs.list(dir).catch(() => [])).map(f => f.name)
 }
 
+// The engine's files, as check detection reads them.
+const checksIO = ($: EngineInterface): ChecksIO => ({
+  list: async dir => (await $.fs.list(dir).catch(() => [])).map(f => ({ name: f.name, isDir: String((f as { kind?: string }).kind) === 'dir' || String((f as { kind?: string }).kind) === 'directory' })),
+  read: path => $.fs.read(path).then(t => String(t), () => null),
+})
+
 // The checks of this run: the option, else the project's checks file, else what detection finds in the
 // worktree and the commands in the spec's acceptance criteria. Never throws; says why when it finds none.
 async function checkCommands($: EngineInterface, r: Run): Promise<DetectedChecks> {
@@ -740,7 +747,11 @@ async function spawnReviewers($: EngineInterface, r: Run) {
 
 async function onReview($: EngineInterface, role: Reviewer, agentId: string, answer: string, why: string) {
   const verdict = !why ? parseVerdict(answer) : { state: 'fail' as const, findings: [{ severity: 'major' as const, where: '-', text: `The reviewer stopped: ${why}.` }] }
-  const r = await patch($, cur => ({ ...cur, reviews: cur.reviews.map(x => (x.agentId === agentId ? { ...x, state: verdict.state, findings: verdict.findings, understood: verdict.understood, notChecked: verdict.notChecked } : x)) }))
+  const missed = why ? [] : [...(!/VERDICT:/i.test(answer) ? ['VERDICT'] : []), ...(!('understood' in verdict && verdict.understood) ? ['UNDERSTOOD'] : []), ...(!('notChecked' in verdict && verdict.notChecked) ? ['NOT CHECKED'] : [])]
+  const r = await patch($, cur => {
+    const next = { ...cur, reviews: cur.reviews.map(x => (x.agentId === agentId ? { ...x, state: verdict.state, findings: verdict.findings, understood: 'understood' in verdict ? verdict.understood : undefined, notChecked: 'notChecked' in verdict ? verdict.notChecked : undefined } : x)) }
+    return missed.length ? bump(next, s => ({ ...s, formatMisses: [...s.formatMisses, `${role} review (round ${cur.round}): no ${missed.join(', ')}`].slice(-12) })) : next
+  })
   if (!r || r.phase !== 'review') return
   const mine = r.reviews.filter(x => x.round === r.round)
   if (mine.some(x => x.state === 'run')) return
@@ -820,6 +831,7 @@ async function onApprover($: EngineInterface, answer: string, why: string) {
       : parsed.reason
   if (decision === 'ESCALATE') {
     await block($, { on: 'escalate' }, reason, r => ({ ...r, steps: { ...r.steps, approver: { ...r.steps.approver, state: 'changes' } } }))
+    await recordStats($)
     $.ui.toast('The factory needs you: Approve PR, /factory rework <what to change>, or /factory stop')
     void askPr($)
     return
@@ -839,6 +851,7 @@ async function finishReview($: EngineInterface) {
   })
   if (!r) return
   await record($, 'review findings', reviewDonePrompt(r))
+  await recordStats($)
   void $.prompt.submit({ text: reviewDonePrompt(r) }).catch(() => $.ui.toast(`The review is done: ${r.note}. /factory status lists the findings.`))
 }
 
@@ -873,8 +886,12 @@ async function startReview($: EngineInterface, focus: string, named = '', extras
   const at = await $.clock.now()
   const feature = cleanFeature(focus) || 'the change in this checkout'
   const slug = `review-${slugOf(feature).slice(0, 30)}-${Math.floor(at / 1000).toString(36).slice(-5)}`
+  // The project's test commands, for the reviewers (a review runs none): detection over what changed.
+  const names = await git($, ['diff', '--name-only', found.base], root)
+  const touched = [...(names.exitCode === 0 ? names.stdout.split('\n').map(l => l.trim()).filter(Boolean) : []), ...untracked]
+  const tests = await detectProjectChecks(checksIO($), root, { explicit: checksOption, touched, spec: null, checksFile: await $.fs.read(`${root}/.factory/checks.json`).then(t => String(t), () => null) }).catch(() => null)
   const base = newReview(feature, at, found.base, root, slug, untracked)
-  const created: Run = { ...base, baseRef: found.ref, ...(extras.length ? { extras, reviews: [...base.reviews, ...extras.map(e => ({ ...reviewOf(e.name), state: 'run' as const, round: 1 }))] } : {}) }
+  const created: Run = { ...base, baseRef: found.ref, ...(tests?.checks.length ? { testCommands: tests.checks.slice(0, 8).map(c => c.join(' ')) } : {}), ...(extras.length ? { extras, reviews: [...base.reviews, ...extras.map(e => ({ ...reviewOf(e.name), state: 'run' as const, round: 1 }))] } : {}) }
   await keepOutOfGit($, root)
   await readTheme($)
   const route = await routeOf($, created)
@@ -906,9 +923,21 @@ async function finish($: EngineInterface, reason: string) {
     return { ...moveTo(cur, 'done', note), pr: { state: handed ? 'handed' : 'requested' }, steps: { ...cur.steps, approver: { ...cur.steps.approver, state: 'pass' } } }
   })
   if (!r) return
+  await recordStats($)
   void $.prompt.submit({ text: prPrompt(r, reason) }).catch(() => {
     $.ui.toast(`Approved. Open a PR from ${r.branch} yourself; the prompt could not be sent.`)
   })
+}
+
+// The run's counters (stats): one change at a time, through patch.
+const bump = (r: Run, fn: (s: NonNullable<Run['stats']>) => NonNullable<Run['stats']>): Run =>
+  ({ ...r, stats: fn(r.stats ?? { builderStarts: 0, toolCalls: {}, guardRefused: 0, formatMisses: [] }) })
+
+// How the run went, written to its record once it ends or waits on the person for its outcome.
+async function recordStats($: EngineInterface) {
+  const r = await read($, run)
+  if (!r?.record) return
+  await $.fs.write(`${r.record}/stats.md`, `# stats\n\n${statsReport(r, await $.clock.now()).join('\n')}\n`).catch(() => {})
 }
 
 // The run's record: each step's own words in a numbered file, beside the worktree and out of git,
@@ -936,7 +965,13 @@ async function onAgentDone($: EngineInterface, agentId: string, answer: string, 
   if (role === 'spec') return r.phase === 'spec' ? onSpec($, answer, why) : undefined
   if (role === 'builder') {
     if (r.phase !== 'build') return
-    if (!why && answer.trim()) await patch($, cur => ({ ...cur, summary: summaryOf(answer), builderTests: parseBuilderTests(answer) }))
+    if (!why && answer.trim()) {
+      const tests = parseBuilderTests(answer)
+      await patch($, cur => {
+        const next = { ...cur, summary: summaryOf(answer), builderTests: tests }
+        return tests ? next : bump(next, s => ({ ...s, formatMisses: [...s.formatMisses, `builder (round ${cur.round + 1}): no TESTS line`].slice(-12) }))
+      })
+    }
     if (why) return block($, { on: 'builder', why }, `The builder stopped: ${why}.${isLimitError(why) ? ' Retry once the limit is lifted: the same builder carries on.' : ''}`, cur => ({ ...cur, steps: { ...cur.steps, builder: { ...cur.steps.builder, state: 'fail' } } }))
     return onBuilt($)
   }
@@ -1169,6 +1204,7 @@ async function doctorText($: EngineInterface): Promise<string> {
 
 async function stopNow($: EngineInterface): Promise<string> {
   const r = await patch($, cur => (isLive(cur.phase) ? moveTo(cur, 'stopped', 'stopped by the person') : cur))
+  if (r) await recordStats($)
   if (r) await update($, stoppedAgents, ids => [...ids.filter(id => !r.agents[id]), ...Object.keys(r.agents)].slice(-MAX_STOPPED))
   return r ? `Stopped. The branch ${r.branch} and its worktree ${r.worktree} stay; remove them with git worktree remove when done.` : 'No factory run.'
 }
@@ -1309,7 +1345,10 @@ export const register: Register = (on, options) => {
       const r = await read($, run)
       if ((r?.agents[e.agentId] && !isLive(r.phase)) || (await read($, stoppedAgents)).includes(e.agentId)) return { deny: STOPPED_DENY }
       // A review's agents look at the person's own checkout: they never change a file in it.
-      if (r?.agents[e.agentId] && r.kind === 'review' && ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(e.tool)) return { deny: "A factory review changes no file: report what you found, and Claude fixes it." }
+      if (r?.agents[e.agentId] && r.kind === 'review' && ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(e.tool)) {
+        await patch($, cur => bump(cur, s => ({ ...s, guardRefused: s.guardRefused + 1 })))
+        return { deny: "A factory review changes no file: report what you found, and Claude fixes it." }
+      }
       // Pushing, publishing, deploying or deleting outside the worktree is never a run agent's job.
       // A guard that fails refuses the call, for the run's agents only.
       if (r?.agents[e.agentId]) {
@@ -1319,6 +1358,7 @@ export const register: Register = (on, options) => {
         } catch (err) {
           what = `a command the factory couldn't check (${String(err).slice(0, 80)})`
         }
+        if (what) await patch($, cur => bump(cur, s => ({ ...s, guardRefused: s.guardRefused + 1 })))
         if (what) return { deny: `The factory's agents don't do this (${what}): the work stays on the run's branch in its worktree, and the person opens the PR once it is approved. Leave it out and go on.` }
       }
       // What the run's agent does now: the band shows it, so a working step never reads as stuck.
@@ -1326,7 +1366,7 @@ export const register: Register = (on, options) => {
       if (role) {
         const t = await $.clock.now()
         const text = activityText(e.tool, e as unknown as Record<string, unknown>)
-        await patch($, cur => ({ ...cur, activity: { role, text, at: t, calls: (cur.activity?.role === role ? cur.activity.calls : 0) + 1 } }))
+        await patch($, cur => bump({ ...cur, activity: { role, text, at: t, calls: (cur.activity?.role === role ? cur.activity.calls : 0) + 1 } }, s => ({ ...s, toolCalls: { ...s.toolCalls, [role]: (s.toolCalls[role] ?? 0) + 1 } })))
         await update($, now, () => t)
       }
     }

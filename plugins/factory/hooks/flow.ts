@@ -285,6 +285,15 @@ export const SHELL_LINE =
 export const RULES_LINE =
   "Read the repository's own rules first: CLAUDE.md at the worktree's root (AGENTS.md and CONTRIBUTING.md too, if there) and any CLAUDE.md in a folder the change touches. A change that breaks one (a file it says is generated, edited by hand; a check it says CI runs, that would now fail) is a blocker. Run that read-only check (a --check, a lint) when it settles it."
 
+// The project's own test commands, so no agent guesses one (bun test, in a repo that runs claude
+// plugin test): those the factory ran with their result, else those detection found.
+export function testsLine(run: Pick<Run, 'checks' | 'testCommands'>): string[] {
+  const ran = ranChecks(run as Run)
+  if (ran.length) return [`The project's checks, which the factory ran itself after the last build: ${run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ')}. To run tests yourself, use exactly these commands.`]
+  if (run.testCommands?.length) return [`The project's test commands (not run by the factory): ${run.testCommands.join('; ')}. To run tests yourself, use exactly these.`]
+  return []
+}
+
 // What the builder said of its own work: its summary and its test run, for the reviewers and the approver (L2).
 export function builderSaid(run: Pick<Run, 'summary' | 'builderTests'>): string[] {
   if (!run.summary && !run.builderTests) return []
@@ -367,6 +376,7 @@ export function buildPrompt(run: Run, findings: Finding[], failed: Check[], { ag
   return [
     ...head,
     ...(note ? ['', `The person sent the change back: ${note}`] : []),
+    ...(again ? testsLine(run) : []),
     ...(failed.length
       ? ['', 'The checks failed on your last pass. Fix them:', ...failed.map(c => `$ ${c.cmd}\n${c.tail}`)]
       : []),
@@ -396,6 +406,7 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
         ]
       : [`The spec is ${specPathOf(run)}. The change is the commits on branch ${run.branch} since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD): exactly what will be pushed.`]),
     whereLine(run),
+    ...testsLine(run),
     ...(run.diffFile ? [`The whole diff is in ${run.diffFile}: read it with the Read tool (by range when it is long) instead of running git.`] : []),
     stat ? `Files changed:\n${stat}` : '',
     ...builderSaid(run),
@@ -736,6 +747,7 @@ export function statusReport(run: Run, now: number, recordFiles: string[] = []):
     ...(findings.length ? ['Findings this round:', ...findings.flatMap(x => x.findings.map(f => `- ${x.role} [${f.severity}] ${f.where} ${f.text}`))] : []),
     ...(waitsOnYou(run) ? [`Waits on the person: ${run.note}`] : []),
     ...(run.record ? [`What each step said: ${run.record}/${recordFiles.length ? ` (${recordFiles.join(', ')})` : ''}`] : []),
+    ...statsReport(run, now).map(l => `Stats: ${l}`),
     nextActionsText(nextActionsOf(run, now)),
   ].join('\n')
 }
@@ -808,6 +820,21 @@ export function doctorReport(items: DoctorItem[]): string {
     `Factory doctor: ${blocked ? `${blocked} blocker${blocked === 1 ? '' : 's'}: a run can't start until ${blocked === 1 ? 'it is' : 'they are'} fixed` : warned ? `a run can start; ${warned} thing${warned === 1 ? '' : 's'} to know` : 'ready to run'}.`,
     ...items.map(i => `${mark[i.level]} ${i.text}`),
   ].join('\n')
+}
+
+// How the run went, in a few lines: for its record (stats.md) and the status.
+export function statsReport(run: Run, now: number): string[] {
+  const s = run.stats
+  const calls = s ? Object.entries(s.toolCalls).map(([k, v]) => `${k} ${v}`).join(', ') : ''
+  const found = run.reviews.flatMap(r => r.findings)
+  const by = (sev: string) => found.filter(f => f.severity === sev).length
+  return [
+    `Time: ${mmss(now - run.startedAt)} from start${run.kind === 'review' ? ' (a review run)' : ''}.`,
+    `Iterations: ${run.kind === 'review' ? 'review only' : `${s?.builderStarts ?? 0} builder start${s?.builderStarts === 1 ? '' : 's'}`}, ${run.round} review round${run.round === 1 ? '' : 's'}${run.checkRound ? `, ${run.checkRound} fix pass${run.checkRound === 1 ? '' : 'es'} for red checks` : ''}.`,
+    `Findings this round: ${by('blocker')} blocker, ${by('major')} major, ${by('minor')} minor; refuted by the skeptic so far: ${run.refuted?.length ?? 0}.`,
+    `Tool calls the factory saw: ${calls || 'none'}; refused by its guard: ${s?.guardRefused ?? 0}.`,
+    `Answers missing a marker their prompt asks for: ${s?.formatMisses.length ? s.formatMisses.join('; ') : 'none'}.`,
+  ]
 }
 
 export const tokensOf = (run: Run) => Object.values(run.steps).reduce((n, s) => n + s.tokens, 0) + run.reviews.reduce((n, r) => n + r.tokens, 0) + (run.skepticTokens ?? 0)
