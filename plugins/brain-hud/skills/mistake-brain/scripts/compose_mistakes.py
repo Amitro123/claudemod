@@ -48,6 +48,9 @@ class RawEntry:
     text: str  # full entry text, header through the line before the next header
 
 
+# Where a moved entry was, while the file is composed: a character no entry holds.
+GAP = "\x00"
+
 def parse_entries(text: str) -> list[RawEntry]:
     headers = list(ENTRY_HEADER_RE.finditer(text))
     entries = []
@@ -101,7 +104,9 @@ def main() -> int:
     to_move: list[RawEntry] = []
     remaining_text = text
     for entry in movable:
-        remaining_text = remaining_text.replace(entry.text, "", 1)
+        # A marker where the entry was: only those gaps are collapsed below, never the blank lines
+        # inside the entries that stay (a code block, a quoted log), which keep their bytes.
+        remaining_text = remaining_text.replace(entry.text, GAP, 1)
         to_move.append(entry)
         new_line_count = remaining_text.count("\n") + 1
         if new_line_count <= args.max_lines:
@@ -126,7 +131,7 @@ def main() -> int:
 
     # Removing entries can leave orphaned blank-line gaps behind; collapse them
     # back to a single blank line between entries instead of accumulating.
-    remaining_text = re.sub(r"\n{3,}", "\n\n", remaining_text).rstrip("\n") + "\n"
+    remaining_text = re.sub(rf"\n*(?:{GAP}\n*)+", "\n\n", remaining_text).rstrip("\n") + "\n"
     archive_text = re.sub(r"\n{3,}", "\n\n", archive_text).rstrip("\n") + "\n"
 
     path.write_text(remaining_text, encoding="utf-8")

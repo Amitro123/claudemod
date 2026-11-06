@@ -110,7 +110,19 @@ export function countsText(entries: readonly JournalEntry[]): string {
 // The line the main agent reads beside a prompt, when the journal grew since the last one.
 // Text from a worker's report (which may quote a web page or a file it read) as a quoted note: one line in
 // a code span, so the next reader takes it as what was said, never as an instruction to follow.
-export const quoted = (s: string) => `\`${s.replace(/\s+/g, ' ').replace(/`/g, "'").trim()}\``
+// Secrets are redacted on the way: a worker that quotes a token would otherwise write it into
+// MISTAKES.md, a tracked file (the same patterns as the skill's hooks, host_layout.py).
+const SECRETS: [RegExp, string][] = [
+  [/\b(token|password|passwd|secret|api[_-]?key|access[_-]?key)(=|:\s*)\S+/gi, '$1$2[redacted]'],
+  [/(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)\S+/gi, '$1$2[redacted]'],
+  [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]'],
+  [/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, '[redacted]'],
+  [/\bsk-[A-Za-z0-9_-]{16,}/g, '[redacted]'],
+  [/\bAKIA[0-9A-Z]{16}\b/g, '[redacted]'],
+  [/(https?:\/\/)[^/\s:@]+:[^/\s@]+@/g, '$1[redacted]@'],
+]
+export const redact = (s: string) => SECRETS.reduce((t, [re, to]) => t.replace(re, to), s)
+export const quoted = (s: string) => `\`${redact(s.replace(/\s+/g, ' ')).replace(/`/g, "'").trim()}\``
 
 export function contextLine(entries: readonly JournalEntry[], tool: string): string {
   const last = entries[entries.length - 1]

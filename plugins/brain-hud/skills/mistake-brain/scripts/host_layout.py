@@ -64,6 +64,52 @@ def detect_host() -> str:
 
 MARKER = "<!-- mistake-brain: new entries are inserted immediately below this line -->"
 
+# Values that look like secrets, replaced before text is written into MISTAKES.md (a tracked file) or
+# the pending-candidates file: a token in a URL or flag, a bearer header, GitHub, OpenAI/Anthropic-style
+# and AWS keys. One list for every hook that writes a command or a commit subject.
+_SECRETS = [
+    (re.compile(r"(?i)\b(token|password|passwd|secret|api[_-]?key|access[_-]?key)(=|:\s*)\S+"), r"\1\2[redacted]"),
+    (re.compile(r"(?i)(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)\S+"), r"\1\2[redacted]"),
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [redacted]"),
+    (re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), "[redacted]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "[redacted]"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[redacted]"),
+    (re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@"), r"\1[redacted]@"),
+]
+# mysql-style -p<pass> and -p <pass>: not in a git command, where -p is --patch and what follows is a path.
+_DASH_P = re.compile(r"(?<!\S)(-p)(\s+(?!-)\S+|\S+)")
+
+
+def _dash_p(match: "re.Match[str]") -> str:
+    part = re.split(r"[;&|\n]", match.string[: match.start()])[-1]
+    return match.group(0) if part.lstrip().startswith("git ") else f"{match.group(1)} [redacted]"
+
+
+def redact_secrets(text: str) -> str:
+    """The text with values that look like secrets replaced by [redacted]."""
+    for pattern, repl in _SECRETS:
+        text = pattern.sub(repl, text)
+    return _DASH_P.sub(_dash_p, text)
+
+
+def safe_for_markdown(text: str, limit: int = 200) -> str:
+    """Text as it goes into a code span in MISTAKES.md or a hook's message: one line, secrets
+    redacted, at most `limit` characters, and no backtick to end the span early."""
+    return redact_secrets(text.strip().replace("\r", " ").replace("\n", " ")).replace("`", "'")[:limit]
+
+
+_STATUS_UNROUTED = re.compile(r"^\s*- \*\*Status:\*\*\s*unrouted\b", re.MULTILINE)
+
+
+def count_unrouted(text: str) -> int:
+    """How many entries of a MISTAKES.md text are still unrouted."""
+    return len(_STATUS_UNROUTED.findall(text))
+
+
+def unrouted_note(text: str) -> str:
+    n = count_unrouted(text)
+    return f"{n} unrouted entr{'y' if n == 1 else 'ies'} now in the inbox. "
+
 
 def insert_entry(text: str, entry: str) -> str:
     """Put an entry right below MISTAKES.md's marker, one blank line either side.

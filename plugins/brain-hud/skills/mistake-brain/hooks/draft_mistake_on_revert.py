@@ -88,28 +88,9 @@ def matches_revert(command: str) -> bool:
     )
 
 
-# Values that look like secrets, replaced before a command is written into MISTAKES.md, a tracked
-# file: a token in a URL or flag, a bearer header, GitHub, OpenAI/Anthropic-style and AWS keys.
-_SECRETS = [
-    (re.compile(r"(?i)\b(token|password|passwd|secret|api[_-]?key|access[_-]?key)(=|:\s*)\S+"), r"\1\2[redacted]"),
-    (re.compile(r"(?i)(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)\S+"), r"\1\2[redacted]"),
-    # mysql-style -p<pass> (no space) and -p <pass>
-    (re.compile(r"(?<!\S)(-p)(\s+(?!-)\S+|\S+)"), r"\1 [redacted]"),
-    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [redacted]"),
-    (re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), "[redacted]"),
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "[redacted]"),
-    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[redacted]"),
-    (re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@"), r"\1[redacted]@"),
-]
-
-
-def safe_for_markdown(command: str) -> str:
-    """The command as it goes into a code span in MISTAKES.md: one line, secrets redacted, at most
-    200 characters, and no backtick to end the span early."""
-    text = command.strip().replace("\n", " ")
-    for pattern, repl in _SECRETS:
-        text = pattern.sub(repl, text)
-    return text.replace("`", "'")[:200]
+# Kept here for the tests and older callers: the redaction lives in host_layout, shared by every hook.
+_SECRETS = host_layout._SECRETS
+safe_for_markdown = host_layout.safe_for_markdown
 
 
 def strip_quoted_spans(command: str) -> str:
@@ -172,14 +153,15 @@ def main() -> int:
         f"- **Status:** unrouted\n"
     )
 
-    mistakes_path.write_text(host_layout.insert_entry(text, entry_block), encoding="utf-8")
+    new_text = host_layout.insert_entry(text, entry_block)
+    mistakes_path.write_text(new_text, encoding="utf-8")
 
     # Emit routing reminder via additionalContext — the auto_pipeline PostToolUse hook
     # won't fire because this hook writes directly (Python I/O, not via Edit/Write tools).
     # Emitting here closes that gap: the pipeline prompt reaches Claude regardless.
     context = (
         f"[mistake-brain] auto-drafted a MISTAKES.md entry for: `{safe_command}`\n"
-        "1 unrouted entry now in the inbox. "
+        f"{host_layout.unrouted_note(new_text)}"
         "Fill in the [auto-draft] placeholders and run /brain-hud:mistake-brain route "
         "to classify it into PARA memory before completing the turn."
     )

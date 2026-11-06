@@ -201,7 +201,7 @@ def build_briefing(project_dir: Path) -> str:
         parts.append(
             "- Index gate is on (MISTAKE_BRAIN_INDEX_GATE=1). Route still writes "
             "the shared lesson file. Add the MEMORY.md line only after the user "
-            "approves that lesson. Both harness indexes get that same line."
+            "approves that lesson. There is one index, shared by every harness."
         )
 
     # Automatic pipeline nudges — make route/dream happen without manual commands.

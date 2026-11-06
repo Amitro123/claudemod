@@ -374,6 +374,8 @@ def _print_result(result: InitResult, project_dir: Path) -> None:
     if result.already_initialized:
         if not result.created:
             print(f"[mistake-brain] Already initialized in {project_dir}. Nothing changed.")
+            if result.refused:
+                print(f"  ACTION REQUIRED: {result.refused}")
             for item in result.actions:
                 print(f"  ACTION REQUIRED: {item}")
             return
