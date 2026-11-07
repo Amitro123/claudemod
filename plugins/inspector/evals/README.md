@@ -34,6 +34,7 @@ has one or two free regex graders on the case file and one or two LLM-judged one
 | `history-01-whole-history` | the whole history, 8 PRs | `email_body` still unescaped; the chain #6 → #8; CSV and the email subject are not leads |
 | `control-01-complete-fix` | PR #2 | nothing left: no reproduced or read lead (false-positive check) |
 | `backtest-01-followups-at-50` | `plugins/followups` in this repository as it was at #50, 4 cases | the 13 followups bugs that #51–#72 fixed (graders count 1, 2 and 3 matches, and check precision) |
+| `review-01-pr48-before-merge` | branch `pr48` (PR #48, 23 commits) before it merged | the 8 bugs #50 later found in it (R1-R8, one regex each over the case file) |
 
 ```bash
 cd plugins/inspector
@@ -104,6 +105,24 @@ were fixed later, at 50-100% more cost. The skill does that natively now (the in
 case readers past 6 cases). Beside model-router there is no conflict: the skill hands off within
 the router's 2 main-conversation calls, so the router denied nothing, and it never rewrites the
 inspector's own agents. `evals/run-with-router.sh <model-router folder>` runs the comparison.
+
+### review-01: a PR before it merges (2026-11-07, 2 runs a row)
+
+| Version | Who read the commits | Key bugs per run (of 8) | Cost per run | Open leads built by handoff.py |
+|---|---|---|---|---|
+| without the skill | the main conversation | 5, 6 | $0.46-0.52 | n/a |
+| 0.4.0: history only | the main conversation | 3, 3 | $0.34-0.49 | no |
+| + each commit is a case | main once, investigator once | 4, 7 | $0.37, $1.31 | no |
+| + hand over always, investigator builds its table | main once, 12 readers once | 3, **8** | $0.46, $2.44 | no |
+| + the collector prints the next step | 20 readers once, investigator once | 7, **8** | $2.98, $1.15 | readers: no; investigator: yes |
+
+The skill now starts one investigator for a review, whatever the number of commits. It found
+7-8 of 8 for about $1.2 and built its table with `handoff.py`. The readers were as good, but cost
+twice as much, and their table was retyped. Two lessons carry over:
+- **The main conversation follows a tool's output more than a rule in SKILL.md.** The next step
+  is now printed at the top of the collector's output.
+- **A history alone misses what a change claims to do but does in part.** Each commit is worked
+  as a case.
 
 - The skill triggered by itself in every run.
 - On this narrow question a direct read of the code finds about as many key bugs as the skill.

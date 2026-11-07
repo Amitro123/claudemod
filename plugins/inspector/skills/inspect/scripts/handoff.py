@@ -23,12 +23,17 @@ RANK = {"reproduced": 3, "read": 2, "suspect": 1, "unverified": 0}
 
 
 def leads_of(items: list[dict]) -> list[dict]:
-    """A case card gives its complete.siblings; an investigator's list gives the leads themselves."""
+    """A case card gives its complete.siblings; an investigator's list gives the leads themselves.
+    Each lead keeps who claimed it: the card's case reader, or the investigator."""
     out = []
-    for x in items:
+    for n, x in enumerate(items, 1):
         sibs = (x.get("complete") or {}).get("siblings") if isinstance(x.get("complete"), dict) else None
-        for s in (sibs if sibs is not None else [x] if "where" in x else []):
-            out.append({**s, "case": x.get("case") or x.get("unit") or s.get("case") or ""})
+        case = x.get("case") or x.get("unit") or ""
+        if sibs is not None:
+            by = x.get("by") or f"case-reader, card {n}" + (f" ({case})" if case else "")
+            out += [{**s, "case": case, "by": s.get("by") or by} for s in sibs]
+        elif "where" in x:
+            out.append({**x, "case": x.get("case", ""), "by": x.get("by") or "investigator"})
     return out
 
 
@@ -39,6 +44,25 @@ def level_word(v: object) -> str:
 
 def cell(v: object) -> str:
     return " ".join(str(v if v is not None else "").split()).replace("|", "/")
+
+
+def changes_cell(s: dict) -> str:
+    alts = s.get("changes")
+    if isinstance(alts, list) and alts:
+        parts = [f"{chr(65 + i)}) {cell(c.get('what') if isinstance(c, dict) else c)}"
+                 + (f" (breaks: {cell(c.get('breaks'))})" if isinstance(c, dict) and c.get("breaks") else " (breaks: not stated)")
+                 for i, c in enumerate(alts[:4])]
+        return " · ".join(parts) + (" [one direction only]" if len(alts) == 1 else "")
+    return (cell(s.get("change")) or "none given") + " [one direction only, what it breaks not stated]"
+
+
+def test_cell(s: dict) -> str:
+    t = s.get("test")
+    if isinstance(t, dict):
+        kind = cell(t.get("kind")) or "kind not stated"
+        why = f" (not automated: {cell(t.get('why_not_automated'))})" if t.get("why_not_automated") else ""
+        return f"{kind}: {cell(t.get('how'))}{why}"
+    return f"kind not stated: {cell(t)}" if t else "none given"
 
 
 def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[str, str], title: str) -> tuple[str, list[str]]:
@@ -56,18 +80,21 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
                 lvl = new
         imp = s.get("impact") if isinstance(s.get("impact"), dict) else {"what": s.get("impact"), "level": None}
         impact = cell(imp.get("what")) or "not stated"
-        ilvl = level_word(imp.get("level")) if imp.get("what") else "unverified"
         src = cell(imp.get("source"))
-        impact_cell = f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]"
+        # An impact is a claim: with no line of code or document behind it, it is unverified, whatever level it was given.
+        ilvl = level_word(imp.get("level")) if imp.get("what") and src else "unverified"
+        impact_cell = f"{impact} [{ilvl}: {src}]" if src else f"{impact} [unverified: no source]"
         note = f" **Note added after the readers, unverified:** {cell(notes[where])}" if where in notes else ""
         rows.append((RANK.get(lvl, 0), f"| {lvl} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
-                                         f"{cell(s.get('breaks'))} | {cell(s.get('change'))} | {cell(s.get('test'))} | {cell(s.get('case'))} |"))
+                                         f"{cell(s.get('breaks'))} | {changes_cell(s)} | {test_cell(s)} | {cell(s.get('by'))} |"))
     rows.sort(key=lambda r: -r[0])
     L = [f"# {title}", "",
-         "Copied word for word from the inspector's case readers: each lead's level, and its impact's own",
-         "level, as they gave them. A level here was only ever lowered, never raised. Everything came from",
-         "a model reading repository history and code: verify each claim before you change code.", "",
-         "| Level | Where | What breaks | Impact [its level: source] | Breaks | The change | The test | From case |",
+         "Copied word for word from the inspector's agents: each lead's level, its impact's own level and",
+         "source, and who claimed it. A level here was only ever lowered, never raised. Everything came",
+         "from a model reading repository history and code: verify each claim before you change code.",
+         "The changes are directions, not instructions: each says what it would break. A test's kind says",
+         "whether the project's harness can run it (see the inspector's references/test-limits.md).", "",
+         "| Level | Where | What breaks | Impact [its level: source] | Breaks | Ways to fix (and what each breaks) | Test (kind) | Claimed by |",
          "|---|---|---|---|---|---|---|---|"]
     L += [r for _, r in rows] or ["| - | - | no leads | - | - | - | - | - |"]
     return "\n".join(L) + "\n", errors

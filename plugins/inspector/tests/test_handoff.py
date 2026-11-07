@@ -37,7 +37,8 @@ def test_words_and_levels_go_out_as_given(monkeypatch, capsys) -> None:
     assert code == 0
     row = next(l for l in out.splitlines() if W in l)
     assert row.startswith("| suspect |")
-    assert "the pane open is skipped [unverified]" in row and "commands" not in row
+    assert "the pane open is skipped [unverified: no source]" in row and "commands" not in row
+    assert row.endswith("| case-reader, card 1 (#40 a346aef) |"), "who claimed it"
     lines = [l for l in out.splitlines() if l.startswith("| reproduced") or l.startswith("| suspect")]
     assert lines[0].startswith("| reproduced"), "the strongest lead first"
     assert "[reproduced: probe on a copy of section()]" in out
@@ -61,4 +62,25 @@ def test_notes_are_marked_and_drops_drop(monkeypatch, capsys) -> None:
 def test_an_investigators_leads_and_a_missing_impact(monkeypatch, capsys) -> None:
     leads = [{"where": "a.py:3", "what": "x", "level": "read", "breaks": "P2", "change": "y", "test": "z"}]
     code, out, _ = run(monkeypatch, capsys, leads)
-    assert code == 0 and "| read | `a.py:3` | x | not stated [unverified] |" in out
+    assert code == 0 and "| read | `a.py:3` | x | not stated [unverified: no source] |" in out
+    assert "[one direction only, what it breaks not stated]" in out and "kind not stated: z" in out
+    assert out.rstrip().endswith("| investigator |")
+
+
+def test_an_impact_without_a_source_is_unverified_whatever_its_level(monkeypatch, capsys) -> None:
+    lead = {"where": "b.py:9", "what": "m", "level": "read", "impact": {"what": "the commands don't register", "level": "read"}}
+    code, out, _ = run(monkeypatch, capsys, [lead])
+    assert "the commands don't register [unverified: no source]" in out
+    lead["impact"]["source"] = "b.py:12 registers after the call"
+    code, out, _ = run(monkeypatch, capsys, [lead])
+    assert "[read: b.py:12 registers after the call]" in out
+
+
+def test_two_ways_to_fix_and_a_test_the_harness_cant_run(monkeypatch, capsys) -> None:
+    lead = {"where": "c.py:1", "what": "exclude anchored at the top", "level": "read", "by": "investigator",
+            "changes": [{"what": "prefix with git rev-parse --show-prefix", "breaks": "nothing outside this project"},
+                        {"what": "unanchored **/.claude/brain/", "breaks": "also excludes other projects' .claude/brain/"}],
+            "test": {"kind": "function-level", "how": "the pattern for prefix sub/", "why_not_automated": "a hook that throws is skipped"}}
+    code, out, _ = run(monkeypatch, capsys, [lead])
+    assert "A) prefix with git rev-parse --show-prefix (breaks: nothing outside this project) · B) unanchored" in out
+    assert "function-level: the pattern for prefix sub/ (not automated: a hook that throws is skipped)" in out

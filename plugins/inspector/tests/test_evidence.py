@@ -273,3 +273,34 @@ def test_read_only_repository_still_reports(repo: Path, capsys, monkeypatch) -> 
     assert evidence.main(["--repo", str(repo), "--min-lines", "1"]) == 0
     out = capsys.readouterr().out
     assert "Cases to work, in order" in out and "--dossier" in out and "nothing saved" in out
+
+
+def test_review_flags_a_change_that_rewrites_a_fix(repo: Path) -> None:
+    # On a branch from main: rewrite the line #2 (a fix) wrote, the off-by-one again.
+    run(repo, "checkout", "-q", "-b", "risky")
+    (repo / "plugins/a/sum.js").write_text(SUM.replace("items.length", "(items || []).length"))
+    run(repo, "commit", "-qam", "a: simplify the loop")
+    facts, text = evidence.review(str(repo), "main..risky")
+    who = {e["unit"]: e for e in facts["rewrites_lines_of"]}
+    # #3 (a fix) last wrote that line: it rewrote all of it after #2
+    assert "#3" in who and who["#3"]["is_fix"], "the line a fix wrote is rewritten"
+    assert facts["rewrites_lines_of"][0]["is_fix"], "fixes come first"
+    assert {x["unit"] for x in facts["past_fixes"]} >= {"#2", "#3"}
+    assert "**(a fix)**" in text and "```diff" in text
+    assert [c["subject"] for c in facts["commits"]] == ["a: simplify the loop"] and "each one is a case" in text
+    # a ref alone measures from its merge base with main
+    facts2, _ = evidence.review(str(repo), "risky")
+    assert facts2["base"] == facts["base"]
+    run(repo, "checkout", "-q", "main")
+
+
+def test_review_cli(repo: Path, capsys) -> None:
+    run(repo, "checkout", "-q", "-b", "small")
+    (repo / "plugins/b/more.js").write_text("export const more = 2;\n")
+    run(repo, "commit", "-qam", "b: more is 2")
+    run(repo, "checkout", "-q", "main")
+    assert evidence.main(["--repo", str(repo), "--review", "main..small"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("# Review: ") and "Past fixes in these files" in out
+    assert "Start one `investigator`" in out and "handoff.py --cards -" in out and "case-reader" not in out.split("##")[0]
+    assert evidence.main(["--repo", str(repo), "--review", "nope..small"]) == 1

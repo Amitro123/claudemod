@@ -383,6 +383,7 @@ Fix enough bugs in a project whose parts work together, and the fixes start brea
 /inspector:inspect #53                  # one fix, its culprit, and siblings of its bug today
 /inspector:inspect since 2026-10-27     # or since a tag or sha
 /inspector:inspect plugins/factory      # only fixes touching a path
+/inspector:inspect review my-branch     # before merging: the change against the history of its files
 ```
 
 - **The brief.** It reads the READMEs (changelog entries are symptoms in your words), `CLAUDE.md`, the docs and any memory the project keeps (`MISTAKES.md`, follow-ups), and writes down what the project promises and where its parts meet (the seams). A bug is a broken promise, not a style it would have chosen.
@@ -396,7 +397,18 @@ Fix enough bugs in a project whose parts work together, and the fixes start brea
   Every claim carries its level: *reproduced* (it ran something and saw it fail), *read* (it traced the code), *blame* or *inferred* (from a message only). It can check a fix's test in a temporary worktree: does the test fail without the fix?
 - **The open leads.** For each pattern it sweeps today's code for the same bug not yet fixed: the replaced expression elsewhere, other readers of a changed format, other components on the same seam. Each lead is reproduced, read or suspect, with the change it needs and the test that would prove it. What it checked and found handled is listed too. It changes no code.
 - **The case file** goes to `docs/inspector/<date>-case.md`, in the language you write in. It ends with the sha it investigated through, so the next run starts there; units left past the budget are listed by label. In the chat: the verdict, the top leads, and an offer to fix them (one `/factory` run each, with factory installed), flag them (followups) or turn a class that recurred 3+ times into a rule (brain-hud's `promote`).
-- **The handoff.** `scripts/handoff.py` turns the readers' leads into a list for whoever fixes them, word for word, each with its level and its impact's own level. A level can be lowered, never raised, and a note added afterwards is marked as unverified. (The first handoff was typed by hand, and the one wrong claim of 14 came from that.)
+- **Before merging.** `review <branch>` (or `<base>..<head>`) reads a pending change against the history of the files it touches:
+  - the lines it rewrites that an earlier fix wrote (where regressions come from);
+  - the past fixes in those files;
+  - copies elsewhere of what it changes.
+- **The handoff.** `scripts/handoff.py` builds the leads list, and the case file's Open leads, from the agents' output, never retyped. Each row carries:
+  - its level, which can be lowered, never raised;
+  - its impact with a source (a `path:line` or a document), or "unverified: no source";
+  - who claimed it;
+  - two ways to fix it, each with what it breaks (directions, not instructions);
+  - a test with its kind: automated, function-level or manual, checked against what the mod test engine can't do (a hook that throws is skipped; hooks don't race).
+
+  The first handoff was typed by hand, and the one wrong claim of 14 came from that.
 - **Limits.** It finds siblings of bug kinds the history already shows, not new kinds. A lead it didn't reproduce was never seen failing. In a repository that rebase-merges, each commit is its own unit.
 
 Tests: `python -m pytest plugins/inspector/tests`. They build small repositories and check:
