@@ -1,6 +1,6 @@
 # claudemod: mods for Claude Code
 
-Seven mods, each installed on its own. They also work side by side: each draws its part of the band above the prompt, and the others' parts stay.
+Eight mods, each installed on its own. They also work side by side: each draws its part of the band above the prompt, and the others' parts stay.
 
 | Mod | What it does |
 |---|---|
@@ -11,6 +11,7 @@ Seven mods, each installed on its own. They also work side by side: each draws i
 | [goal-run](#goal-run-a-goal-for-the-session) | Asks for a goal when a session starts, has Claude plan it, and runs a pixel Claude to 100% as the tasks get done |
 | [brain-hud](#brain-hud-the-agents-memory-made-visible) | Agent memory with its skill built in: mistake-brain logs and routes lessons, a pixel Claude with a brain reacts to each entry, and a pane draws the memory as a graph |
 | [factory](#factory-a-software-factory) | `/factory <feature>`: a spec, your approval of its plan, a build on its own branch, checks, parallel reviews and an approver, then Claude opens the PR |
+| [inspector](#inspector-a-bug-detective-for-the-history) | `/inspector:inspect`: reads what the project promises, traces every fix PR back to the change that broke it, classifies the bugs and writes a case file of what still needs fixing |
 
 Add the marketplace once, then install the ones you want:
 
@@ -369,6 +370,39 @@ A feature goes in and a reviewed PR comes out. Each step is a sub-agent with its
 Not yet: minor findings offered to followups, and an ESCALATE offered to brain-hud. Not yet run end to end in a live session: the tests drive the engine's events with the agents, git and the checks stubbed.
 
 Tests: `claude plugin test plugins/factory`.
+
+## inspector: a bug detective for the history
+
+Fix enough bugs in a project whose parts work together, and the fixes start breaking each other: one mod's fix hides another's band, a format changes and its parser doesn't, one copy of a helper gets the fix and the other doesn't. The inspector reads the whole trail instead of one diff.
+
+```text
+/plugin install inspector@claudemod
+/inspector:inspect                      # the whole history (or since the last case file)
+/inspector:inspect #53                  # one fix, its culprit, and siblings of its bug today
+/inspector:inspect since 2026-10-27     # or since a tag or sha
+/inspector:inspect plugins/factory      # only fixes touching a path
+```
+
+- **The brief.** It reads the READMEs (changelog entries are symptoms in your words), `CLAUDE.md`, the docs and any memory the project keeps (`MISTAKES.md`, follow-ups), and writes down what the project promises and where its parts meet (the seams). A bug is a broken promise, not a style it would have chosen.
+- **The evidence.** `scripts/evidence.py` (stdlib Python, read-only, offline) walks the first-parent history. Each merged PR or direct commit is a unit, with its files, components, version bumps and a fix verdict with its reason: the title or most commit subjects say fix in strong words, or it is a patch release and nothing else ("fix lint" and "address review" don't count). For each fix commit it runs `git blame` on the commit's parent over the lines it deleted or changed, following renames, so it knows which earlier PR wrote them: the suspect. Blame maps to the last 500 units, so a culprit before the window you asked for is still known. A fix whose lines came from an earlier fix is a **fix-of-fix**. Other things it flags: fixes spanning two components, and hotspot files (tests counted apart). Instruction files (`SKILL.md`, `CLAUDE.md`, agents, prompts) are blamed like code. READMEs, changelogs, manifests and lockfiles aren't: their lines name a release, not a bug. It warns on a shallow clone and when the window was cut at `--max`. `--unit`, `--path` and `--since` set the scope; `--show '#N'` prints one unit. PR bodies and review comments come from GitHub when the session has it.
+- **The cases.** At most 12 in depth (you can ask for more), one per bug, not per PR. The order: fix-of-fix chains, then fixes across components and seams, then hotspots, then one or two picked at random as a check on that order. Each case gets a card:
+  - the symptom, the promise it broke, the culprit and what it assumed;
+  - the mechanism at `path:line`;
+  - a class (interference, contract drift, copy drift, lifecycle, ordering, edge input, false premise, error path, environment, config, prompt/model, security, performance, test gap, docs drift) and the seam it happened at;
+  - what the fix changed and whether it's complete.
+
+  Every claim carries its level: *reproduced* (it ran something and saw it fail), *read* (it traced the code), *blame* or *inferred* (from a message only). It can check a fix's test in a temporary worktree: does the test fail without the fix?
+- **The open leads.** For each pattern it sweeps today's code for the same bug not yet fixed: the replaced expression elsewhere, other readers of a changed format, other components on the same seam. Each lead is reproduced, read or suspect, with the change it needs and the test that would prove it. What it checked and found handled is listed too. It changes no code.
+- **The case file** goes to `docs/inspector/<date>-case.md`, in the language you write in. It ends with the sha it investigated through, so the next run starts there; units left past the budget are listed by label. In the chat: the verdict, the top leads, and an offer to fix them (one `/factory` run each, with factory installed), flag them (followups) or turn a class that recurred 3+ times into a rule (brain-hud's `promote`).
+- **Limits.** It finds siblings of bug kinds the history already shows, not new kinds. A lead it didn't reproduce was never seen failing. In a repository that rebase-merges, each commit is its own unit.
+
+Tests: `python -m pytest plugins/inspector/tests`. They build small repositories and check:
+- a bug, its fix and a fix of that fix;
+- a feature PR with a "fix lint" commit;
+- a rename, an octopus merge, an instruction file;
+- a shallow clone, the scopes, and the attribution beyond `--since`.
+
+CI runs them.
 
 ## Developing
 

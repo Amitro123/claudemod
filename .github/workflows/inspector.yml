@@ -1,0 +1,20 @@
+name: inspector skill
+
+on:
+  push:
+    paths: ['plugins/inspector/**', '.github/workflows/inspector.yml']
+  pull_request:
+    paths: ['plugins/inspector/**', '.github/workflows/inspector.yml']
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the golden test reads the repository's own history
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest
+      - run: python -m pytest plugins/inspector/tests -q
