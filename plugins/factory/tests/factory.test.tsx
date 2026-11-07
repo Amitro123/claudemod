@@ -4,7 +4,7 @@ import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenTool, routeReview } from '../hooks/route'
 import { extrasFrom, LENSES } from '../hooks/flow'
-import { nextActionsOf, forbidsPush, parseBuilderTests, parseNotChecked, parseUnderstood, summaryOf } from '../hooks/flow'
+import { parseBuilderTests as builderTestsOf, nextActionsOf, forbidsPush, parseBuilderTests, parseNotChecked, parseUnderstood, summaryOf } from '../hooks/flow'
 import { cleanFeature, couldNotStart, detectChecks, detectSetup, leftOut, neverCommit, slugOf, untrackedOf, modelsFor, parseDecision, parseSize, parseSkills, progressNote, titleOf, parseTasks, parseVerdict, planPrompt, specPrompt, splitChecks } from '../hooks/flow'
 import { factoryArgs, goalPrompt, startLine, factoryPlanApprovedArgs, factoryPlanResultArgs, PLAN_APPROVED_FOR_FACTORY, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, planChangesForFactory } from '../hooks/texts'
 
@@ -2280,5 +2280,21 @@ describe('the skeptic weighs both ways: a design choice and an unverified claim 
     expect(told).toMatch(/make these deliberate \(the person's call[^\n]*\n- security src\/a\.ts:1 typed text becomes the title: src\/a\.test\.ts:9 pins the rewording/)
     expect(told).toMatch(/couldn't check[^\n]*\n- code src\/b\.ts:2 the second call spawns twice: rests on the engine/)
     expect(await $.tool.call({ tool: 'mcp__factory__control', action: 'findings', outcomes: [{ id: 'F1', outcome: 'fixed' }] } as never).then(r => String(r.result))).toMatch(/1 fixed, 1 a design choice \(the skeptic\), 1 unverified \(the skeptic\)/)
+  })
+})
+
+describe("inspector open-bugs: the factory's parsers (#8 and the lower ones)", () => {
+  test('#8: a bold VERDICT or DECISION is read; the echoed template still is not', () => {
+    expect(parseVerdict('**VERDICT:** PASS\nFINDINGS: none').state).toBe('pass')
+    expect(parseVerdict('**VERDICT**: CHANGES\n- [major] a.ts:1 x').state).toBe('changes')
+    expect(parseVerdict('VERDICT: **PASS**').state).toBe('pass')
+    expect(parseDecision('**DECISION:** APPROVE\nREASON: ok').decision).toBe('APPROVE')
+    expect(parseVerdict('**VERDICT:** PASS or **VERDICT:** CHANGES').findings[0]!.text).toMatch(/no VERDICT line/)
+  })
+
+  test('the needs of a task read with "and"; "all pass" is not a failing test run', () => {
+    expect(parseTasks('TASKS:\n1. [high] A\n2. [high] B\n3. [low] C (needs 1 and 2)')[2]).toEqual({ title: 'C', priority: 'low', dependsOn: [1, 2] })
+    expect(builderTestsOf('TESTS: npm test -> all pass after the failures were fixed')!.failing).toBe(false)
+    expect(builderTestsOf('TESTS: npm test -> 3 failed')!.failing).toBe(true)
   })
 })

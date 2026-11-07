@@ -6,6 +6,7 @@ import { claudeCells, sceneSvg } from '../hooks/art'
 import { GRAPH, graphSvg, routeOf, shownFiles } from '../hooks/graph'
 import { diffBrain, logPrompt, paraStats, parseMemory, parseMistakes, withListing } from '../hooks/brain'
 import { handoffEntry, HANDOFF_TITLE, insertBelowMarker, journalText, looseEnds, quoted, reportSections, workerEntry } from '../hooks/journal'
+import { parseMemory as memoryOf } from '../hooks/brain'
 import type { JournalEntry } from '../hooks/journal'
 import type { Brain } from '../types'
 // The wording followups and goal-run write, from the copy of shared/texts.ts they use too.
@@ -981,5 +982,19 @@ describe('worker text quoted into MISTAKES.md or context has its secrets redacte
     const env = quoted('ran DB_PASSWORD=hunter3 then export GITHUB_TOKEN=abc999')
     for (const s of ['hunter3', 'abc999']) expect(env).not.toContain(s)
     expect(q).toMatch(/^`found it: export GH_TOKEN=\[redacted\]/)
+  })
+})
+
+describe("inspector open-bugs: brain-hud's parsers (#3, #6)", () => {
+  test('#3: a section ends at the next heading or label; Open items is read; fenced text is not', () => {
+    expect(reportSections('Done.\nUnsure-about:\n- q\n\n## Next steps\n- ship it')).toEqual({ 'Unsure-about': ['q'] })
+    expect(reportSections('Open items:\n- a thing')).toEqual({ 'Unsure-about': ['a thing'] })
+    expect(reportSections('Open questions:\n```\n- not a question\n```\n- real one')).toEqual({ 'Unsure-about': ['real one'] })
+    expect(reportSections('Findings:\n- x\n**Summary:** all good')).toEqual({ Findings: ['x'] })
+  })
+
+  test('#6: an index line with an en dash, a link with spaces, or no summary is read, as the Python side reads it', () => {
+    const got = memoryOf('## Areas\n- [Area] [ci](Areas/ci.md) – en dash summary (2 lessons)\n- [Area] [my notes](Areas/my notes.md) — spaced (1 lesson)\n- [Area] `Areas/x.md`').folders.Areas
+    expect(got.map(l => [l.file, l.summary, l.lessons])).toEqual([['ci.md', 'en dash summary', 2], ['my notes.md', 'spaced', 1], ['x.md', '', 0]])
   })
 })

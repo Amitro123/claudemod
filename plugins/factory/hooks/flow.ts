@@ -87,9 +87,9 @@ export function parseTasks(answer: string): SpecTask[] {
   if (at < 0) return []
   const out: SpecTask[] = []
   for (const raw of answer.slice(at + 6).split('\n')) {
-    const m = /^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(.+?)\s*(?:\(needs ([\d,\s]+)\))?\s*$/i.exec(raw)
+    const m = /^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(.+?)\s*(?:\(needs ([\d,\s]+(?:(?:and|&)\s*\d+)?)\))?\s*$/i.exec(raw)
     if (!m) continue
-    out.push({ title: m[2]!.trim(), priority: m[1]!.toLowerCase() as SpecTask['priority'], dependsOn: (m[3] ?? '').split(/[,\s]+/).filter(Boolean).map(Number) })
+    out.push({ title: m[2]!.trim(), priority: m[1]!.toLowerCase() as SpecTask['priority'], dependsOn: ((m[3] ?? '').match(/\d+/g) ?? []).map(Number) })
   }
   return out
 }
@@ -141,7 +141,9 @@ export const modelOf = (run: Pick<Run, 'models'> | null | undefined, role: Role)
 function marker(answer: string, key: string, options: string, safe: string): { value?: string; mixed: boolean } {
   const found = new Set<string>()
   for (const line of answer.split('\n')) {
-    const all = [...line.matchAll(new RegExp(`${key}:\\s*(${options})`, 'gi'))]
+    // Bold anywhere around the key or the value (**VERDICT:** PASS, **VERDICT**: PASS, VERDICT: **PASS**)
+    // is still the marker: it read as no verdict before (inspector open-bugs #8).
+    const all = [...line.matchAll(new RegExp(`${key}\\**:\\**\\s*\\**\\s*(${options})`, 'gi'))]
     if (all.length === 1) found.add(all[0]![1]!.toUpperCase())
   }
   if (found.size > 1) return { value: safe, mixed: true }
@@ -210,7 +212,9 @@ export function parseBuilderTests(answer: string): { text: string; failing: bool
   const text = [...answer.matchAll(/^[\s*_>-]*TESTS:\**\s*(.+)$/gim)].map(m => m[1]!.trim()).filter(t => !/^<.*>$/.test(t)).at(-1)
   if (!text) return undefined
   const counts = [...text.matchAll(/(\d+)\s*(?:tests?\s+)?(?:failed|failing|failures?|fail)\b/gi)].map(m => Number(m[1]))
-  const failing = counts.length ? counts.some(n => n > 0) : /\bfail/i.test(text) && !/\b(no|none|0|zero)\s+(?:tests?\s+)?fail/i.test(text)
+  // "all pass", "all green" say the run passed, whatever came before ("after the failures were fixed").
+  const allPass = /\ball\b(?:\s+\w+){0,3}\s+(?:pass(?:ed|ing)?|green|ok)\b/i.test(text)
+  const failing = counts.length ? counts.some(n => n > 0) : !allPass && /\bfail/i.test(text) && !/\b(no|none|0|zero)\s+(?:tests?\s+)?fail/i.test(text)
   return { text: text.slice(0, 300), failing }
 }
 

@@ -757,7 +757,8 @@ export const register: Register = (on, options) => {
     const input = e as unknown as { title?: unknown; priority?: unknown; needs?: unknown }
     const g = await read($, goal)
     if (!g || g.status === 'planning' || g.status === 'proposed') return { deny: `There is no approved plan to add to; propose one with ${PLAN_TOOL}.` }
-    const title = clip(String(input.title ?? '').trim(), 120)
+    // One line, as followups keeps its fields (inspector open-bugs #14).
+    const title = clip(String(input.title ?? '').replace(/\s+/g, ' ').trim(), 120)
     if (!title) return { deny: 'A task needs a title.' }
     const priority: Priority = isPriority(input.priority) ? input.priority : 'medium'
     const needs = Array.isArray(input.needs) ? input.needs.map(n => String(n).trim()) : []

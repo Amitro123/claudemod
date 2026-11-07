@@ -103,3 +103,16 @@ def test_a_secret_in_an_env_style_name_is_redacted():
         assert secret not in out, (cmd, out)
         assert "[redacted]" in out
     assert host_layout.safe_for_markdown("git checkout -- tokens.py") == "git checkout -- tokens.py"
+
+
+def test_an_index_line_with_an_en_dash_is_read_as_brain_ts_reads_it():
+    """The open-bugs list, #6: rebuild_index's _LINE took — and - but not –, so rebuild added a second line."""
+    import rebuild_index
+    for line, file, summary in [
+        ("- [Area] [ci](Areas/ci.md) – en dash summary (2 lessons)", "[ci](Areas/ci.md)", "en dash summary"),
+        ("- [Area] [my notes](Areas/my notes.md) — spaced (1 lesson)", "[my notes](Areas/my notes.md)", "spaced"),
+        ("- [Area] `Areas/x.md`", "`Areas/x.md`", None),
+    ]:
+        m = rebuild_index._LINE.match(line)
+        assert m, line
+        assert (m.group("file"), m.group("summary")) == (file, summary)

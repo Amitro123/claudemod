@@ -50,10 +50,13 @@ export function toolText(response: unknown): string {
 }
 
 // followups: what its done tool answers.
-export const doneResult = (title: string, note: string) => `Marked "${title}" done${note ? ` (${note})` : ''}.`
+// One line each: a note with a line break made a result the parser below rejected, so goal-run never
+// closed the to-do's task (inspector open-bugs #1). The parser reads an older multi-line one too.
+const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim()
+export const doneResult = (title: string, note: string) => `Marked "${oneLine(title)}" done${oneLine(note) ? ` (${oneLine(note)})` : ''}.`
 
 export function parseDoneResult(text: string): { title: string; note: string } | null {
-  const m = /^Marked "(.+)" done(?: \((.*)\))?\.$/.exec(text)
+  const m = /^Marked "(.+)" done(?: \((.*)\))?\.$/s.exec(text.trim())
   return m ? { title: m[1]!, note: m[2] ?? '' } : null
 }
 
