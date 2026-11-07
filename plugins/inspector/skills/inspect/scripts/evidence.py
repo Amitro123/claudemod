@@ -515,17 +515,42 @@ def markdown(r: dict) -> str:
     return "\n".join(L) + "\n"
 
 
+def triage(r: dict, budget: int = 12, random_picks: int = 2) -> list[str]:
+    """The skill's order for cases: fix-of-fix units, then multi-component fixes, then fixes in the
+    top 5 hotspot files; the last `random_picks` slots go to fixes the order doesn't reach,
+    picked by a seed from the ref, so a rerun picks the same."""
+    fixes = [u for u in r["timeline"] if u["is_fix"] and "docs-only" not in u["tags"]]
+    hot = {p for p, _ in r["hotspot_files"][:5]}
+    order: list[str] = []
+    for want in (lambda u: u["fix_of_fix"], lambda u: "multi-component" in u["tags"],
+                 lambda u: any(f["path"] in hot for f in u["files"])):
+        for u in reversed(fixes):                       # newest first within a tier
+            if want(u) and u["unit"] not in order:
+                order.append(u["unit"])
+    picked = order[:max(budget - random_picks, 0)]
+    rest = [u["unit"] for u in fixes if u["unit"] not in picked]
+    import random
+    rng = random.Random(r["ref_sha"])
+    picked += rng.sample(rest, min(random_picks, len(rest), budget - len(picked)))
+    return picked
+
+
 def capped(text: str, n: int) -> str:
     lines = text.splitlines()
     return "\n".join(lines[:n] + ([f"... {len(lines) - n} more lines (read the rest by range)"] if len(lines) > n else []))
 
 
-def dossier(repo: str, u: dict, owner_sha: dict[str, str], diff_lines: int = 120) -> str:
-    """One unit, ready to work as a case: each fix commit's diff, culprits, copies left behind."""
+def dossier(repo: str, u: dict, owner_sha: dict[str, str], diff_lines: int = 60,
+            path: str | None = None, max_chars: int = 14000) -> str:
+    """One unit, ready to work as a case: each fix commit's diff, culprits, copies left behind.
+    With `path`, only the commits and files inside it. Capped at `max_chars`."""
     L = [f"# {u['unit']} {u['title']}", f"{u['date']} · {u['kind']} · base {u['base'] or '-'} · {'fix: ' + '; '.join(u['why']) if u['is_fix'] else 'not a fix'}"
          + (f" · tags: {', '.join(u['tags'])}" if u["tags"] else ""), ""]
-    code = [f["path"] for f in u["files"] if blamed(f["path"])]
+    inside = (lambda f: f == path or f.startswith(path.rstrip("/") + "/")) if path else (lambda f: True)
+    code = [f["path"] for f in u["files"] if blamed(f["path"]) and inside(f["path"])]
     for c in u["commits"]:
+        if path and not any(inside(f) for f in git(repo, "show", "--name-only", "--format=", c["sha"]).splitlines()):
+            continue
         if not c.get("is_fix"):
             L.append(f"- {c['sha'][:8]} {c['subject']}  (not a fix commit)")
             continue
@@ -539,7 +564,10 @@ def dossier(repo: str, u: dict, owner_sha: dict[str, str], diff_lines: int = 120
         if top and top in owner_sha:
             L += [f"Culprit {top}, on the same files:", "```diff",
                   capped(git(repo, "diff", "-U2", "--no-color", f"{owner_sha[top]}^1", owner_sha[top], "--", *code), diff_lines // 2), "```", ""]
-    return "\n".join(L) + "\n"
+    text = "\n".join(L) + "\n"
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n... cut at {max_chars} characters: read the rest with git show <sha> -- <path>\n"
+    return text
 
 
 def write(path: str, text: str) -> None:
@@ -560,6 +588,7 @@ def main(argv=None) -> int:
     ap.add_argument("--path", help="work only the units that touch this path prefix")
     ap.add_argument("--component-root", action="append", default=[],
                     help="a top-level folder whose subfolders are components (repeatable; adds to the defaults)")
+    ap.add_argument("--budget", type=int, default=12, help="cases to triage and write dossiers for (default 12)")
     ap.add_argument("--max-blame-lines", type=int, default=400, help="per fix commit")
     ap.add_argument("--min-lines", type=int, default=3, help="blamed lines from an earlier fix that make a fix-of-fix")
     ap.add_argument("--out", help="folder for evidence.json and evidence.md (default: a new temporary folder)")
@@ -585,7 +614,7 @@ def main(argv=None) -> int:
             return 1
         owner_sha = {u["unit"]: u["sha"] for u in r["timeline"]}
         try:
-            sys.stdout.write(dossier(r.get("repo_path", a.repo), hit[0], owner_sha))
+            sys.stdout.write(dossier(r.get("repo_path", a.repo), hit[0], owner_sha, path=r.get("path")))
         except RuntimeError as e:
             print(f"evidence.py: {e}", file=sys.stderr)
             return 1
@@ -600,7 +629,25 @@ def main(argv=None) -> int:
     out = a.out or (None if (a.json or a.md) else tempfile.mkdtemp(prefix="inspector-"))
     jpath = a.json or (os.path.join(out, "evidence.json") if out else None)
     mpath = a.md or (os.path.join(out, "evidence.md") if out else None)
+    r["cases"] = triage(r, a.budget)
+    case_files = []
+    case_dir = out or (os.path.dirname(os.path.abspath(jpath)) if jpath else None)
+    if case_dir:
+        owner_sha = {u["unit"]: u["sha"] for u in r["timeline"]}
+        by = {u["unit"]: u for u in r["timeline"]}
+        for i, label in enumerate(r["cases"], 1):
+            fp = os.path.join(case_dir, "cases", f"{i:02d}-{label.lstrip('#')}.md")
+            try:
+                write(fp, dossier(r["repo_path"], by[label], owner_sha, path=r.get("path")))
+                case_files.append((label, fp))
+            except RuntimeError:
+                pass
     md = markdown(r)
+    if case_files:
+        # First thing after the header and warnings: what to read next.
+        head, sep, rest = md.partition("\n- Units in the work window")
+        md = head + "\n## Cases to work, in order: read these dossiers first\n\n" + "\n".join(
+            f"{i}. {label}: `{fp}`" for i, (label, fp) in enumerate(case_files, 1)) + "\n" + sep + rest
     if jpath:
         write(jpath, json.dumps(r, ensure_ascii=False))
     if mpath and mpath != "/dev/stdout":

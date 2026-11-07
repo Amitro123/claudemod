@@ -62,6 +62,21 @@ Four different key bugs with the skill, two without. That is a signal, not a res
 run was void, and the precision grader then still read the skill's own level labels; both are
 fixed. Next: `--case 'backtest-01*' --runs 3`, about $1.50.
 
+### backtest-01, 2026-11-07 (3 runs per arm; prompts no longer name the skill)
+
+| Version | Arm | Mean score | Key bugs found per run | Precision | Calls per run |
+|---|---|---|---|---|---|
+| 0.2 + dossier tool | with | 0.75 | K1 · K1 · K1 K12 K8 | 3/3 | 15-17 |
+| (same run) | without | 0.67 | K12 K11 · 2-3 per the judge · 2 | 1/3 | 6-7 |
+| + triage and dossiers by the collector | with | 0.85 | K12 K2 K1 K8 · K1 · K1 K12 K2 | 3/3 | 14-21 |
+
+- The skill triggered by itself in every run.
+- On this narrow question a direct read of the code finds about as many key bugs as the skill.
+  What the skill adds is consistency (K1, reproduced, in every run) and precision (no lead
+  without an input and a promise).
+- The agents didn't call `--show` on their own (0 of 48 calls); written dossiers were read in 1
+  run of 3. The list now opens the summary.
+
 ### What it measures, and what it doesn't
 
 - **A regression suite for the skill's discipline.** The 2026-11-06 runs caught four real bugs in

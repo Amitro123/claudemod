@@ -246,3 +246,13 @@ def test_default_out_is_a_new_folder(repo: Path, capsys) -> None:
     assert evidence.main(["--repo", str(repo)]) == 0
     saved = capsys.readouterr().out.strip().splitlines()[-1]
     assert saved.startswith("Saved: ") and Path(saved.split()[1].rstrip(".")).exists()
+
+
+def test_triage_writes_dossiers_in_order(repo: Path, tmp_path: Path, capsys) -> None:
+    out = tmp_path / "ev"
+    assert evidence.main(["--repo", str(repo), "--out", str(out), "--min-lines", "1", "--budget", "2"]) == 0
+    text = capsys.readouterr().out
+    assert "Cases to work, in order" in text and text.index("Cases to work") < text.index("Units in the work window")
+    files = sorted(p.name for p in (out / "cases").iterdir())
+    assert files[0] == "01-3.md", "the fix-of-fix comes first"
+    assert len(files) == 2

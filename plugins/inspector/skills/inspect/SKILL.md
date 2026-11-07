@@ -77,11 +77,13 @@ or store, an event several components hook). Bugs between components live at sea
 ## 2. Collect the evidence
 
 ```bash
-python3 "<skill_root>/scripts/evidence.py" --repo . [--out "<scratch>"] [scope flags]
+python3 "<skill_root>/scripts/evidence.py" --repo . [--out "<scratch>"] [--budget N] [scope flags]
 ```
 
-It prints the summary and saves `evidence.json` and `evidence.md` (in `--out`, else a new
-temporary folder it names on its last line). Run it once. On a repository with more than about
+It prints the summary and saves `evidence.json`, `evidence.md` and one **dossier** per case in
+`cases/` (in `--out`, else a new temporary folder it names on its last line). The summary ends
+with **Cases to work, in order**: the triage of step 3, already done, with each dossier's path.
+`--budget` is the case budget (12 unless the user set one). Run it once. On a repository with more than about
 1,000 commits, run it in the background with a 10-minute timeout. The summary starts with any
 **Warning** lines. Never open the JSON: for one unit, the **dossier** is one call,
 
@@ -160,8 +162,10 @@ investigated". The case file says how many of each.
 - A feature unit's fix commits can be cases; the feature itself isn't one. A unit that only
   describes fixes (a README or changelog entry) isn't a fix.
 
-**Order.** Two of the 12 always go to fixes picked at random from those the order below doesn't
-reach, as a check on its bias. The other 10 are taken in this order:
+**Order.** The collector applies it and lists the result as "Cases to work, in order"; work that
+list. Change it only where you corrected a fix verdict (step 2): drop a unit that isn't a fix,
+and put one you found in its place. Two of the 12 always go to fixes picked at random from those
+the order below doesn't reach, as a check on its bias. The other 10 are taken in this order:
 
 1. fix-of-fix units (`↺`): follow each chain back to its first link, at most 4 cases per chain;
    the chain's other links go in its paragraph on the pattern board;
@@ -175,7 +179,8 @@ read-only sub-agents (ground rule 4 applies to what you hand them), then re-chec
 cards yourself.
 
 **For each case:**
-- Print its unit's dossier (`--show`, step 2): the fix's diff and the culprit's, in one call.
+- Read its dossier from `cases/` (or `--show` for a unit you added): the fix's commits, culprits,
+  copies left behind, diffs, and the culprit's diff on the same files.
 - Read each changed function whole in today's code, not only the hunks.
 - Read the fix's added lines as hard as its removed ones: a fix that covers one branch of a
   condition (`asCode ? quoted(x) : x`) leaves the bug in the others.
