@@ -2298,3 +2298,144 @@ describe("inspector open-bugs: the factory's parsers (#8 and the lower ones)", (
     expect(builderTestsOf('TESTS: npm test -> 3 failed')!.failing).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Inspector lead reproduction tests (2026-11-07 factory run)
+// ---------------------------------------------------------------------------
+// These tests exercise actual production code paths for two leads the inspector
+// found. Tests marked EXPECTED FAIL demonstrate the current gap; they are not
+// bugs in the test — they are bugs in the production code, awaiting a fix.
+// No production code is changed to make them pass.
+
+describe('inspector lead L1: applyRulings bold-markdown tolerance (copy drift from #76 marker() fix)', () => {
+  // Contract evidence: skepticPrompt (flow.ts:460-465) tells the model to write
+  // "F<n>: RULING <evidence>". It does not instruct the model to avoid markdown
+  // formatting. Models routinely add bold (**) around structured markers.
+  // marker() in flow.ts was fixed in #76 to tolerate bold. applyRulings in
+  // route.ts was not.
+
+  const f = [
+    { severity: 'major' as const, where: 'a.ts:1', text: 'the token is in the query string' },
+    { severity: 'blocker' as const, where: 'b.ts:2', text: 'SQL injection in the filter' },
+  ]
+  const noSecurity = () => false
+
+  test('baseline: plain-text rulings are parsed correctly', () => {
+    const { kept, dropped } = applyRulings(f, 'F1: REFUTED a.ts:1 the token is read from a header\nF2: STANDS traced b.ts:2', noSecurity)
+    expect(dropped).toHaveLength(1)
+    expect(dropped[0]!.ruling).toBe('refuted')
+    expect(kept).toEqual([f[1]])
+  })
+
+  // EXPECTED FAIL: bold around F-number — the model writes **F1**: REFUTED
+  test('bold around F-number: **F1**: REFUTED should be parsed (current: silently ignored)', () => {
+    const { dropped } = applyRulings(f, '**F1**: REFUTED a.ts:1 the token is read from a header\nF2: STANDS traced b.ts:2', noSecurity)
+    // If applyRulings tolerated bold, this would drop F1 as refuted.
+    // Current behavior: dropped is empty because the regex does not match **F1**.
+    expect(dropped).toHaveLength(1) // EXPECTED FAIL: will be 0
+  })
+
+  // EXPECTED FAIL: bold around the ruling word
+  test('bold around ruling: F1: **REFUTED** should be parsed (current: silently ignored)', () => {
+    const { dropped } = applyRulings(f, 'F1: **REFUTED** a.ts:1 the token is read from a header\nF2: STANDS traced b.ts:2', noSecurity)
+    expect(dropped).toHaveLength(1) // EXPECTED FAIL: will be 0
+  })
+
+  // EXPECTED FAIL: bold around both
+  test('bold around both: **F1**: **REFUTED** should be parsed (current: silently ignored)', () => {
+    const { dropped } = applyRulings(f, '**F1**: **REFUTED** a.ts:1 the token is read from a header\n**F2**: STANDS traced b.ts:2', noSecurity)
+    expect(dropped).toHaveLength(1) // EXPECTED FAIL: will be 0
+  })
+
+  test('state-level outcome: a silently ignored ruling leaves the finding standing for the builder', () => {
+    // When a ruling is not parsed, the finding stays in `kept` — the builder is
+    // sent back to fix something the skeptic already refuted.
+    const { kept, dropped } = applyRulings(f, '**F1**: REFUTED a.ts:1 the token is read from a header\n**F2**: STANDS traced b.ts:2', noSecurity)
+    // Both findings stay in kept because neither ruling was parsed.
+    expect(kept).toEqual(f) // This PASSES: it demonstrates the bug's effect.
+    expect(dropped).toHaveLength(0) // This PASSES: confirms no ruling was applied.
+  })
+
+  test('contrast: marker() in flow.ts (fixed in #76) accepts bold — applyRulings does not', () => {
+    // marker() uses: ${key}\\**:\\**\\s*\\**\\s*(${options})
+    // This proves the fix exists for one parser but not the sibling.
+    expect(parseVerdict('**VERDICT:** PASS').state).toBe('pass')
+    expect(parseVerdict('VERDICT: **PASS**').state).toBe('pass')
+    // applyRulings: the same model that bolds VERDICT will bold F1.
+    const { dropped } = applyRulings(f, '**F1**: REFUTED evidence', noSecurity)
+    expect(dropped).toHaveLength(0) // PASSES: confirms the gap.
+  })
+})
+
+describe('inspector lead L2: tool.call guard error path — stoppedAgents read failure', () => {
+  // The guard at register.tsx:1404-1443 must fail closed: a run agent's forbidden
+  // call (push, deploy) is refused even when the state read fails.
+  // #74 fixed read($, run) with .catch(() => null).
+  // read($, stoppedAgents) at line 1413 has no .catch.
+  //
+  // TESTING LIMITATION: the test framework's atom store is in-memory and cannot
+  // be made to throw. A faithful reproduction of "stoppedAgents read throws"
+  // requires either: (a) a mock/patch of the atom read function, which the
+  // bundled claude-code/testing framework does not expose, or (b) a production
+  // code change to inject a failing store, which this test set is not authorized
+  // to make.
+  //
+  // What we CAN test: the guard's behavior on stopped agents through the normal
+  // path, and the .catch fallback's behavior, to document the policy gap.
+
+  test('a stopped agent is denied any tool call through the normal (non-throwing) path', async ($, on) => {
+    const w = engine(on)
+    await startRun($)
+    expect(await command($, 'stop')).toMatch(/Stopped/)
+    // Agent a1 is now in stoppedAgents. Its tool calls should be denied.
+    const read = await $.tool.call({ tool: 'Read', file_path: '/repo/src/mw.ts', agentId: 'a1' } as never)
+    expect(String((read as { deny?: string }).deny)).toMatch(/factory run was stopped/)
+    const bash = await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'a1' } as never)
+    expect(String((bash as { deny?: string }).deny)).toMatch(/factory run was stopped/)
+  })
+
+  test('the .catch fallback guards forbidden calls but not non-forbidden ones (fail-open for Read/Bash)', async ($, on) => {
+    // The .catch at line 1441-1443 checks forbiddenOf(e) for spawned agents.
+    // A forbidden call (push) is denied. A non-forbidden call (Read, Bash) is
+    // allowed through — the .catch handler returns next(e), which is fail-open.
+    //
+    // This test documents the INTENDED design: the .catch is a last-resort guard
+    // for forbidden operations. It is NOT a full stopped-agent guard.
+    // If read($, stoppedAgents) were to throw, the stopped-agent check at line
+    // 1413 would be skipped, and the .catch would only catch forbidden ops.
+    on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }) as never)
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    // Agent a2 (builder) is a spawned agent. Test the guard's behavior on it:
+    // Forbidden call → denied:
+    const push = await $.tool.call({ tool: 'Bash', command: 'git push origin HEAD', agentId: 'a2' } as never)
+    expect(String((push as { deny?: string }).deny)).toMatch(/don't do this/)
+    // Non-forbidden call → allowed (no deny, reaches the fallback handler above):
+    const npm = await $.tool.call({ tool: 'Bash', command: 'npm test', agentId: 'a2' } as never)
+    expect((npm as { deny?: string }).deny).toBeFalsy()
+  })
+
+  test('policy documentation: the guard has two separate concerns that can diverge under store failure', async ($, on) => {
+    // Concern 1 (forbidden ops): guarded by .catch fallback — fails closed.
+    // Concern 2 (stopped agents): guarded by read($, stoppedAgents) at line 1413 — no .catch.
+    //
+    // Under a store failure: Concern 1 works (push denied), Concern 2 doesn't
+    // (stopped agent's Read/Bash proceeds).
+    //
+    // This test verifies that BOTH concerns work under normal conditions (no store failure):
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    // Stop the run — now a2 (builder) is in stoppedAgents.
+    await command($, 'stop')
+    // Concern 1: forbidden call from stopped agent — denied
+    const push = await $.tool.call({ tool: 'Bash', command: 'git push origin HEAD', agentId: 'a2' } as never)
+    expect(String((push as { deny?: string }).deny)).toMatch(/don't do this|factory run was stopped/)
+    // Concern 2: non-forbidden call from stopped agent — denied (via stoppedAgents check)
+    const read = await $.tool.call({ tool: 'Read', file_path: '/repo/a.ts', agentId: 'a2' } as never)
+    expect(String((read as { deny?: string }).deny)).toMatch(/factory run was stopped/)
+  })
+})
