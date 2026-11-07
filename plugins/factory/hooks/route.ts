@@ -206,8 +206,9 @@ export type Ruling = 'stands' | 'refuted' | 'downgraded' | 'design' | 'unverifie
 export function applyRulings(findings: Finding[], answer: string, isSecurity: (f: Finding) => boolean): { kept: Finding[]; dropped: { finding: Finding; ruling: Ruling; why: string }[] } {
   const rulings = new Map<number, { ruling: Ruling; why: string }>()
   // Within one line only ([ \t], not \s): a bare "F1: STANDS" must not take the next line's ruling
-  // as its own evidence, and lose it.
-  for (const m of answer.matchAll(/^[ \t]*[-*]?[ \t]*F(\d+)[ \t]*[:.)-][ \t]*(STANDS|REFUTED|DOWNGRADED|DESIGN|UNVERIFIED)\b[ \t:—–-]*(.*)$/gim)) {
+  // as its own evidence, and lose it. Bold anywhere around F, the number, the separator or the
+  // ruling (**F1**: REFUTED, F1: **REFUTED**) is still the ruling: the same tolerance marker() has.
+  for (const m of answer.matchAll(/^[ \t]*[-*]?[ \t]*\**F(\d+)\**[ \t]*[:.)-][ \t]*\**(STANDS|REFUTED|DOWNGRADED|DESIGN|UNVERIFIED)\b\**[ \t:—–-]*(.*)$/gim)) {
     rulings.set(Number(m[1]), { ruling: m[2]!.toLowerCase() as Ruling, why: m[3]!.trim() })
   }
   const kept: Finding[] = []

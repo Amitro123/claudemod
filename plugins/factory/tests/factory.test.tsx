@@ -2302,17 +2302,13 @@ describe("inspector open-bugs: the factory's parsers (#8 and the lower ones)", (
 // ---------------------------------------------------------------------------
 // Inspector lead reproduction tests (2026-11-07 factory run)
 // ---------------------------------------------------------------------------
-// These tests exercise actual production code paths for two leads the inspector
-// found. Tests marked EXPECTED FAIL demonstrate the current gap; they are not
-// bugs in the test — they are bugs in the production code, awaiting a fix.
-// No production code is changed to make them pass.
+// L1: applyRulings bold tolerance — fixed in route.ts, matching marker()'s #76 fix.
+// L2: stoppedAgents error path — documented; store-failure reproduction blocked by framework.
 
 describe('inspector lead L1: applyRulings bold-markdown tolerance (copy drift from #76 marker() fix)', () => {
-  // Contract evidence: skepticPrompt (flow.ts:460-465) tells the model to write
-  // "F<n>: RULING <evidence>". It does not instruct the model to avoid markdown
-  // formatting. Models routinely add bold (**) around structured markers.
-  // marker() in flow.ts was fixed in #76 to tolerate bold. applyRulings in
-  // route.ts was not.
+  // Contract: skepticPrompt (flow.ts:460-465) tells the model to write
+  // "F<n>: RULING <evidence>". Models routinely add bold (**) around markers.
+  // marker() was fixed in #76 to tolerate bold. applyRulings now matches.
 
   const f = [
     { severity: 'major' as const, where: 'a.ts:1', text: 'the token is in the query string' },
@@ -2327,43 +2323,62 @@ describe('inspector lead L1: applyRulings bold-markdown tolerance (copy drift fr
     expect(kept).toEqual([f[1]])
   })
 
-  // EXPECTED FAIL: bold around F-number — the model writes **F1**: REFUTED
-  test('bold around F-number: **F1**: REFUTED should be parsed (current: silently ignored)', () => {
-    const { dropped } = applyRulings(f, '**F1**: REFUTED a.ts:1 the token is read from a header\nF2: STANDS traced b.ts:2', noSecurity)
-    // If applyRulings tolerated bold, this would drop F1 as refuted.
-    // Current behavior: dropped is empty because the regex does not match **F1**.
-    expect(dropped).toHaveLength(1) // EXPECTED FAIL: will be 0
+  test('bold around F-number: **F1**: REFUTED is parsed', () => {
+    const { kept, dropped } = applyRulings(f, '**F1**: REFUTED a.ts:1 the token is read from a header\nF2: STANDS traced b.ts:2', noSecurity)
+    expect(dropped).toHaveLength(1)
+    expect(dropped[0]!.ruling).toBe('refuted')
+    expect(kept).toEqual([f[1]])
   })
 
-  // EXPECTED FAIL: bold around the ruling word
-  test('bold around ruling: F1: **REFUTED** should be parsed (current: silently ignored)', () => {
-    const { dropped } = applyRulings(f, 'F1: **REFUTED** a.ts:1 the token is read from a header\nF2: STANDS traced b.ts:2', noSecurity)
-    expect(dropped).toHaveLength(1) // EXPECTED FAIL: will be 0
+  test('bold around ruling: F1: **REFUTED** is parsed', () => {
+    const { kept, dropped } = applyRulings(f, 'F1: **REFUTED** a.ts:1 the token is read from a header\nF2: STANDS traced b.ts:2', noSecurity)
+    expect(dropped).toHaveLength(1)
+    expect(dropped[0]!.ruling).toBe('refuted')
+    expect(kept).toEqual([f[1]])
   })
 
-  // EXPECTED FAIL: bold around both
-  test('bold around both: **F1**: **REFUTED** should be parsed (current: silently ignored)', () => {
-    const { dropped } = applyRulings(f, '**F1**: **REFUTED** a.ts:1 the token is read from a header\n**F2**: STANDS traced b.ts:2', noSecurity)
-    expect(dropped).toHaveLength(1) // EXPECTED FAIL: will be 0
+  test('bold around both: **F1**: **REFUTED** is parsed', () => {
+    const { kept, dropped } = applyRulings(f, '**F1**: **REFUTED** a.ts:1 the token is read from a header\n**F2**: STANDS traced b.ts:2', noSecurity)
+    expect(dropped).toHaveLength(1)
+    expect(dropped[0]!.ruling).toBe('refuted')
+    expect(kept).toEqual([f[1]])
   })
 
-  test('state-level outcome: a silently ignored ruling leaves the finding standing for the builder', () => {
-    // When a ruling is not parsed, the finding stays in `kept` — the builder is
-    // sent back to fix something the skeptic already refuted.
+  test('state-level outcome: a bold ruling is applied, the refuted finding is dropped', () => {
     const { kept, dropped } = applyRulings(f, '**F1**: REFUTED a.ts:1 the token is read from a header\n**F2**: STANDS traced b.ts:2', noSecurity)
-    // Both findings stay in kept because neither ruling was parsed.
-    expect(kept).toEqual(f) // This PASSES: it demonstrates the bug's effect.
-    expect(dropped).toHaveLength(0) // This PASSES: confirms no ruling was applied.
+    expect(kept).toEqual([f[1]])
+    expect(dropped).toHaveLength(1)
+    expect(dropped[0]!.ruling).toBe('refuted')
   })
 
-  test('contrast: marker() in flow.ts (fixed in #76) accepts bold — applyRulings does not', () => {
-    // marker() uses: ${key}\\**:\\**\\s*\\**\\s*(${options})
-    // This proves the fix exists for one parser but not the sibling.
+  test('bold tolerance matches marker(): both parsers accept the same formatting', () => {
     expect(parseVerdict('**VERDICT:** PASS').state).toBe('pass')
     expect(parseVerdict('VERDICT: **PASS**').state).toBe('pass')
-    // applyRulings: the same model that bolds VERDICT will bold F1.
     const { dropped } = applyRulings(f, '**F1**: REFUTED evidence', noSecurity)
-    expect(dropped).toHaveLength(0) // PASSES: confirms the gap.
+    expect(dropped).toHaveLength(1)
+    expect(dropped[0]!.ruling).toBe('refuted')
+  })
+
+  test('all five ruling types are parsed with and without bold', () => {
+    const five = [0, 1, 2, 3, 4].map(i => ({ severity: 'major' as const, where: `a.ts:${i}`, text: `t${i}` }))
+    const plain = 'F1: STANDS traced\nF2: REFUTED a.ts:1 handled\nF3: DOWNGRADED only a log line, a.ts:2\nF4: DESIGN a.test.ts:4 asserts it\nF5: UNVERIFIED rests on the engine'
+    const bold = '**F1**: STANDS traced\n**F2**: **REFUTED** a.ts:1 handled\nF3: **DOWNGRADED** only a log line, a.ts:2\n**F4**: DESIGN a.test.ts:4 asserts it\nF5: **UNVERIFIED** rests on the engine'
+    const rPlain = applyRulings(five, plain, () => false)
+    const rBold = applyRulings(five, bold, () => false)
+    expect(rPlain.dropped.map(d => d.ruling)).toEqual(['refuted', 'downgraded', 'design', 'unverified'])
+    expect(rBold.dropped.map(d => d.ruling)).toEqual(rPlain.dropped.map(d => d.ruling))
+    expect(rBold.kept.map(f => f.where)).toEqual(rPlain.kept.map(f => f.where))
+  })
+
+  test('non-ruling prose and invalid F-ids are not matched', () => {
+    const { kept, dropped } = applyRulings(f, 'The skeptic looked at F1 and found it solid.\nF99: REFUTED imaginary\nF0: REFUTED zero', noSecurity)
+    expect(dropped).toHaveLength(0)
+    expect(kept).toEqual(f)
+  })
+
+  test('evidence after a bold ruling is preserved', () => {
+    const { dropped } = applyRulings(f, '**F1**: **REFUTED** a.ts:1 the token is read from a header, not the query string', noSecurity)
+    expect(dropped[0]!.why).toBe('a.ts:1 the token is read from a header, not the query string')
   })
 })
 
