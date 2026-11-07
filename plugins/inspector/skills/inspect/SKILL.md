@@ -337,9 +337,25 @@ code, paths and quotes stay as they are. Its last line is
 `Investigated through <sha>`, the sha the collector read. The units the budget left unworked
 are listed under "Not investigated"; the user can run again with a scope for them.
 
+**The handoff.** When the leads go to someone else (a code agent, an issue, a person), generate
+the list from the readers' cards or the investigator's JSON block, never by retyping it:
+
+```bash
+python3 "<skill_root>/scripts/handoff.py" --cards - --out docs/inspector/<YYYY-MM-DD>-open-bugs.md <<'LEADS'
+[ <cards or leads> ]
+LEADS
+```
+
+It copies each lead's words and levels as the reader gave them. You may drop a lead, or lower a
+level, with `--lower <where>=<level>`. You may not raise one, or add an impact, without doing the
+work. Anything you add yourself goes in with `--note '<where>=<text>'`, which marks it as yours
+and unverified. A paraphrase is where a "suspect" becomes a "read" and a consequence nobody traced
+creeps in.
+
 Before writing, check:
 - every card has its level;
 - every reproduced or read lead has a place, a cause, a change and a test;
+- every impact has its own level: traced, cited, or `unverified`;
 - the counts in the header match the cards;
 - the Warnings from step 2 are in "Not investigated".
 
