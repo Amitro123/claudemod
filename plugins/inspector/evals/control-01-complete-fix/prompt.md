@@ -2,7 +2,7 @@
 description: "Control. PR #2 fixes a typo in the only VAT rate, with a test; the README pins the rounding and the input domain. Expect no reproduced or read open lead."
 max_turns: 40
 timeout_seconds: 900
-allowed_tools: [Read, Glob, Grep, Skill, Bash, Write]
+allowed_tools: [Read, Glob, Grep, Skill, Bash, Write, Agent]
 tags: [inspector]
 ---
 

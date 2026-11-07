@@ -2,7 +2,7 @@
 description: "PR #2 redacted --password=value; the space-separated --password value still leaks, against the README. Expect an open lead on that form, ideally reproduced."
 max_turns: 40
 timeout_seconds: 900
-allowed_tools: [Read, Glob, Grep, Skill, Bash, Write]
+allowed_tools: [Read, Glob, Grep, Skill, Bash, Write, Agent]
 tags: [inspector]
 ---
 

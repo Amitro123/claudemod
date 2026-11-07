@@ -2,7 +2,7 @@
 description: "Backtest on the real repository at #50, scoped to plugins/followups with a budget of 4 cases. Scored against the 13 followups bugs that #51-#72 fixed. Measures what the skill adds on a real history."
 max_turns: 60
 timeout_seconds: 1200
-allowed_tools: [Read, Glob, Grep, Skill, Bash, Write]
+allowed_tools: [Read, Glob, Grep, Skill, Bash, Write, Agent]
 tags: [inspector, backtest]
 ---
 

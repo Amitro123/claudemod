@@ -2,7 +2,7 @@
 description: "PR #2 quoted item titles in the CLAUDE.md export only; to_docs still writes them raw, against the README's promise. Expect an open lead on to_docs; to_csv is not a bug."
 max_turns: 40
 timeout_seconds: 900
-allowed_tools: [Read, Glob, Grep, Skill, Bash, Write]
+allowed_tools: [Read, Glob, Grep, Skill, Bash, Write, Agent]
 tags: [inspector]
 ---
 

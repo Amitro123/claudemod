@@ -2,7 +2,7 @@
 description: "PR #3 fixed a crash that PR #2 (itself a fix) introduced when it rewrote total(). Expect the case to name #2 as the culprit, a fix-of-fix."
 max_turns: 40
 timeout_seconds: 900
-allowed_tools: [Read, Glob, Grep, Skill, Bash, Write]
+allowed_tools: [Read, Glob, Grep, Skill, Bash, Write, Agent]
 tags: [inspector]
 ---
 

@@ -24,7 +24,7 @@ for id in "${IDS[@]}"; do
   echo "=== $id"
   claude plugin eval . --case "${id}*" --runs "$RUNS" -j "$JOBS" --max-cost-usd "$MAX_COST" \
     --ablation "$ABLATION" --scaffold --no-publish --trust-plugin \
-    "${MODEL_ARGS[@]}" --json "$OUT/out-${id}.json" --allow-tools Bash Write "${KEEP_ARGS[@]}" \
+    "${MODEL_ARGS[@]}" --json "$OUT/out-${id}.json" --allow-tools Bash Write Agent "${KEEP_ARGS[@]}" \
     > "$OUT/log-${id}.txt" 2>&1
   echo "exit $?  (log: $OUT/log-${id}.txt)"
 done
