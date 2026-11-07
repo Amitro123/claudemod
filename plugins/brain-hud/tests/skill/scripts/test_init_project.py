@@ -174,3 +174,29 @@ def test_para_dirs_not_reported_as_created_on_second_run(project_dir, skill_dir)
     assert result.already_initialized is True
     assert result.created == []
     assert any(".agent-brain/shared/Projects/" in item for item in result.skipped)
+
+
+@pytest.mark.skipif(__import__("shutil").which("git") is None, reason="git is not installed")
+@pytest.mark.parametrize("sub", ["sub", "apps/web [beta]"])
+def test_runtime_files_are_kept_out_of_git_in_a_project_below_the_repo_top(tmp_path, skill_dir, sub):
+    """Inspector open-bugs #4: the exclude lines were anchored at the repository top, so a project in a
+    subfolder could commit its hooks' runtime files."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    project = repo / sub
+    project.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    init_project.main(project, skill_dir)
+    for f in init_project.RUNTIME_FILES:
+        (project / f).parent.mkdir(parents=True, exist_ok=True)
+        (project / f).write_text("x", encoding="utf-8")
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    for f in init_project.RUNTIME_FILES:
+        assert f not in status, status
+    # A second run adds nothing.
+    exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+    init_project.main(project, skill_dir)
+    assert (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8") == exclude

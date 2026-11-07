@@ -10,7 +10,7 @@ import type { ParaFile } from './brain'
 import { clockTime, contextLine, HANDOFF_TITLE, hasLoose, handoffEntry, insertBelowMarker, journalDoc, journalFile, JOURNAL_DIR, JOURNAL_LAST, journalText, looseEnds, stampOf, workerEntry } from './journal'
 import type { JournalEntry, JournalKind } from './journal'
 import { hasCommand } from './runtime'
-import { GOAL_REACHED, parseDoneResult, parseGoalClosedNote, parseGoalPrompt, parseStartPrompt, toolText } from './texts'
+import { GOAL_REACHED, parseBrainGoalReachedArgs, parseDoneResult, parseGoalClosedNote, parseGoalPrompt, parseStartPrompt, toolText } from './texts'
 
 const brain = atom({ plugin: 'brain-hud', key: 'brain' } as const, null as Brain | null)
 const pulse = atom({ plugin: 'brain-hud', key: 'pulse' } as const, null as Pulse | null)
@@ -189,18 +189,26 @@ async function writeJournal($: EngineInterface, entries: readonly JournalEntry[]
 // Whether .claude/brain/ is in git's exclude file: tried with each write until it is.
 let excluded = false
 
+// git reads an exclude pattern with a slash from the repository top: a project in a subfolder needs its
+// prefix, with git's wildcards in it escaped. At the top, the bare path, as earlier versions wrote it.
+export const excludeLine = (prefix: string, relative: string) =>
+  prefix ? `/${prefix.replace(/[\\*?[]/g, c => `\\${c}`)}${relative}` : relative
+
 // True once nothing is left to do: listed, not a git repository, or no git to run. Only a write to
 // the exclude file that failed is tried again with the next entry.
 async function keepOutOfGit($: EngineInterface): Promise<boolean> {
   const root = await $.session.root()
-  const found = await $.process.run(['git', 'rev-parse', '--git-path', 'info/exclude'], { cwd: root, timeoutMs: 10_000 }).catch(() => null)
+  // The project's place below the repository top (an empty line at the top), then the exclude file.
+  const found = await $.process.run(['git', 'rev-parse', '--show-prefix', '--git-path', 'info/exclude'], { cwd: root, timeoutMs: 10_000 }).catch(() => null)
   if (!found) return true
   if (found.exitCode !== 0 || !found.stdout.trim()) return true
-  const rel = found.stdout.trim()
+  const lines = found.stdout.replace(/\r?\n$/, '').split(/\r?\n/)
+  const [prefix, rel] = lines.length >= 2 ? [lines[0]!.trim(), lines.at(-1)!.trim()] : ['', lines[0]!.trim()]
   const path = /^([a-zA-Z]:)?[\\/]/.test(rel) ? rel : `${root.replace(/[\\/]$/, '')}/${rel}`
+  const line = excludeLine(prefix, `${JOURNAL_DIR}/`)
   const text = await $.fs.read(path).then(t => String(t), () => '')
-  if (text.split('\n').some(l => l.trim() === `${JOURNAL_DIR}/`)) return true
-  return $.fs.write(path, `${text}${text && !text.endsWith('\n') ? '\n' : ''}${JOURNAL_DIR}/\n`).then(() => true, () => false)
+  if (text.split('\n').some(l => l.trim() === line)) return true
+  return $.fs.write(path, `${text}${text && !text.endsWith('\n') ? '\n' : ''}${line}\n`).then(() => true, () => false)
 }
 
 // A subagent's answer: the routed-worker's report, or any other agent's last word.
@@ -402,7 +410,13 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('command.run', { command: 'brain' }, async ($) => {
+  on('command.run', { command: 'brain' }, async ($, e) => {
+    // goal-run's news that a to-do item closed the goal: an offer, not the pane.
+    const reached = parseBrainGoalReachedArgs(String(e.args ?? ''))
+    if (reached !== null) {
+      await offerGoal($, reached || (await read($, goalText)) || 'the session goal')
+      return { text: 'brain-hud has the reached goal.' }
+    }
     await readTheme($)
     await refresh($)
     await $.ui.open({ id: PANE, title: PANE_TITLE })

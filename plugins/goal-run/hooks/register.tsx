@@ -5,7 +5,7 @@ import type { Asking, Goal, Pace, Priority, Side, Task, TaskStatus } from '../ty
 import { TRACK_SIZE, trackSvg, trackText } from './art'
 import type { Pose } from './art'
 import { hasCommand, pick, projectOf } from './runtime'
-import { FACTORY_SOURCE, FACTORY_START_TOOL, factoryArgs, factoryChosenForGoal, factoryPlanApprovedArgs, factoryPlanResultArgs, GOAL_REACHED, goalClosedNote, goalPrompt, goalReachedToast, parseDoneResult, parseStartPrompt, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, PLAN_WAITING_FOR_FACTORY, planChangesForFactory, toolText } from './texts'
+import { brainGoalReachedArgs, FACTORY_SOURCE, FACTORY_START_TOOL, factoryArgs, factoryChosenForGoal, factoryPlanApprovedArgs, factoryPlanResultArgs, GOAL_REACHED, goalClosedNote, goalPrompt, goalReachedToast, parseDoneResult, parseStartPrompt, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, PLAN_WAITING_FOR_FACTORY, planChangesForFactory, toolText } from './texts'
 // The goal-run tests import the start-prompt parser from here, as before it was shared.
 export { parseStartPrompt }
 
@@ -455,6 +455,9 @@ async function closeFromTodo($: EngineInterface, ref: string): Promise<string> {
     if (now?.status === 'done') {
       $.ui.toast(goalReachedToast(now.text))
       reached = now.text
+      // brain-hud offers the reached goal to the memory: told as a command, heard whatever order the
+      // mods' hooks run in (the note in the tool's result reaches only a hook above this mod's).
+      $.clock.after(0, () => void $.command.run({ command: 'brain', args: brainGoalReachedArgs(reached) }).catch(() => {}))
     }
   }
   await update($, side, cur => {
@@ -880,9 +883,12 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('classic.PostToolUse', async ($, e, next) => {
-    const r = await next(e)
+    let r = await next(e)
     if (e.tool_name === TODO_DONE_TOOL && parseDoneResult(toolText(e.tool_response))) {
-      await closeFromTodo($, String((e.tool_input as { id?: unknown } | null)?.id ?? '').trim())
+      const reached = await closeFromTodo($, String((e.tool_input as { id?: unknown } | null)?.id ?? '').trim())
+      // Closed here (followups' hook answered the tool above goal-run's, which never ran): Claude learns
+      // the goal is reached from this hook's context instead.
+      if (reached) r = { ...r, additionalContext: [...(r.additionalContext ?? []), goalClosedNote(reached)] }
     }
     // The person sent the item to the factory: it's the factory's run now, not a side job of the goal.
     if (e.tool_name === FACTORY_START_TOOL && /^Factory run started/.test(toolText(e.tool_response))) {

@@ -5,7 +5,7 @@ import type { On } from 'claude-code'
 import { runnerX, trackText } from '../hooks/art'
 import { addSide, insertTask, mergeGoal, movePending, orderPlan, parseStartPrompt, planItems, poseOf, reminder, replan, stepTokens } from '../hooks/register'
 import type { Goal } from '../types'
-import { doneResult, factoryChosenForGoal, parsePlanResultArgs, parsePlanApprovedArgs, parsePlanOutcome, PLAN_APPROVED_FOR_FACTORY, PLAN_KEPT_FOR_FACTORY, planChangesForFactory, projectFrom } from '../hooks/texts'
+import { brainGoalReachedArgs, doneResult, factoryChosenForGoal, parsePlanResultArgs, parsePlanApprovedArgs, parsePlanOutcome, PLAN_APPROVED_FOR_FACTORY, PLAN_KEPT_FOR_FACTORY, planChangesForFactory, projectFrom } from '../hooks/texts'
 
 const PLAN = 'mcp__goal-run__plan'
 const UPDATE = 'mcp__goal-run__update'
@@ -483,6 +483,11 @@ describe('work started from the followups to-do list', () => {
 
   test('with goal-run beneath followups, the PostToolUse event still closes the task (and twice is harmless)', async ($, on) => {
     on('classic.PostToolUse', () => ({}) as never)
+    const ran: string[] = []
+    on('command.run', (_, e) => {
+      ran.push(`${e.command} ${e.args ?? ''}`.trim())
+      return { text: '' } as never
+    })
     const w = await halfway($, on)
     await $.prompt.submit(fromTodo)
     const band = await $.ui.mount({ ...BAND, surface: 'terminal' } as never)
@@ -491,9 +496,15 @@ describe('work started from the followups to-do list', () => {
     await $.tool.call({ tool: UPDATE, id: 't2', status: 'done' } as never)
     // followups answered the tool above goal-run, so only the classic event reaches it.
     const post = { tool_name: 'mcp__followups__done', tool_input: { id: 'fu-1' }, tool_response: [{ type: 'text', text: doneResult('Rotate the dev key', '') }], tool_use_id: 'u1' }
-    await $.classic.PostToolUse(post as never)
-    await $.classic.PostToolUse(post as never)
+    const first = await $.classic.PostToolUse(post as never)
+    const again = await $.classic.PostToolUse(post as never)
     expect(w.toasts.filter(t => t === 'Goal reached: Ship it')).toHaveLength(1)
+    // Claude learns the goal is reached on this path too (#7), once.
+    expect(((first as { additionalContext?: string[] }).additionalContext ?? []).join('\n')).toMatch(/That closed the last task of the session goal "Ship it"\. The goal is reached\./)
+    expect((again as { additionalContext?: string[] }).additionalContext ?? []).toEqual([])
+    // brain-hud hears it as a command, whatever order the mods' hooks run in.
+    await w.clock.advance(10)
+    expect(ran.filter(c => c.startsWith('brain '))).toEqual([`brain ${brainGoalReachedArgs('Ship it')}`])
     const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
     expect(await texts(pane)).toMatch(/3\/3 tasks/)
     await pane.unmount()

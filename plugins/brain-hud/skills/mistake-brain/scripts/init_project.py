@@ -171,21 +171,37 @@ def git_tracked(project_dir: Path, relative: str) -> bool:
     return bool(done and done.returncode == 0)
 
 
+def exclude_pattern(prefix: str, relative: str) -> str:
+    """An info/exclude line for a path relative to the project, which may sit below the repository top.
+
+    A pattern with a slash is read from the repository top, so a project in a subfolder needs its
+    prefix (git rev-parse --show-prefix), with git's wildcards in it escaped. At the top the line is
+    the bare path, as earlier versions wrote it.
+    """
+    if not prefix:
+        return relative
+    escaped = "".join(f"\\{c}" if c in "\\*?[" else c for c in prefix)
+    return f"/{escaped}{relative}"
+
+
 def _exclude_runtime_files(project_dir: Path) -> list[str]:
     """List the hooks' runtime files in the repository's info/exclude."""
-    done = _git(project_dir, "rev-parse", "--git-path", "info/exclude")
+    # The prefix first (an empty line at the repository top), then the exclude file's path.
+    done = _git(project_dir, "rev-parse", "--show-prefix", "--git-path", "info/exclude")
     if not done or done.returncode != 0 or not done.stdout.strip():
         return []
-    path = Path(done.stdout.strip())
+    lines = done.stdout.rstrip("\n").split("\n")
+    prefix, rel = (lines[0].strip(), lines[-1].strip()) if len(lines) >= 2 else ("", lines[0].strip())
+    path = Path(rel)
     if not path.is_absolute():
         path = project_dir / path
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     have = set(text.splitlines())
-    missing = [f for f in RUNTIME_FILES if f not in have]
+    missing = [f for f in RUNTIME_FILES if exclude_pattern(prefix, f) not in have]
     if missing:
         path.parent.mkdir(parents=True, exist_ok=True)
-        prefix = text if not text or text.endswith("\n") else text + "\n"
-        path.write_text(prefix + "".join(f"{f}\n" for f in missing), encoding="utf-8")
+        head = text if not text or text.endswith("\n") else text + "\n"
+        path.write_text(head + "".join(f"{exclude_pattern(prefix, f)}\n" for f in missing), encoding="utf-8")
     return missing
 
 
