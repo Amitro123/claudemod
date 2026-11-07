@@ -515,9 +515,9 @@ def markdown(r: dict) -> str:
     return "\n".join(L) + "\n"
 
 
-def triage(r: dict, budget: int = 12, random_picks: int = 2) -> list[str]:
+def triage(r: dict, budget: int = 12, random_picks: int | None = None) -> list[str]:
     """The skill's order for cases: fix-of-fix units, then multi-component fixes, then fixes in the
-    top 5 hotspot files; the last `random_picks` slots go to fixes the order doesn't reach,
+    top 5 hotspot files; the last slots (2 of a budget of 8 or more, 1 of 4-7) go to fixes the order doesn't reach,
     picked by a seed from the ref, so a rerun picks the same."""
     fixes = [u for u in r["timeline"] if u["is_fix"] and "docs-only" not in u["tags"]]
     hot = {p for p, _ in r["hotspot_files"][:5]}
@@ -527,6 +527,8 @@ def triage(r: dict, budget: int = 12, random_picks: int = 2) -> list[str]:
         for u in reversed(fixes):                       # newest first within a tier
             if want(u) and u["unit"] not in order:
                 order.append(u["unit"])
+    if random_picks is None:            # the check on the order's bias: 2 of 8+, 1 of 4-7, none below
+        random_picks = 2 if budget >= 8 else 1 if budget >= 4 else 0
     picked = order[:max(budget - random_picks, 0)]
     rest = [u["unit"] for u in fixes if u["unit"] not in picked]
     import random

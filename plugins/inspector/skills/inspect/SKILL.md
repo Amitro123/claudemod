@@ -164,8 +164,9 @@ investigated". The case file says how many of each.
 
 **Order.** The collector applies it and lists the result as "Cases to work, in order"; work that
 list. Change it only where you corrected a fix verdict (step 2): drop a unit that isn't a fix,
-and put one you found in its place. Two of the 12 always go to fixes picked at random from those
-the order below doesn't reach, as a check on its bias. The other 10 are taken in this order:
+and put one you found in its place. Two of a budget of 8 or more (one of 4-7) go to fixes picked
+at random from those the order below doesn't reach, as a check on its bias. The rest are taken in
+this order:
 
 1. fix-of-fix units (`↺`): follow each chain back to its first link, at most 4 cases per chain;
    the chain's other links go in its paragraph on the pattern board;
