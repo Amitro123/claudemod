@@ -466,6 +466,7 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
         "left_behind": [{"unit": u.label(), "commit": c["sha"][:12], **x} for u in fixes for c in u.commits
                         for x in c.get("left_behind", [])],
         "timeline": [unit_json(u) for u in worked],
+        "unit_shas": {u.label(): u.sha for u in units},
     }
 
 
@@ -613,6 +614,7 @@ def main(argv=None) -> int:
     ap.add_argument("--out", help="folder for evidence.json, evidence.md and cases/ (default: a new .git/inspector/<time>)")
     ap.add_argument("--json", help="write the full evidence here instead of <out>/evidence.json")
     ap.add_argument("--md", help="write the summary here instead of <out>/evidence.md")
+    ap.add_argument("--dossier", action="store_true", help="with --unit: print that unit's case dossier to stdout and exit (needs no saved run)")
     ap.add_argument("--show", help="print one unit ('#N' or sha) as a case dossier, from a saved run (--out or --json), and exit")
     a = ap.parse_args(argv)
     if a.show:
@@ -631,7 +633,7 @@ def main(argv=None) -> int:
         if not hit:
             print(f"evidence.py: no unit {a.show} in {saved}", file=sys.stderr)
             return 1
-        owner_sha = {u["unit"]: u["sha"] for u in r["timeline"]}
+        owner_sha = r.get("unit_shas") or {u["unit"]: u["sha"] for u in r["timeline"]}
         try:
             sys.stdout.write(dossier(r.get("repo_path", a.repo), hit[0], owner_sha, path=r.get("path")))
         except RuntimeError as e:
@@ -645,35 +647,56 @@ def main(argv=None) -> int:
         print(f"evidence.py: {e}", file=sys.stderr)
         return 1
     r["repo_path"] = os.path.abspath(a.repo)
-    out = a.out or (None if (a.json or a.md) else default_out(a.repo))
+    owner_sha = r["unit_shas"]
+    if a.dossier:
+        if not a.unit or not r["timeline"]:
+            print("evidence.py: --dossier needs --unit", file=sys.stderr)
+            return 2
+        sys.stdout.write(dossier(r["repo_path"], r["timeline"][0], owner_sha, path=a.path))
+        return 0
+    r["cases"] = triage(r, a.budget)
+    # Saving is a convenience, never a requirement: a sandbox may let no command write anywhere.
+    saved_note = ""
+    try:
+        out = a.out or (None if (a.json or a.md) else default_out(a.repo))
+    except OSError:
+        out, saved_note = None, "nothing saved: no folder could be written; every command below prints to stdout"
     jpath = a.json or (os.path.join(out, "evidence.json") if out else None)
     mpath = a.md or (os.path.join(out, "evidence.md") if out else None)
-    r["cases"] = triage(r, a.budget)
-    case_files = []
     case_dir = out or (os.path.dirname(os.path.abspath(jpath)) if jpath else None)
-    if case_dir:
-        owner_sha = {u["unit"]: u["sha"] for u in r["timeline"]}
-        by = {u["unit"]: u for u in r["timeline"]}
-        for i, label in enumerate(r["cases"], 1):
+    by = {u["unit"]: u for u in r["timeline"]}
+    me = os.path.abspath(__file__)
+    lines = []
+    for i, label in enumerate(r["cases"], 1):
+        cmd = (f"python3 {me} --repo {r['repo_path']} --unit '{label}'" + (f" --path {a.path}" if a.path else "")
+               + " --dossier")
+        where = f"`{cmd}`"
+        if case_dir:
             fp = os.path.join(case_dir, "cases", f"{i:02d}-{label.lstrip('#')}.md")
             try:
-                write(fp, dossier(r["repo_path"], by[label], owner_sha, path=r.get("path")))
-                case_files.append((label, fp))
-            except RuntimeError:
-                pass
+                write(fp, dossier(r["repo_path"], by[label], owner_sha, path=a.path))
+                where = f"`{fp}` (or `{cmd}`)"
+            except (OSError, RuntimeError):
+                case_dir = None
+        lines.append(f"{i}. {label}: {where}")
     md = markdown(r)
-    if case_files:
+    if lines:
         # First thing after the header and warnings: what to read next.
         head, sep, rest = md.partition("\n- Units in the work window")
-        md = head + "\n## Cases to work, in order: read these dossiers first\n\n" + "\n".join(
-            f"{i}. {label}: `{fp}`" for i, (label, fp) in enumerate(case_files, 1)) + "\n" + sep + rest
-    if jpath:
-        write(jpath, json.dumps(r, ensure_ascii=False))
-    if mpath and mpath != "/dev/stdout":
-        write(mpath, md)
+        md = (head + "\n## Cases to work, in order: read each one's dossier first\n\n" + "\n".join(lines) + "\n"
+              + sep + rest)
+    for path_, text in ((jpath, json.dumps(r, ensure_ascii=False)), (mpath, md)):
+        if path_ and path_ != "/dev/stdout":
+            try:
+                write(path_, text)
+            except OSError:
+                saved_note = saved_note or f"nothing saved: {path_} could not be written"
+                jpath = None
     sys.stdout.write(md)
     if jpath:
-        sys.stdout.write(f"\nSaved: {jpath}. One unit as a case dossier: --show '#N' --json {jpath}\n")
+        sys.stdout.write(f"\nSaved: {jpath}\n")
+    elif saved_note:
+        sys.stdout.write(f"\n{saved_note}\n")
     return 0
 
 

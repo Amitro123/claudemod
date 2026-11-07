@@ -56,3 +56,20 @@ def test_cli_reads_cards_and_reports_bad_ones(tmp_path: Path, capsys) -> None:
     assert crosscheck.main(["--evidence", str(tmp_path / "ev.json"), "--cards", str(cards), "--json", str(tmp_path / "x.json")]) == 0
     out = capsys.readouterr().out
     assert "culprit agrees with blame: 1" in out and "02.json" in out
+
+
+def test_cards_on_stdin_and_evidence_collected_again(tmp_path: Path, capsys, monkeypatch) -> None:
+    import io
+    import subprocess
+    r = tmp_path / "r"
+    r.mkdir()
+    g = lambda *a: subprocess.run(["git", "-C", str(r), *a], check=True, capture_output=True)
+    g("init", "-q", "-b", "main"); g("config", "user.email", "t@e"); g("config", "user.name", "t")
+    (r / "a.py").write_text("x = 1\ny = 2\nz = 3\n"); g("add", "-A"); g("commit", "-qm", "Add a")
+    (r / "a.py").write_text("x = 1\ny = 20\nz = 3\n"); g("commit", "-qam", "fix: y was wrong")
+    head = subprocess.run(["git", "-C", str(r), "rev-parse", "--short=7", "HEAD"], capture_output=True, text=True).stdout.strip()
+    first = subprocess.run(["git", "-C", str(r), "rev-parse", "--short=8", "HEAD~1"], capture_output=True, text=True).stdout.strip()
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(card(head, head, first)) + "\n" + json.dumps([card(head, head, "unknown")])))
+    assert crosscheck.main(["--repo", str(r), "--cards", "-"]) == 0
+    out = capsys.readouterr().out
+    assert "Cards: 2; culprit agrees with blame: 1" in out

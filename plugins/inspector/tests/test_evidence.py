@@ -258,3 +258,18 @@ def test_triage_writes_dossiers_in_order(repo: Path, tmp_path: Path, capsys) -> 
     files = sorted(p.name for p in (out / "cases").iterdir())
     assert files[0] == "01-3.md", "the fix-of-fix comes first"
     assert len(files) == 2
+
+
+def test_dossier_needs_no_saved_run(repo: Path, capsys) -> None:
+    assert evidence.main(["--repo", str(repo), "--unit", "#3", "--dossier", "--min-lines", "1"]) == 0
+    text = capsys.readouterr().out
+    assert text.startswith("# #3 ") and "culprit: #2" in text and "Culprit #2, on the same files" in text
+
+
+def test_read_only_repository_still_reports(repo: Path, capsys, monkeypatch) -> None:
+    def no_write(*a, **k):
+        raise OSError("Read-only file system")
+    monkeypatch.setattr(evidence, "default_out", no_write)
+    assert evidence.main(["--repo", str(repo), "--min-lines", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "Cases to work, in order" in out and "--dossier" in out and "nothing saved" in out

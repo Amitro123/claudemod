@@ -12,6 +12,9 @@ cards (`cards/*.json`: a model read the diff and today's code). For each card:
 Agreement raises confidence, disagreement is something to look at. Stdlib only.
 
     python crosscheck.py --evidence <out>/evidence.json --cards <out>/cards [--json out.json]
+    python crosscheck.py --repo . [--path P | --since R] --cards - <<'EOF'   # no files: cards on stdin
+    [ {card}, {card} ]
+    EOF
 """
 from __future__ import annotations
 
@@ -103,30 +106,62 @@ def markdown(r: dict) -> str:
     return "\n".join(L) + "\n"
 
 
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--evidence", required=True, help="the collector's evidence.json")
-    ap.add_argument("--cards", required=True, help="the folder of case cards (*.json)")
-    ap.add_argument("--json", help="write the result here too")
-    a = ap.parse_args(argv)
-    try:
-        with open(a.evidence, encoding="utf-8") as f:
-            ev = json.load(f)
-    except (OSError, ValueError) as e:
-        print(f"crosscheck.py: {e}", file=sys.stderr)
-        return 1
+def read_cards(src: str) -> tuple[list[dict], list[str]]:
+    """Cards from a folder of *.json, or from stdin ('-'): a JSON array, or objects one after another."""
     cards, bad = [], []
-    for p in sorted(glob.glob(os.path.join(a.cards, "*.json"))):
+    if src == "-":
+        text = sys.stdin.read().strip()
+        dec, i = json.JSONDecoder(), 0
+        while i < len(text):
+            while i < len(text) and text[i] in " \t\r\n,":
+                i += 1
+            if i >= len(text):
+                break
+            try:
+                obj, i = dec.raw_decode(text, i)
+            except ValueError:
+                bad.append(f"stdin at character {i}")
+                break
+            cards += obj if isinstance(obj, list) else [obj]
+        return [c for c in cards if isinstance(c, dict)], bad
+    for p in sorted(glob.glob(os.path.join(src, "*.json"))):
         try:
             with open(p, encoding="utf-8") as f:
                 cards.append(json.load(f))
         except (OSError, ValueError):
             bad.append(os.path.basename(p))
+    return cards, bad
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--evidence", help="the collector's evidence.json; without it, the evidence is collected again")
+    ap.add_argument("--repo", default=".", help="with no --evidence: the repository")
+    ap.add_argument("--path", help="with no --evidence: the same --path the collector ran with")
+    ap.add_argument("--since", help="with no --evidence: the same --since the collector ran with")
+    ap.add_argument("--cards", required=True, help="a folder of case cards (*.json), or - for stdin")
+    ap.add_argument("--json", help="write the result here too")
+    a = ap.parse_args(argv)
+    cards, bad = read_cards(a.cards)
+    try:
+        if a.evidence:
+            with open(a.evidence, encoding="utf-8") as f:
+                ev = json.load(f)
+        else:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import evidence
+            ev = evidence.investigate(a.repo, since=a.since, path=a.path)
+    except (OSError, ValueError, RuntimeError) as e:
+        print(f"crosscheck.py: {e}", file=sys.stderr)
+        return 1
     r = crosscheck(ev, cards)
     r["unreadable_cards"] = bad
     if a.json:
-        with open(a.json, "w", encoding="utf-8") as f:
-            json.dump(r, f, ensure_ascii=False, indent=1)
+        try:
+            with open(a.json, "w", encoding="utf-8") as f:
+                json.dump(r, f, ensure_ascii=False, indent=1)
+        except OSError as e:
+            print(f"crosscheck.py: not saved ({e})", file=sys.stderr)
     sys.stdout.write(markdown(r) + (f"\nUnreadable cards (not JSON): {', '.join(bad)}\n" if bad else ""))
     return 0
 
