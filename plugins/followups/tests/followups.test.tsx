@@ -316,6 +316,19 @@ describe('flag → ask → to-do → export', () => {
     expect(opened).toEqual(['followups'])
   })
 
+  test('#13: a store that fails at session start still opens the pane with the open items, and the start goes on', async ($, on) => {
+    const opened: string[] = []
+    let failing = false
+    const store = saved('open') as Record<string, unknown>
+    engine(on, {}, new Proxy(store, { get: (t, k) => { if (failing) throw new Error('store unavailable'); return Reflect.get(t, k) } }), opened)
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    // A reload: the items are in $.state, the store fails.
+    failing = true
+    const r = await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    expect(opened).toEqual(['followups', 'followups'])
+    expect(r).toMatchObject({ cwd: '/repo' })
+  })
+
   test('items in progress count as open too', async ($, on) => {
     const opened: string[] = []
     engine(on, {}, saved('in_progress'), opened)

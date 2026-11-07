@@ -70,6 +70,17 @@ export const GOAL_REACHED = 'The goal is reached.'
 // goal-run: the note it adds to followups' done result when that to-do item closed the goal's last task.
 export const goalClosedNote = (text: string) => `That closed the last task of the session goal "${text}". ${GOAL_REACHED}`
 export const parseGoalClosedNote = (text: string) => /^That closed the last task of the session goal "(.+)"\. /.exec(text)?.[1] ?? null
+// goal-run → brain-hud: the same news, sent as /brain's arguments. brain-hud reads the note above only
+// from a hook that runs above goal-run's, which Claude Code doesn't promise; the command reaches it
+// whatever the order. Twice is harmless: brain-hud makes one reached-goal offer at a time.
+export const BRAIN_GOAL_REACHED_ARG = 'goal-reached'
+export const brainGoalReachedArgs = (text: string) => `${BRAIN_GOAL_REACHED_ARG} ${oneLine(text)}`
+// The goal's text /brain's arguments carry, '' when they name none; null for other arguments.
+export function parseBrainGoalReachedArgs(args: string): string | null {
+  const t = args.trim()
+  if (t !== BRAIN_GOAL_REACHED_ARG && !t.startsWith(`${BRAIN_GOAL_REACHED_ARG} `)) return null
+  return t.slice(BRAIN_GOAL_REACHED_ARG.length).trim()
+}
 
 // goal-run ↔ factory: a plan the factory's spec-writer wrote is submitted with source "factory".
 // goal-run then lets the factory's builder do the work, and answers the plan tool in these words;

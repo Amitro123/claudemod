@@ -508,14 +508,16 @@ export const register: Register = (on, options) => {
     // $.state outlives a reload, so a list an older version held is migrated in place too.
     const held = await read($, items)
     if (held.some(i => !isStatus((i as { status?: unknown }).status))) await update($, items, l => migrate(l))
-    await migrateKey($, 'items')
-    await migrateKey($, 'skipped')
+    // A store that fails costs only what it holds: the list in $.state still opens the pane, and the
+    // rest of the session's start goes on (as turn.start's sync does).
+    await migrateKey($, 'items').catch(() => {})
+    await migrateKey($, 'skipped').catch(() => {})
     await update($, hasFactory, () => false)
     await checkFactory($)
     // Items kept in this project carry over to a new session; a resumed one, which comes back with
     // the list it had, takes in what other sessions changed meanwhile.
-    await sync($)
-    const turnedDown = await $.store.get(await skippedKey($))
+    await sync($).catch(() => {})
+    const turnedDown = await skippedKey($).then(k => $.store.get(k)).catch(() => undefined)
     if (Array.isArray(turnedDown)) {
       const fromStore = turnedDown.filter((t): t is string => typeof t === 'string')
       await update($, skipped, l => [...new Set([...fromStore, ...l])])

@@ -10,7 +10,7 @@ import { parseMemory as memoryOf } from '../hooks/brain'
 import type { JournalEntry } from '../hooks/journal'
 import type { Brain } from '../types'
 // The wording followups and goal-run write, from the copy of shared/texts.ts they use too.
-import { doneResult, GOAL_REACHED, goalClosedNote, goalPrompt, parseStartPrompt, startLine } from '../hooks/texts'
+import { brainGoalReachedArgs, doneResult, GOAL_REACHED, goalClosedNote, goalPrompt, parseStartPrompt, startLine } from '../hooks/texts'
 
 // Shaped like a real project's files.
 const entry = (at: string, title: string, type: string | null, status = 'unrouted') =>
@@ -266,7 +266,7 @@ const buttons = async (ui: { findAll: (q: never) => Promise<unknown[]> }) =>
 
 // The engine beneath: a project in memory (files by path under /repo, each write bumps its time),
 // a clock, and the side calls the mod makes.
-function engine(on: On, files: Record<string, string>, { commands = ['followup'] as string[], failSubmit = false, closesGoal = '', gitFails = 0, excludeFails = 0 } = {}) {
+function engine(on: On, files: Record<string, string>, { commands = ['followup'] as string[], failSubmit = false, closesGoal = '', gitFails = 0, excludeFails = 0, gitPrefix = '' } = {}) {
   const w = { sent: [] as string[], contexts: [] as string[][], ran: [] as string[], opened: [] as string[], times: {} as Record<string, number>, pulses: 0, offers: 0, git: [] as string[], stats: 0 }
   on('state.set', (_, e, next) => {
     const { key, value } = e as { key?: string; value?: unknown }
@@ -324,7 +324,9 @@ function engine(on: On, files: Record<string, string>, { commands = ['followup']
   on('process.run', (_, e) => {
     w.git.push(e.argv.join(' '))
     if (failing-- > 0) throw new Error('git did not run')
-    return { value: { exitCode: 0, stdout: '.git/info/exclude\n', stderr: '' } } as never
+    // As git answers: the prefix line (empty at the repository top) before the path, when asked.
+    const head = e.argv.includes('--show-prefix') ? `${gitPrefix}\n` : ''
+    return { value: { exitCode: 0, stdout: `${head}.git/info/exclude\n`, stderr: '' } } as never
   })
   on('tool.register', (_, e) => ({ value: { tool: `mcp__brain-hud__${e.name}` } }) as never)
   const spawned: { id: string; description: string; type: string }[] = []
@@ -539,6 +541,23 @@ describe('in a session', () => {
     await $.tool.call({ tool: 'mcp__goal-run__update', id: 't2', status: 'done' } as never)
     const band = await $.ui.mount({ ...BAND, surface: 'terminal' } as never)
     // The follow-up's own offer shows first; the goal's waits behind it, and only once.
+    expect(await texts(band)).toMatch(/Worth remembering\? Fix the upload/)
+    await band.press({ key: 'log-skip' })
+    expect(await texts(band)).toMatch(/Worth remembering\? Reached the goal: Rotate the keys/)
+    await band.press({ key: 'log-skip' })
+    expect(await texts(band)).toBe('')
+    await band.unmount()
+  })
+
+  test("a goal a to-do item closed is offered from goal-run's command when only PostToolUse saw the done", async ($, on) => {
+    engine(on, project())
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    await $.classic.PostToolUse({ tool_name: 'mcp__followups__done', tool_input: { id: 'k1-a' }, tool_response: doneResult('Fix the upload', ''), tool_use_id: 'u' } as never)
+    const r = await $.command.run({ command: 'brain', args: brainGoalReachedArgs('Rotate  the\nkeys') } as never)
+    expect(r).toMatchObject({ text: 'brain-hud has the reached goal.' })
+    // The same news again (goal-run's note, or a second command) makes no second offer.
+    await $.command.run({ command: 'brain', args: brainGoalReachedArgs('Rotate the keys') } as never)
+    const band = await $.ui.mount({ ...BAND, surface: 'terminal' } as never)
     expect(await texts(band)).toMatch(/Worth remembering\? Fix the upload/)
     await band.press({ key: 'log-skip' })
     expect(await texts(band)).toMatch(/Worth remembering\? Reached the goal: Rotate the keys/)
@@ -799,7 +818,7 @@ describe('the session journal: in a session', () => {
     await worker($, 'Check the upload retry', REPORT)
     expect(await journalOf($)).toMatch(/\[worker\] routed-worker: Check the upload retry — The retry wraps only the first request.*\n  - unsure: Should the second request retry too\?/)
     expect(files['.claude/brain/session-s-1.md']).toMatch(/^# Session journal s-1\n[\s\S]*Check the upload retry/)
-    expect(w.git).toEqual(['git rev-parse --git-path info/exclude'])
+    expect(w.git).toEqual(['git rev-parse --show-prefix --git-path info/exclude'])
     expect(files['.git/info/exclude']).toBe('.claude/brain/\n')
   })
 
@@ -961,6 +980,16 @@ describe("the journal's git exclude", () => {
     expect(files['.git/info/exclude']).toBe('.claude/brain/\n')
     await report($, 'three')
     expect(w.git).toHaveLength(2)
+  })
+
+  test('#4: a project in a subfolder of the repository excludes its own .claude/brain/, not the top one', async ($, on) => {
+    const files = { ...project(), '.git/info/exclude': '.claude/brain/\n' }
+    engine(on, files, { gitPrefix: 'apps/web [beta]/' })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    await report($, 'one')
+    await report($, 'two')
+    // Added once, below what was there; git's wildcard in the folder name is escaped.
+    expect(files['.git/info/exclude']).toBe('.claude/brain/\n/apps/web \\[beta]/.claude/brain/\n')
   })
 
   test('no git to run: not tried again at every write', async ($, on) => {
