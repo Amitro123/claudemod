@@ -113,7 +113,8 @@ export function countsText(entries: readonly JournalEntry[]): string {
 // Secrets are redacted on the way: a worker that quotes a token would otherwise write it into
 // MISTAKES.md, a tracked file (the same patterns as the skill's hooks, host_layout.py).
 const SECRETS: [RegExp, string][] = [
-  [/\b(token|password|passwd|secret|api[_-]?key|access[_-]?key)(=|:\s*)\S+/gi, '$1$2[redacted]'],
+  // The keyword alone or at the end of an env-style name (DB_PASSWORD=, GITHUB_TOKEN=).
+  [/\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key))(=|:\s*)\S+/gi, '$1$2[redacted]'],
   [/(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)\S+/gi, '$1$2[redacted]'],
   [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]'],
   [/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, '[redacted]'],
