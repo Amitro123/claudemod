@@ -260,13 +260,20 @@ export function mergeGoal(base: Goal | null, mine: Goal, theirs: Goal): Goal {
   })
   const allDone = tasks.length > 0 && tasks.every(x => x.status === 'done')
   const status = pick(mine.status, b.status, theirs.status)
+  // Two sessions that each started a task before syncing would leave two in progress, with activeId
+  // naming one (inspector open-bugs #5): the merged activeId's stays in progress, the others go back
+  // to pending; with no activeId among them, the first one in progress is kept and named.
+  const merged = pick(mine.activeId, b.activeId, theirs.activeId)
+  const running = tasks.filter(x => x.status === 'in_progress')
+  const activeId = running.some(x => x.id === merged) ? merged : (running[0]?.id ?? merged)
+  const oneRunning = running.length > 1 ? tasks.map(x => (x.status === 'in_progress' && x.id !== activeId ? { ...x, status: 'pending' as const } : x)) : tasks
   return {
     ...theirs,
     text: pick(mine.text, b.text, theirs.text),
     source: pick(mine.source, b.source, theirs.source),
     pace: pick(mine.pace, b.pace, theirs.pace),
-    activeId: pick(mine.activeId, b.activeId, theirs.activeId),
-    tasks,
+    activeId,
+    tasks: oneRunning,
     status: status === 'active' && allDone ? 'done' : status,
     other: sum(mine.other, b.other, theirs.other),
     outside: sum(mine.outside, b.outside, theirs.outside) || undefined,
@@ -308,6 +315,16 @@ async function save($: EngineInterface) {
   let out = g
   if (g && sameGoal && (saved.planAt ?? 0) === (g.planAt ?? 0) && JSON.stringify(saved) !== (await read($, seen))) {
     out = mergeGoal(parsed(await read($, seen)), g, saved)
+    await update($, goal, () => out)
+  }
+  // The store has no lock: another session's save between the read above and this write would be lost
+  // (inspector open-bugs #9). It is read once more just before the write and, when it moved on the same
+  // goal and plan, merged again (as followups' save does); a newer goal or plan there is left for the
+  // next save to see.
+  const again = (await $.store.get(key)) as Goal | null | undefined
+  if (out && again && typeof again === 'object' && JSON.stringify(again) !== JSON.stringify(saved)) {
+    if ((again.setAt ?? 0) !== (out.setAt ?? 0) || (again.planAt ?? 0) !== (out.planAt ?? 0)) return
+    out = mergeGoal(saved && typeof saved === 'object' ? (saved as Goal) : parsed(await read($, seen)), out, again)
     await update($, goal, () => out)
   }
   await $.store.set(key, out)

@@ -276,6 +276,13 @@ async function migrateKey($: EngineInterface, prefix: string) {
 // What another session saved since this one last loaded or saved comes in: an item it finished or
 // removed is finished or gone here too, and what changed only here is kept (the same merge as a save).
 async function sync($: EngineInterface) {
+  // What another session turned down ("Not needed") isn't offered here again either (inspector
+  // open-bugs #12): the list only grows, so the two are joined.
+  const turnedDown = await $.store.get(await skippedKey($))
+  if (Array.isArray(turnedDown)) {
+    const there = turnedDown.filter((t): t is string => typeof t === 'string')
+    await update($, skipped, l => (there.every(t => l.includes(t)) ? l : [...new Set([...l, ...there])]))
+  }
   const saved = await $.store.get(await storeKey($))
   if (!Array.isArray(saved)) return
   const stored = migrate(saved)
