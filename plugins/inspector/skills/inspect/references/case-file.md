@@ -40,8 +40,8 @@ titles only go last, one line each.
 
 ## Open leads
 
-| # | Level | Where | What breaks | Breaks (promise or sibling of) | Class | Seam | The change it needs | Test that proves it |
-|---|---|---|---|---|---|---|---|---|
+| # | Level | Where | What breaks | Impact (its own level) | Breaks (promise or sibling of) | Class | Seam | The change it needs | Test that proves it |
+|---|---|---|---|---|---|---|---|---|---|
 
 Level: reproduced | read | suspect. Ranked as SKILL.md step 5 says: a broken promise a user hits,
 then a seam with a fix-of-fix history, then the rest; reproduced first within each. A row with no

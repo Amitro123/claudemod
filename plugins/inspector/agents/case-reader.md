@@ -27,7 +27,13 @@ Python, if you run it at all, with `PYTHONDONTWRITEBYTECODE=1`.
 4. Complete? Search today's code for the same pattern: the expression the fix replaced, the other
    readers of what it changed, the dossier's copies left behind. Decide each one. Say whether a
    test proves the fix.
-5. Prove what you can cheaply. A probe that runs a copy of a function, or the project's own test
+5. The impact is a claim of its own. "No `.catch` here" is the mechanism; "so the commands
+   don't register" is the impact, and it can be wrong while the mechanism is right. Trace it line
+   by line from the failing point: what runs after it, what it skips, in today's code. When it
+   depends on how the host behaves (what the engine does when a hook throws, a framework's
+   retry), cite where that is written (its types, its docs) or give the impact the level
+   `unverified`. Never state an impact you didn't trace.
+6. Prove what you can cheaply. A probe that runs a copy of a function, or the project's own test
    for one file, counts as `reproduced` when you saw it fail. At most 3 probes. No installs.
 
 Levels: `reproduced` (you ran it and saw it fail), `read` (you traced it in the code), `blame`
@@ -53,7 +59,9 @@ Reply with this JSON, nothing else:
   "complete": {
     "verdict": "yes | no | unknown",
     "siblings": [
-      {"where": "path:line", "what": "the same bug, here", "breaks": "P3 or 'sibling of <case>'", "level": "reproduced | read | suspect", "change": "the fix it needs", "test": "the test that proves it"}
+      {"where": "path:line", "what": "the same bug, here", "breaks": "P3 or 'sibling of <case>'", "level": "reproduced | read | suspect",
+       "impact": {"what": "what a user or the next code sees", "level": "reproduced | read | unverified", "source": "path:line you traced to, or the doc or type that says so"},
+       "change": "the fix it needs", "test": "the test that proves it"}
     ],
     "checked_clear": ["path:line: why it is handled"],
     "test": "does a test fail without the fix? how you know"
