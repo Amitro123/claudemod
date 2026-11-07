@@ -79,8 +79,10 @@ It prints a review dossier:
 - **copies elsewhere** of what the change rewrites;
 - **the diff.**
 
-Every commit that touches code is a case. With more than 6, one `case-reader` per commit, in
-parallel; with 6 or fewer, one `investigator`. Each gets:
+Every commit that touches code is a case. Hand them over; don't read them yourself (on the
+measured review, the main conversation reading alone found 4 of 8, an investigator 7). With more
+than 6, one `case-reader` per commit, in parallel; with 6 or fewer, one `investigator`, given the
+dossier and the commits. Each gets:
 - its commit (`git show <sha> -- <its files>`) and the dossier's history lines for its files;
 - the case reader's method, with "Complete?" turned on the commit itself: does it do what its
   message says for every input form, branch, copy and writer?
@@ -253,7 +255,9 @@ a tenth of the size; the cost and time about doubled.
   brief.
 
 **When the work comes back.**
-From an investigator: read its case file, then cross-check its leads against the collector as
+From an investigator: its case file's Open leads should be `handoff.py`'s output (check the
+"Claimed by" column; if it isn't, rebuild that section with `handoff.py` from its JSON block).
+Read its case file, then cross-check its leads against the collector as
 below (pass its cases as cards if it listed them, or skip the cross-check) and check its reproduced
 and read leads at their places before you report them. From case readers: each replies with its
 card, as JSON. Then cross-check the readers against the collector,
