@@ -84,6 +84,27 @@ Before the readers could start, two sandbox findings had to be fixed:
 - so nothing in the skill may need a writable folder: dossiers come from a command, cards come
   back in the readers' replies, and the cross-check reads them on stdin.
 
+### Who reads the diffs: measured on one ruler (2026-11-07)
+
+`backtest-01` now scores by regex, one grader per key bug, anchored to the case file's Open leads
+section (`key-K1` ... `key-K17`). It is deterministic and free, and it can't fail on a quota, as
+the LLM judges did when the account hit its 5-hour limit mid-run. Only precision is still judged.
+Every earlier run's case file was scored again with the same patterns:
+
+| Who did the reading | Runs | Key bugs per run (avg) | Cost per run |
+|---|---|---|---|
+| the main conversation, by itself (4 versions) | 12 | 1.0-1.7, one 3.7 | $0.28-0.37 |
+| Sonnet in a clean context: 4 case readers | 3 | 4.0 | $0.54 |
+| Sonnet in a clean context: model-router's routed-worker | 3 | 4.3 | $0.60 |
+| Sonnet in a clean context: the investigator, with model-router | 3 | 4.0 | $0.67 |
+| Sonnet in a clean context: the investigator, alone | 3 | 3.0 | $0.43 |
+
+Handing the reading to Sonnet in a clean context finds about 2.5 times as many of the bugs that
+were fixed later, at 50-100% more cost. The skill does that natively now (the investigator, or
+case readers past 6 cases). Beside model-router there is no conflict: the skill hands off within
+the router's 2 main-conversation calls, so the router denied nothing, and it never rewrites the
+inspector's own agents. `evals/run-with-router.sh <model-router folder>` runs the comparison.
+
 - The skill triggered by itself in every run.
 - On this narrow question a direct read of the code finds about as many key bugs as the skill.
   What the skill adds is consistency (K1, reproduced, in every run) and precision (no lead
