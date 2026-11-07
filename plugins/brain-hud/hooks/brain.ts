@@ -60,8 +60,11 @@ export function parseMemory(text: string): Omit<Brain, 'entries'> {
     const count = /^Archives:\s*(\d+)\s+files?/i.exec(line)
     if (count) archives = Number(count[1])
     if (FOLDERS.includes(section as Folder)) {
-      const m = /^- \[[^\]]+\]\s+(\S+)\s+[—–-]\s+(.*)$/.exec(line)
+      // The same grammar as rebuild_index.py's _LINE (inspector open-bugs #6): a link (spaces allowed),
+      // a backticked path or a word; any dash; the summary optional.
+      const m = /^- \[[^\]]+\]\s+(\[[^\]]*\]\([^)]*\)|`[^`]+`|\S+)(?:\s+[—–-]+\s+(.*))?$/.exec(line)
       if (!m) continue
+      m[2] = m[2] ?? ''
       const tail = /\s*\((\d+) lessons?(?:,\s*last updated (\d{4}-\d{2}-\d{2}))?\)\s*$/.exec(m[2]!)
       folders[section as Folder].push({
         file: fileOf(m[1]!),

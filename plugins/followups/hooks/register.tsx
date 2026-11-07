@@ -411,7 +411,9 @@ async function toFactory($: EngineInterface, i: Item) {
 // The markdown an export writes: the items as a checklist between two markers.
 // In CLAUDE.md, which Claude reads as its instructions, an item's words (often from a model's sweep
 // or a sub-agent's report, so possibly from a web page) are quoted as code, never prose to follow.
-const quoted = (s: string) => `\`${s.replace(/\s+/g, ' ').replace(/`/g, "'").trim()}\``
+// An HTML comment opener is broken up too: an item holding the export's own end marker ended the block
+// early, and the next export left a stray copy behind (inspector open-bugs #11).
+const quoted = (s: string) => `\`${s.replace(/\s+/g, ' ').replace(/`/g, "'").replace(/<!--/g, '<!- -').trim()}\``
 
 export function section(target: Target, list: Item[]): string {
   const t = TARGETS[target]

@@ -24,18 +24,33 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 // "Findings: …", "- **Unsure-about**". A plain word starts one only with its colon, so a finding that
 // opens with "Changes to …" stays a finding. "Open questions" is filed under Unsure-about, as the
 // worker is told to.
-const WORD = '(findings|files|changes|unsure[- ]about|open questions)'
+const WORD = '(findings|files|changes|unsure[- ]about|open questions|open items)'
 const HEADINGS = [
   new RegExp(`^\\s*#{1,6}\\s*${WORD}\\s*:?\\s*$`, 'i'),
   new RegExp(`^\\s*(?:[-*]\\s+)?\\*\\*${WORD}\\s*:?\\s*\\*\\*\\s*:?\\s*(.*)$`, 'i'),
   new RegExp(`^\\s*(?:[-*]\\s+)?${WORD}\\s*:\\s*(.*)$`, 'i'),
 ]
 const heading = (line: string) => HEADINGS.map(r => r.exec(line)).find(Boolean) ?? null
+// Anything else that starts a new part of the report ends the section before it: a "## heading" of any
+// name, or a label such as "Next steps:" or "**Summary:**" (inspector open-bugs #3: an open question
+// ran on past "## Next steps" and filed the steps as questions).
+const OTHER_PART = /^\s*(?:#{1,6}\s+\S|(?:[-*]\s+)?\*\*[^*]{1,40}\*\*\s*:?\s*$|(?:[-*]\s+)?\*\*[^*]{1,40}:\*\*|(?:[-*]\s+)?(?:summary|notes?|next steps?|deliverables?|verdict|status|result|tests?)\s*:)/i
 
 export function reportSections(answer: string): Partial<Record<Section, string[]>> {
   const out: Partial<Record<Section, string[]>> = {}
   let at: Section | null = null
+  let fence = ''
   for (const line of answer.split('\n')) {
+    // Fenced text (a quoted log, code) is never a section's item.
+    const f = /^\s*(`{3,}|~{3,})/.exec(line)
+    if (fence) {
+      if (f && f[1]!.startsWith(fence[0]!) && f[1]!.length >= fence.length) fence = ''
+      continue
+    }
+    if (f) {
+      fence = f[1]!
+      continue
+    }
     const m = heading(line)
     if (m) {
       const word = m[1]!.toLowerCase()
@@ -43,6 +58,10 @@ export function reportSections(answer: string): Partial<Record<Section, string[]
       if (at) out[at] ??= []
       const rest = one(m[2] ?? '')
       if (at && rest) out[at]!.push(rest)
+      continue
+    }
+    if (OTHER_PART.test(line)) {
+      at = null
       continue
     }
     const item = one(line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, ''))

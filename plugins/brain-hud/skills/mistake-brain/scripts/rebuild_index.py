@@ -49,7 +49,7 @@ _ADDED = re.compile(r"^- Added:\s*(\d{4}-\d{2}-\d{2})", re.MULTILINE)
 # <file> may be a bare path, a backticked one, or a markdown link.
 _LINE = re.compile(
     r"^- \[(Project|Area|Resource)\]\s+(?P<file>\[[^\]]*\]\([^)]*\)|`[^`]+`|\S+)"
-    r"(?:\s+[—-]+\s+(?P<summary>.*?))?"
+    r"(?:\s+[—–-]+\s+(?P<summary>.*?))?"  # any dash, the en dash too (as brain.ts reads it)
     r"(?:\s+\(\d+ lessons?(?:, last updated [\d-]+)?\))?\s*$"
 )
 

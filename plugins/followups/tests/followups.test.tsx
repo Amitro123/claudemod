@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { leftOpen, mergeLists, migrate, openItems, parseFindings, prose, section, startPrompt, STOP_MESSAGE, STOP_PHRASES, SWEEP_RULES, sweepPrompt, upsert } from '../hooks/register'
-import { factoryArgs, parseStartPrompt, startLine } from '../hooks/texts'
+import { doneResult, factoryArgs, parseDoneResult, parseStartPrompt, startLine } from '../hooks/texts'
 
 const TOOL = 'mcp__followups__flag'
 const DONE = 'mcp__followups__done'
@@ -1156,5 +1156,20 @@ describe('what the whole-mod review found', () => {
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' } as never)
     expect(await texts(ui)).toMatch(/Check the retry budget/)
     await ui.unmount()
+  })
+})
+
+describe('inspector open-bugs: followups (#1, #11)', () => {
+  test('#1: a done note with a line break gives a result goal-run can read', () => {
+    expect(parseDoneResult(doneResult('Fix the\nupload', 'line one\nline two'))).toEqual({ title: 'Fix the upload', note: 'line one line two' })
+    expect(parseDoneResult('Marked "T" done (a\nb).')).toEqual({ title: 'T', note: 'a\nb' })
+  })
+
+  test("#11: an item holding the export's end marker doesn't break the next export", () => {
+    const item = { id: 'k1', title: 'Note <!-- followups:end --> inside', status: 'open', at: 0 } as never
+    const once = upsert('# Doc\n', section('docs' as never, [item]))
+    const twice = upsert(once, section('docs' as never, [item]))
+    expect(twice).toBe(once)
+    expect((twice.match(/<!-- followups:end -->/g) ?? []).length).toBe(1)
   })
 })

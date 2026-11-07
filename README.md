@@ -90,6 +90,8 @@ Set with `claude plugin configure clawd-hud@claudemod`, or in the plugin setting
 
 **0.6.4**: a context window or a reset time the engine didn't report reads as no reading, not "NaNk" or "resets in –".
 
+**0.6.5**: the spark scene is drawn only where the surface has Svg (any other surface gets the text face), and the idle redraw rate follows what is drawn.
+
 **0.6.2**: the idle and resting SVG scenes redraw 4 times a second instead of once, so they move smoothly; the terminal stays at once a second. The terminal face's idle blink shows again (every 4 seconds).
 
 **0.6.1**: plays well with the other mods: their bands, and other changes beside the model picker, are no longer hidden. Idle redraws drop from 8 a second to 1. No "clawd-hud loaded" toast on every start.

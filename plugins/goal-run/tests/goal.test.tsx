@@ -659,6 +659,13 @@ describe('adding a task mid-goal', () => {
     expect(await titles($)).toMatch(/A .*B .*Rotate the key .*C .*D/)
   })
 
+  test("a title with a line break is stored on one line (inspector open-bugs #14)", async ($, on) => {
+    await underway($, on, ['Add it'])
+    const r = await $.tool.call({ tool: ADD, title: 'Rotate\nthe key', priority: 'low' } as never)
+    expect(String(r.result)).toMatch(/^Added /)
+    expect(await titles($)).toMatch(/Rotate the key/)
+  })
+
   test('a task that needs a later one goes after it', async ($, on) => {
     await underway($, on, ['Add it'])
     await $.tool.call({ tool: ADD, title: 'Ship the docs', priority: 'high', needs: ['t3'] } as never)
