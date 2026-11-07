@@ -978,6 +978,8 @@ describe('worker text quoted into MISTAKES.md or context has its secrets redacte
   test('a token, a key or a password in what a worker said is never written', () => {
     const q = quoted('found it: export GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 and sk-ant-abcdefghijklmnopqrst, --password hunter2, https://u:pw@x.com')
     for (const s of ['ghp_abcdef', 'sk-ant-', 'hunter2', 'u:pw@']) expect(q).not.toContain(s)
+    const env = quoted('ran DB_PASSWORD=hunter3 then export GITHUB_TOKEN=abc999')
+    for (const s of ['hunter3', 'abc999']) expect(env).not.toContain(s)
     expect(q).toMatch(/^`found it: export GH_TOKEN=\[redacted\]/)
   })
 })

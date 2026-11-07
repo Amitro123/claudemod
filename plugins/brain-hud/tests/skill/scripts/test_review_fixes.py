@@ -89,3 +89,17 @@ def test_the_skill_says_there_is_one_index():
     assert "each keep their own index" not in skill
     assert "Both harness indexes" not in (ROOT / "hooks" / "brief_on_session_start.py").read_text(encoding="utf-8")
     assert ".agent-brain/Areas/" not in (ROOT / "promote.md").read_text(encoding="utf-8")
+
+
+def test_a_secret_in_an_env_style_name_is_redacted():
+    """The open-bugs list, #2: \\b can't match after _, so DB_PASSWORD= and GITHUB_TOKEN= went through."""
+    for cmd, secret in [
+        ("DB_PASSWORD=hunter2 git checkout -- .", "hunter2"),
+        ("export GITHUB_TOKEN=abc123; git restore .", "abc123"),
+        ("API_TOKEN=xyz9 git clean -f", "xyz9"),
+        ("MY_API_KEY: k-777 git checkout .", "k-777"),
+    ]:
+        out = host_layout.safe_for_markdown(cmd)
+        assert secret not in out, (cmd, out)
+        assert "[redacted]" in out
+    assert host_layout.safe_for_markdown("git checkout -- tokens.py") == "git checkout -- tokens.py"

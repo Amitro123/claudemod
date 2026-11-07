@@ -226,6 +226,18 @@ async function spawnRole($: EngineInterface, role: Role, prompt: string, { onSes
   return true
 }
 
+// What a run agent's tool call would do that is never its job (push, publish, deploy, delete outside
+// the worktree), or ''. A command that can't be checked counts as one: the guard fails closed.
+function forbiddenOf(e: { tool: string }): string {
+  try {
+    return forbiddenTool(e.tool) || (e.tool === 'Bash' || e.tool === 'PowerShell' ? forbiddenCommand(String((e as unknown as { command?: unknown }).command ?? '')) : '')
+  } catch (err) {
+    return `a command the factory couldn't check (${String(err).slice(0, 80)})`
+  }
+}
+const forbiddenDeny = (what: string) =>
+  `The factory's agents don't do this (${what}): the work stays on the run's branch in its worktree, and the person opens the PR once it is approved. Leave it out and go on.`
+
 // Why an agent's turn ended without its answer: what the step's note says, '' when it answered.
 export function whyEnded(e: { reason: string; answer: string; refusal?: { explanation: string | null } }): string {
   if (e.reason === 'answer') return ''
@@ -1391,24 +1403,28 @@ export const register: Register = (on, options) => {
   // and spending. Only the run's own agents; the main loop and other agents go on.
   on('tool.call', async ($, e, next) => {
     if (e.agentId !== undefined) {
-      const r = await read($, run)
+      // A state read that fails can't let a run agent's push through: the agents this module started
+      // are known without it (spawns), and the guard below still applies to them.
+      const r = await read($, run).catch(() => null)
+      if (!r && spawns.has(e.agentId)) {
+        const what = forbiddenOf(e)
+        if (what) return { deny: forbiddenDeny(what) }
+      }
       if ((r?.agents[e.agentId] && !isLive(r.phase)) || (await read($, stoppedAgents)).includes(e.agentId)) return { deny: STOPPED_DENY }
       // A review's agents look at the person's own checkout: they never change a file in it.
       if (r?.agents[e.agentId] && r.kind === 'review' && ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(e.tool)) {
-        await patch($, cur => bump(cur, s => ({ ...s, guardRefused: s.guardRefused + 1 })))
+        // The count is the stats' only: a write that fails never turns the refusal into a pass.
+        await patch($, cur => bump(cur, s => ({ ...s, guardRefused: s.guardRefused + 1 }))).catch(() => null)
         return { deny: "A factory review changes no file: report what you found, and Claude fixes it." }
       }
       // Pushing, publishing, deploying or deleting outside the worktree is never a run agent's job.
       // A guard that fails refuses the call, for the run's agents only.
       if (r?.agents[e.agentId]) {
-        let what = ''
-        try {
-          what = forbiddenTool(e.tool) || (e.tool === 'Bash' || e.tool === 'PowerShell' ? forbiddenCommand(String((e as unknown as { command?: unknown }).command ?? '')) : '')
-        } catch (err) {
-          what = `a command the factory couldn't check (${String(err).slice(0, 80)})`
+        const what = forbiddenOf(e)
+        if (what) {
+          await patch($, cur => bump(cur, s => ({ ...s, guardRefused: s.guardRefused + 1 }))).catch(() => null)
+          return { deny: forbiddenDeny(what) }
         }
-        if (what) await patch($, cur => bump(cur, s => ({ ...s, guardRefused: s.guardRefused + 1 })))
-        if (what) return { deny: `The factory's agents don't do this (${what}): the work stays on the run's branch in its worktree, and the person opens the PR once it is approved. Leave it out and go on.` }
       }
       // What the run's agent does now: the band shows it, so a working step never reads as stuck.
       const role = r?.agents[e.agentId]
@@ -1420,7 +1436,12 @@ export const register: Register = (on, options) => {
       }
     }
     return next(e)
-  }).catch(($, e, next) => next(e))
+    // Whatever failed above, a run agent's forbidden call is still refused: the guard fails closed for
+    // the agents it guards, and open (the call goes on) for everyone else.
+  }).catch(($, e, next) => {
+    const what = e.agentId !== undefined && spawns.has(e.agentId) ? forbiddenOf(e) : ''
+    return what ? { deny: forbiddenDeny(what) } : next(e)
+  })
 
   on('tool.call', { tool: REVIEW_TOOL }, async ($, e) => {
     if ((e as { agentId?: string }).agentId !== undefined) return { deny: 'Only the main conversation starts a factory review.' }

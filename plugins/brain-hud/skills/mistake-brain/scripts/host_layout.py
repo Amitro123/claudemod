@@ -68,7 +68,9 @@ MARKER = "<!-- mistake-brain: new entries are inserted immediately below this li
 # the pending-candidates file: a token in a URL or flag, a bearer header, GitHub, OpenAI/Anthropic-style
 # and AWS keys. One list for every hook that writes a command or a commit subject.
 _SECRETS = [
-    (re.compile(r"(?i)\b(token|password|passwd|secret|api[_-]?key|access[_-]?key)(=|:\s*)\S+"), r"\1\2[redacted]"),
+    # The keyword alone or at the end of an env-style name (DB_PASSWORD=, GITHUB_TOKEN=): \b can't
+    # match after an underscore, so the name's own prefix is part of the match.
+    (re.compile(r"(?i)\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key))(=|:\s*)\S+"), r"\1\2[redacted]"),
     (re.compile(r"(?i)(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)\S+"), r"\1\2[redacted]"),
     (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [redacted]"),
     (re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), "[redacted]"),
