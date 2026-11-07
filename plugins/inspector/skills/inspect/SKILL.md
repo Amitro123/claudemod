@@ -33,10 +33,10 @@ leads**: bugs of a kind this project has already had, still in today's code.
    hand them to.
 
 Paths: `<skill_root>` is this skill's folder (the "Base directory for this skill" shown when it
-loaded). `<scratch>` is the session's scratchpad directory if your instructions name one, else a
-new folder from `mktemp -d`; never a folder inside the repository. If no such folder can be
-written, run the collector with `--md /dev/stdout` and no `--json`, and keep the brief in your
-answer. A **unit** is one step of the
+loaded). `<scratch>` is the session's scratchpad directory if your instructions name one, else
+the folder the collector makes and names on its last line (`Saved: <folder>/evidence.json`);
+never a folder inside the repository. If no folder can be written, keep the brief in your answer.
+A **unit** is one step of the
 branch's first-parent history: a merged PR (its merge commit, or a squash commit) or a direct
 commit.
 
@@ -77,13 +77,21 @@ or store, an event several components hook). Bugs between components live at sea
 ## 2. Collect the evidence
 
 ```bash
-python3 "<skill_root>/scripts/evidence.py" --repo . --json "<scratch>/evidence.json" --md "<scratch>/evidence.md" [scope flags]
+python3 "<skill_root>/scripts/evidence.py" --repo . [--out "<scratch>"] [scope flags]
 ```
 
-On a repository with more than about 1,000 commits, run it in the background with a 10-minute
-timeout. Read `evidence.md` first; it starts with any **Warning** lines. For one unit, run
-`python3 "<skill_root>/scripts/evidence.py" --show '#N' --json "<scratch>/evidence.json"`
-instead of opening the JSON.
+It prints the summary and saves `evidence.json` and `evidence.md` (in `--out`, else a new
+temporary folder it names on its last line). Run it once. On a repository with more than about
+1,000 commits, run it in the background with a 10-minute timeout. The summary starts with any
+**Warning** lines. Never open the JSON: for one unit, the **dossier** is one call,
+
+```bash
+python3 "<skill_root>/scripts/evidence.py" --show '#N' --json <the saved evidence.json>
+```
+
+It prints each fix commit's culprits, its copies left behind, its diff on code files and the top
+culprit's diff on the same files, capped. Read further by range only where it says more lines
+follow.
 
 What it gives, per unit:
 - the unit's commits and files;
@@ -94,7 +102,9 @@ What it gives, per unit:
   words, or it is a patch release and nothing else);
 - tags: `tests-only`, `docs-only`, `instructions-only`, `adds-only`, `multi-component`;
 - for a fix, **introduced_by**, per unit and per commit: the earlier units that last wrote the
-  lines the fix's own commits deleted or changed.
+  lines the fix's own commits deleted or changed;
+- for a fix commit, **copies left behind**: a line it changed (not moved, not a deleted block)
+  that is still, word for word, in at most 3 places of today's code.
 
 The summary lists:
 - fix-of-fix units (`↺`: a fix that changed 3 or more lines an earlier fix wrote);
@@ -120,6 +130,9 @@ It is a lead sheet, not a verdict:
   fooled by a reformat across files, a copy, or a move between files. A fix that only adds lines
   (tag `adds-only`, a missing check) blames nothing: find its culprit by reading where the
   missing case arrived, or mark it unknown.
+- **Copies left behind are hints, not leads.** Most are an idiom that happens to repeat, or code
+  the fix moved. Some are the copy the fix missed: check each one in step 5. A bug the fix left in
+  its own new line (a branch it didn't cover) is never in this list: only reading finds it.
 - **Not blamed:** Markdown that isn't instructions (READMEs, changelogs, docs), lockfiles,
   plugin manifests and images. Their lines name a release, not a bug. Instructions an agent
   reads (`SKILL.md`, `CLAUDE.md`, `AGENTS.md`, `.md` under `skills/`, `agents/`, `commands/`,
@@ -162,11 +175,10 @@ read-only sub-agents (ground rule 4 applies to what you hand them), then re-chec
 cards yourself.
 
 **For each case:**
-- Read the fix's diff: `git show <sha> -- <code paths>` for a commit or squash; for a merge,
-  `git diff <base>..<sha> -- <code paths>` (`base` is in the unit's JSON). Code paths are the
-  unit's files minus the ones not blamed (step 2).
-- Read the culprit's diff around the same lines.
-- Read each changed function whole, not only the hunks.
+- Print its unit's dossier (`--show`, step 2): the fix's diff and the culprit's, in one call.
+- Read each changed function whole in today's code, not only the hunks.
+- Read the fix's added lines as hard as its removed ones: a fix that covers one branch of a
+  condition (`asCode ? quoted(x) : x`) leaves the bug in the others.
 
 Then fill the card:
 
@@ -215,6 +227,7 @@ Each pattern names its cases. A pattern of one case is a case, not a pattern.
 Sweep **today's code** (the ref the collector read) for siblings, for each pattern and each case
 whose "Complete?" found a gap:
 
+- the summary's **copies left behind**: check each one in the worked units and decide it;
 - the expression or call the fix replaced, searched in every file type, generated copies too;
 - the other readers of a format or file that a contract fix changed;
 - the other components on the same seam, lifecycle hook or parser;

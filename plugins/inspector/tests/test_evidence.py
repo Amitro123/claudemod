@@ -216,3 +216,33 @@ def test_markdown_cli_show_and_nested_output(repo: Path, tmp_path: Path) -> None
 def test_bad_ref_fails_cleanly(repo: Path, capsys) -> None:
     assert evidence.main(["--repo", str(repo), "--ref", "nope"]) == 1
     assert "evidence.py" in capsys.readouterr().err
+
+
+def test_left_behind_finds_a_copy_and_skips_a_move(tmp_path: Path) -> None:
+    r = new_repo(tmp_path / "r")
+    line = "out = render(user_text, escape=False)"
+    commit(r, {"a.py": f"def a(user_text):\n    {line}\n    return out\n",
+               "b.py": f"def b(user_text):\n    {line}\n    return out\n",
+               "c.py": "def c():\n    value = compute_the_total(1, 2)\n    return value\n"}, "Add a, b, c")
+    merge_pr(r, 1, "fix", [({"a.py": "def a(user_text):\n    out = render(user_text, escape=True)\n    return out\n"},
+                            "fix: a escapes user text")], "fix: a escapes user text")
+    # a move: the same line deleted from c.py and added to d.py
+    merge_pr(r, 2, "move", [({"c.py": None, "d.py": "def c():\n    value = compute_the_total(1, 2)\n    return value\n"},
+                             "fix: move c to d")], "fix: move c to d")
+    ev = evidence.investigate(str(r))
+    assert [(x["unit"], x["at"]) for x in ev["left_behind"]] == [("#1", ["b.py:2"])]
+
+
+def test_show_prints_a_dossier(repo: Path, tmp_path: Path, capsys) -> None:
+    out = tmp_path / "ev"
+    assert evidence.main(["--repo", str(repo), "--out", str(out), "--min-lines", "1"]) == 0
+    capsys.readouterr()
+    assert evidence.main(["--show", "#3", "--out", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "culprit: #2" in text and "```diff" in text and "Culprit #2, on the same files" in text
+
+
+def test_default_out_is_a_new_folder(repo: Path, capsys) -> None:
+    assert evidence.main(["--repo", str(repo)]) == 0
+    saved = capsys.readouterr().out.strip().splitlines()[-1]
+    assert saved.startswith("Saved: ") and Path(saved.split()[1].rstrip(".")).exists()
