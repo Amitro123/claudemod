@@ -33,6 +33,8 @@ When the case file is written, reply with at most 300 words:
 - **Unsure-about**: what you couldn't confirm, and what you skipped.
 
 Don't paste the case file. After the 300 words, add one fenced `json` block: the open leads as a
-list of objects, each with the keys of a case reader's sibling (`where`, `what`, `breaks`, `level`,
-`impact` {`what`, `level`, `source`}, `change`, `test`). The main conversation turns it into the
-handoff word for word.
+list of objects, each with the keys of a case reader's sibling: `where`, `what`, `breaks`,
+`level`, `impact` {`what`, `level`, `source`}, `changes` (two ways to fix it when there is a
+choice, each with what it `breaks`), and `test` {`kind`: automated, function-level or manual;
+`how`; `why_not_automated`}. Check each test against `references/test-limits.md` in the skill's
+folder. The main conversation turns the block into the handoff word for word.

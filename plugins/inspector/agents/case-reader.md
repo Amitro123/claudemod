@@ -33,7 +33,14 @@ Python, if you run it at all, with `PYTHONDONTWRITEBYTECODE=1`.
    depends on how the host behaves (what the engine does when a hook throws, a framework's
    retry), cite where that is written (its types, its docs) or give the impact the level
    `unverified`. Never state an impact you didn't trace.
-6. Prove what you can cheaply. A probe that runs a copy of a function, or the project's own test
+6. Fixes are directions, not instructions: give two ways to fix each lead when there is a choice,
+   and what each would break (e.g. an unanchored `**/x/` pattern also excludes other projects'
+   `x/`; a prefix keeps it to this one). One way only when there is truly one.
+7. The test: check it against `<skill_root>/references/test-limits.md` (the skill's folder is
+   given in your prompt) and the project's test harness. If the test that would prove the lead
+   can't be written there (a hook that throws is skipped, hooks don't race in a test), say so in
+   `why_not_automated` and give a function-level test or manual steps instead.
+8. Prove what you can cheaply. A probe that runs a copy of a function, or the project's own test
    for one file, counts as `reproduced` when you saw it fail. At most 3 probes. No installs.
 
 Levels: `reproduced` (you ran it and saw it fail), `read` (you traced it in the code), `blame`
@@ -61,7 +68,11 @@ Reply with this JSON, nothing else:
     "siblings": [
       {"where": "path:line", "what": "the same bug, here", "breaks": "P3 or 'sibling of <case>'", "level": "reproduced | read | suspect",
        "impact": {"what": "what a user or the next code sees", "level": "reproduced | read | unverified", "source": "path:line you traced to, or the doc or type that says so"},
-       "change": "the fix it needs", "test": "the test that proves it"}
+       "changes": [
+         {"what": "one way to fix it", "breaks": "what it would break, cost or leave open"},
+         {"what": "another way", "breaks": "what that one would break"}
+       ],
+       "test": {"kind": "automated | function-level | manual", "how": "the test, or the steps and what to see", "why_not_automated": "only when not automated: the harness limit"}}
     ],
     "checked_clear": ["path:line: why it is handled"],
     "test": "does a test fail without the fix? how you know"
@@ -70,6 +81,7 @@ Reply with this JSON, nothing else:
 }
 ```
 
-A sibling must name what it breaks: a promise from the brief, or the fixed bug it copies. A
+A sibling must name what it breaks: a promise from the brief, or the fixed bug it copies. An
+impact with no `source` is reported as having none. A
 finding with neither goes in `checked_clear` with your note, or nowhere. Keep strings short.
 Paths are relative to the repository, with today's line numbers.

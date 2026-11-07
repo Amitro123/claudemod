@@ -1,7 +1,7 @@
 ---
 name: inspect
-description: "Investigates a repository's history of bug fixes: what the project promises, which PRs fixed something, which earlier change each fix undid (git blame on the fix's parent), the kinds of bugs and the seams they cluster at, and which bugs of the same kinds are still in today's code. Writes a case file with evidence for each claim and a ranked list of open leads. /inspector:inspect [#PR | sha | since <ref|date> | <path>]."
-when_to_use: "The user asks why things keep breaking, wants a post-mortem of past fixes or PRs, asks what kinds of bugs a project has had, wants to know which change introduced a bug, or asks what still needs fixing after a run of fixes. Also: 'investigate the history', 'analyze the bug-fix PRs', 'root-cause the regressions', 'בלש', 'תחקור', 'למה זה נשבר'. Not for reviewing a pending diff (use a code review) or fixing one known bug."
+description: "Investigates a repository's history of bug fixes: what the project promises, which PRs fixed something, which earlier change each fix undid (git blame on the fix's parent), the kinds of bugs and the seams they cluster at, and which bugs of the same kinds are still in today's code. Writes a case file with evidence for each claim and a ranked list of open leads. /inspector:inspect [#PR | sha | since <ref|date> | <path> | review <base..head | branch>]."
+when_to_use: "The user asks why things keep breaking, wants a post-mortem of past fixes or PRs, asks what kinds of bugs a project has had, wants to know which change introduced a bug, or asks what still needs fixing after a run of fixes. Also: 'investigate the history', 'analyze the bug-fix PRs', 'root-cause the regressions', 'בלש', 'תחקור', 'למה זה נשבר'. Also before merging a PR or a branch: 'review <branch>' reads the change against the history of the files it touches (a fix it undoes, the kinds of bug those files have had). Not for a plain code review with no history to weigh, or fixing one known bug."
 ---
 
 # The inspector
@@ -51,11 +51,39 @@ commit.
 | `#N` or a sha | that one unit: its culprits, and siblings of its bug in today's code | `--unit '#N'` or `--unit <sha>` |
 | `since <ref or YYYY-MM-DD>` | the units after it | `--since <ref or date>` |
 | a path (`plugins/x`, `src/auth`) | the units that touch it | `--path <path>` |
+| `review <base>..<head>` or `review <branch>` | a pending change, read against the history of the files it touches: see "Reviewing a change" below | `--review <base>..<head>` or `--review <branch>` |
 
 An earlier case file is a `docs/inspector/*-case.md` (the newest) whose last line reads
 `Investigated through <sha>`; also look where the user said the last one went. With no argument
 and an earlier case file, ask once: "since the last case file, or the whole history?" With no
 one to answer, use since the last one.
+
+## Reviewing a change (before it merges)
+
+`review <base>..<head>` (or a branch: measured from its merge base with main) reads a pending
+change against the history of the files it touches. Three of fourteen bugs in this skill's first
+investigation came from recent work, and the reviews that passed them had no history to weigh.
+
+```bash
+python3 "<skill_root>/scripts/evidence.py" --repo . --review <base>..<head>
+```
+
+It prints a review dossier:
+- **the lines the change rewrites, and who wrote them.** A line an earlier fix wrote, changed
+  again, is where regressions come from;
+- **the past fixes in those files:** the kinds of bug they have had;
+- **copies elsewhere** of what the change rewrites;
+- **the diff.**
+
+Hand the dossier to one `investigator` (or read it yourself for a small change), with this brief:
+- for each fix the change rewrites, print it (`--unit '<it>' --dossier`) and check the change
+  keeps what it fixed;
+- for each kind of bug in the past fixes (its class, its seam), check whether the change brings
+  it back;
+- check each copy.
+
+The leads, the changes and the tests follow step 5. The handoff and the case file follow step 6;
+scope the case file's name to the change (`docs/inspector/<YYYY-MM-DD>-review-<branch>.md`).
 
 **Order for you, the main conversation:** run the collector first (step 2), then hand the work
 over as step 3 says. With a budget of up to 6, the investigator does step 1 and the rest; with more,
@@ -324,9 +352,21 @@ Rank reproduced, read and suspect leads:
 2. a seam with a fix-of-fix history;
 3. the rest.
 
-Within each tier, reproduced comes first. Report at most 15. For each reproduced or read lead,
-write the change it needs (the file, the cause, the fix in a sentence or two) and the test that
-would prove it. Don't make the change.
+Within each tier, reproduced comes first. Report at most 15. For each reproduced or read lead:
+
+- **Ways to fix it, as directions, not instructions.** When there is a choice, give two, each
+  with what it would break, cost or leave open (an unanchored `**/x/` pattern also catches other
+  projects' `x/`; a prefix keeps it to this one). One only when there is truly one. Whoever fixes
+  it chooses.
+- **The test that would prove it, and its kind:** automated (in the project's harness, failing
+  without the fix), function-level (the pure function, the hard part given as input), or manual
+  (steps and what to see). Check it against `<skill_root>/references/test-limits.md`: in a mod's
+  test engine a hook that throws is skipped, and hooks don't race. When the test you'd want can't
+  be written there, say why and give one that can.
+- **The impact, with its source:** the `path:line` you traced it to, or where the host's behaviour
+  is written. An impact without one is unverified.
+
+Don't make the change.
 
 ## 6. The case file
 
@@ -337,8 +377,9 @@ code, paths and quotes stay as they are. Its last line is
 `Investigated through <sha>`, the sha the collector read. The units the budget left unworked
 are listed under "Not investigated"; the user can run again with a scope for them.
 
-**The handoff.** When the leads go to someone else (a code agent, an issue, a person), generate
-the list from the readers' cards or the investigator's JSON block, never by retyping it:
+**The handoff, and the case file's Open leads.** Both are generated from the agents' output,
+never retyped: the readers' cards, or the investigator's JSON block. Paste `handoff.py`'s table
+into the case file's Open leads, and give it as the list for whoever fixes them:
 
 ```bash
 python3 "<skill_root>/scripts/handoff.py" --cards - --out docs/inspector/<YYYY-MM-DD>-open-bugs.md <<'LEADS'
@@ -346,7 +387,8 @@ python3 "<skill_root>/scripts/handoff.py" --cards - --out docs/inspector/<YYYY-M
 LEADS
 ```
 
-It copies each lead's words and levels as the reader gave them. You may drop a lead, or lower a
+It copies each lead's words and levels as the agent gave them, says which agent claimed each,
+and marks an impact with no source as unverified. You may drop a lead, or lower a
 level, with `--lower <where>=<level>`. You may not raise one, or add an impact, without doing the
 work. Anything you add yourself goes in with `--note '<where>=<text>'`, which marks it as yours
 and unverified. A paraphrase is where a "suspect" becomes a "read" and a consequence nobody traced
@@ -354,7 +396,8 @@ creeps in.
 
 Before writing, check:
 - every card has its level;
-- every reproduced or read lead has a place, a cause, a change and a test;
+- every reproduced or read lead has a place, a cause, ways to fix it (each with what it
+  breaks) and a test with its kind;
 - every impact has its own level: traced, cited, or `unverified`;
 - the counts in the header match the cards;
 - the Warnings from step 2 are in "Not investigated".
