@@ -287,6 +287,7 @@ def test_review_flags_a_change_that_rewrites_a_fix(repo: Path) -> None:
     assert facts["rewrites_lines_of"][0]["is_fix"], "fixes come first"
     assert {x["unit"] for x in facts["past_fixes"]} >= {"#2", "#3"}
     assert "**(a fix)**" in text and "```diff" in text
+    assert [c["subject"] for c in facts["commits"]] == ["a: simplify the loop"] and "each one is a case" in text
     # a ref alone measures from its merge base with main
     facts2, _ = evidence.review(str(repo), "risky")
     assert facts2["base"] == facts["base"]

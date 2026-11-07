@@ -69,18 +69,24 @@ python3 "<skill_root>/scripts/evidence.py" --repo . --review <base>..<head>
 ```
 
 It prints a review dossier:
+- **the change's own commits, each one a case.** Most bugs a change brings are in what it claims
+  to do, done in part: one input form of several, one branch of a condition, one copy of two, one
+  writer of a shared value. On a measured review of a 23-commit PR, reading only the history found
+  3 of the 8 bugs the next review found; reading every commit found 5-6;
 - **the lines the change rewrites, and who wrote them.** A line an earlier fix wrote, changed
   again, is where regressions come from;
 - **the past fixes in those files:** the kinds of bug they have had;
 - **copies elsewhere** of what the change rewrites;
 - **the diff.**
 
-Hand the dossier to one `investigator` (or read it yourself for a small change), with this brief:
-- for each fix the change rewrites, print it (`--unit '<it>' --dossier`) and check the change
-  keeps what it fixed;
-- for each kind of bug in the past fixes (its class, its seam), check whether the change brings
-  it back;
-- check each copy.
+Every commit that touches code is a case. With more than 6, one `case-reader` per commit, in
+parallel; with 6 or fewer, one `investigator`. Each gets:
+- its commit (`git show <sha> -- <its files>`) and the dossier's history lines for its files;
+- the case reader's method, with "Complete?" turned on the commit itself: does it do what its
+  message says for every input form, branch, copy and writer?
+- the history checks: for each fix the commit rewrites, print that fix (`--unit '<it>' --dossier`)
+  and check the commit keeps what it fixed; for each kind of bug in the files' past fixes (its
+  class, its seam), check the commit doesn't bring it back.
 
 The leads, the changes and the tests follow step 5. The handoff and the case file follow step 6;
 scope the case file's name to the change (`docs/inspector/<YYYY-MM-DD>-review-<branch>.md`).

@@ -585,7 +585,12 @@ def review(repo: str, rng: str, history: int = 500, max_blame: int = 400, roots:
     rewrites = sorted(({**e, "files": sorted(e["files"])} for e in undone.values()), key=lambda e: (-e["is_fix"], -e["lines"]))
     past = [u for u in units if u.is_fix and any(f["path"] in code for f in u.files)]
     copies = left_behind(repo, head, head, parent=base)
-    facts = {"base": base[:12], "head": head[:12], "files": files, "code_files": code,
+    commits = []
+    for c in inner_commits(repo, base, head):
+        touched = [f for f in git(repo, "show", "--name-only", "--format=", c["sha"]).splitlines() if blamed(f)]
+        if touched and not BUMP.search(c["subject"]):
+            commits.append({"sha": c["sha"][:12], "subject": c["subject"], "files": touched})
+    facts = {"base": base[:12], "head": head[:12], "files": files, "code_files": code, "commits": commits,
              "rewrites_lines_of": rewrites,
              "past_fixes": [{"unit": u.label(), "title": u.title, "date": u.date,
                              "files": [f["path"] for f in u.files if f["path"] in code]} for u in reversed(past)][:30],
@@ -597,6 +602,12 @@ def review(repo: str, rng: str, history: int = 500, max_blame: int = 400, roots:
          "(`--unit '<it>' --dossier`) and check this change keeps what it fixed.", ""]
     L += [f"- {e['unit']}{' **(a fix)**' if e['is_fix'] else ''}: {e['lines']} lines in {', '.join(e['files'][:4])}"
           f"{' · ' + e['title'][:70] if e['title'] else ''}" for e in rewrites[:15]] or ["- none (the change only adds lines)"]
+    L += ["", f"## The change's own commits: each one is a case ({len(commits)} that touch code)", "",
+          "Each says what it does. Check it does that completely: the other input forms, the other branches",
+          "of its condition, the other copies and writers of what it changed (a case reader's \"Complete?\").",
+          "Read one with `git show <sha> -- <its files>`.", ""]
+    L += [f"- `{c['sha'][:8]}` {c['subject'][:90]} · {', '.join(c['files'][:3])}{' ...' if len(c['files']) > 3 else ''}"
+          for c in commits] or ["- none"]
     L += ["", "## Past fixes in these files (newest first): the kinds of bug these files have had", ""]
     L += [f"- {x['unit']} ({x['date']}): {x['title'][:90]} · {', '.join(x['files'][:3])}" for x in facts["past_fixes"]] or ["- none"]
     L += ["", "## Copies elsewhere of what this change rewrites (hints: check each)", ""]
