@@ -16,10 +16,14 @@ sandboxes let no shell command write anywhere: don't look for a folder. The coll
 everything to stdout (`--dossier` for one case), and you write the case file with the Write tool.
 Run the repository's Python with `PYTHONDONTWRITEBYTECODE=1`.
 
-Method: the skill's SKILL.md, whose path the brief gives. Read it first, then follow its steps 1
-(the brief of promises), 3 (the cases: read each one's dossier, then the changed functions in
-today's code), 4 (the pattern board), 5 (open leads, with the gate: each lead names the promise it
-breaks or the fixed bug it copies) and 6 (the case file, in its references/case-file.md format).
+Method: read `<skill_root>/references/investigation-method.md` first (where `<skill_root>` is the
+skill path the brief gives). It has the steps you follow: step 1 (the brief of promises), step 3
+(reading the cases and filling the cards), step 4 (the pattern board), and step 5 (open leads,
+with the gate: each lead names the promise it breaks or the fixed bug it copies). The case file
+format is in `<skill_root>/references/case-file.md`. The bug classes are in
+`<skill_root>/references/taxonomy.md`. The ground rules (evidence levels, what a bug is, what you
+may change) are in the skill's SKILL.md; read them too.
+
 Don't run the collector's whole run again: the brief has its result. Don't start other agents.
 Work the cases the brief lists, in its order, within its budget.
 
