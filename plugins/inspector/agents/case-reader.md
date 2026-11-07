@@ -19,6 +19,10 @@ Python, if you run it at all, with `PYTHONDONTWRITEBYTECODE=1`.
 
 ## How to read
 
+The full investigation method is in `references/investigation-method.md` relative to the skill
+root (whose path the brief gives or the dossier command shows). Its step 3 has the reading method,
+step 5 has the sweep and the gate. Read it if the instructions below leave a question open.
+
 1. Run the dossier's command (or read its file). Then read each function the fix changed, whole, in today's code (by range).
 2. Find the cause: why the code did the wrong thing, at `path:line`. Read the fix's added lines as
    hard as its removed ones: a fix that covers one branch of a condition leaves the others.
