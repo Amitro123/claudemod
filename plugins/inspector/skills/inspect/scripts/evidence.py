@@ -572,6 +572,23 @@ def dossier(repo: str, u: dict, owner_sha: dict[str, str], diff_lines: int = 60,
     return text
 
 
+def default_out(repo: str) -> str:
+    """A folder that lasts between commands and stays out of the working tree: .git/inspector/<time>.
+    Some sandboxes give each command its own /tmp, so a temporary folder is gone by the next one."""
+    import time
+    try:
+        base = os.path.join(git(repo, "rev-parse", "--absolute-git-dir").strip(), "inspector")
+    except RuntimeError:
+        return tempfile.mkdtemp(prefix="inspector-")
+    path = os.path.join(base, time.strftime("%Y%m%d-%H%M%S"))
+    n = 1
+    while os.path.exists(path):
+        n += 1
+        path = os.path.join(base, time.strftime("%Y%m%d-%H%M%S") + f"-{n}")
+    os.makedirs(path)
+    return path
+
+
 def write(path: str, text: str) -> None:
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
@@ -593,7 +610,7 @@ def main(argv=None) -> int:
     ap.add_argument("--budget", type=int, default=12, help="cases to triage and write dossiers for (default 12)")
     ap.add_argument("--max-blame-lines", type=int, default=400, help="per fix commit")
     ap.add_argument("--min-lines", type=int, default=3, help="blamed lines from an earlier fix that make a fix-of-fix")
-    ap.add_argument("--out", help="folder for evidence.json and evidence.md (default: a new temporary folder)")
+    ap.add_argument("--out", help="folder for evidence.json, evidence.md and cases/ (default: a new .git/inspector/<time>)")
     ap.add_argument("--json", help="write the full evidence here instead of <out>/evidence.json")
     ap.add_argument("--md", help="write the summary here instead of <out>/evidence.md")
     ap.add_argument("--show", help="print one unit ('#N' or sha) as a case dossier, from a saved run (--out or --json), and exit")
@@ -628,7 +645,7 @@ def main(argv=None) -> int:
         print(f"evidence.py: {e}", file=sys.stderr)
         return 1
     r["repo_path"] = os.path.abspath(a.repo)
-    out = a.out or (None if (a.json or a.md) else tempfile.mkdtemp(prefix="inspector-"))
+    out = a.out or (None if (a.json or a.md) else default_out(a.repo))
     jpath = a.json or (os.path.join(out, "evidence.json") if out else None)
     mpath = a.md or (os.path.join(out, "evidence.md") if out else None)
     r["cases"] = triage(r, a.budget)

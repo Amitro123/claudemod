@@ -246,6 +246,8 @@ def test_default_out_is_a_new_folder(repo: Path, capsys) -> None:
     assert evidence.main(["--repo", str(repo)]) == 0
     saved = capsys.readouterr().out.strip().splitlines()[-1]
     assert saved.startswith("Saved: ") and Path(saved.split()[1].rstrip(".")).exists()
+    assert "/.git/inspector/" in saved, "the default folder lasts between commands and is out of the tree"
+    assert run(repo, "status", "--porcelain") == ""
 
 
 def test_triage_writes_dossiers_in_order(repo: Path, tmp_path: Path, capsys) -> None:
