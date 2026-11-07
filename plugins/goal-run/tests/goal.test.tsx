@@ -27,12 +27,18 @@ const USAGE = (n: number) => ({ model: 'm', input_tokens: n, output_tokens: 0, c
 
 // The engine beneath: clock, store, the side calls, prompts the mod submits, and the plan dialog's answers.
 // An answer can be a function: what happens while the dialog is open, then the answer.
-function engine(on: On, { saved = {} as Record<string, unknown>, answers = [] as (string | null | (() => Promise<string>))[] } = {}) {
+// `onGet`: called after each store read, with the key and the value read: a test can change the store
+// between two reads (another session saving meanwhile).
+function engine(on: On, { saved = {} as Record<string, unknown>, answers = [] as (string | null | (() => Promise<string>))[], onGet = (() => {}) as (key: string, value: unknown) => void } = {}) {
   const sent: string[] = []
   const toasts: string[] = []
   const asked: string[] = []
   const clock = mock.clock(on, { now: Date.UTC(2026, 9, 24, 9) })
-  on('store.get', (_, e) => ({ value: saved[e.key] }) as never)
+  on('store.get', (_, e) => {
+    const value = saved[e.key]
+    onGet(e.key, value)
+    return { value } as never
+  })
   const writes: string[] = []
   on('store.set', (_, e) => {
     writes.push(e.key)
@@ -1255,5 +1261,41 @@ describe('what the whole-mod review found', () => {
     const g = w.saved['goal:/repo'] as Goal
     expect(g.tasks.find(t => t.id === 't2')!.status).toBe('in_progress')
     expect(g.tasks.map(t => t.title)).toContain('Rotate the key')
+  })
+})
+
+describe('inspector open-bugs: two sessions on one goal (#5, #9)', () => {
+  const task = (id: string, status: 'pending' | 'in_progress' | 'done') => ({ id, title: id, status, tokens: 0 })
+  const base: Goal = { text: 'Ship it', status: 'active', setAt: 5, tasks: [task('t1', 'pending'), task('t2', 'pending'), task('t3', 'pending')], activeId: null, other: 0 }
+
+  test('#5: two sessions started different tasks: after the merge one is in progress, the one activeId names', () => {
+    const mine: Goal = { ...base, tasks: [task('t1', 'pending'), task('t2', 'in_progress'), task('t3', 'pending')], activeId: 't2' }
+    const theirs: Goal = { ...base, tasks: [task('t1', 'pending'), task('t2', 'pending'), task('t3', 'in_progress')], activeId: 't3' }
+    const m = mergeGoal(base, mine, theirs)
+    const running = m.tasks.filter(t => t.status === 'in_progress')
+    expect(running).toHaveLength(1)
+    expect(running[0]!.id).toBe(m.activeId)
+  })
+
+  test("#9: another session's save between this save's read and its write is kept", async ($, on) => {
+    // Armed for one save: after its first read of the goal, the other session saves t3 done.
+    let armed = false
+    const w = engine(on, {
+      answers: ['Approve, run through'],
+      onGet: (key, value) => {
+        if (!armed || key !== 'goal:/repo' || !value) return
+        armed = false
+        const g = value as Goal
+        w.saved[key] = { ...g, tasks: g.tasks.map(t => (t.id === 't3' ? { ...t, status: 'done', tokens: 400 } : t)) }
+      },
+    })
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    await $.command.run({ command: 'session-goal', args: 'Ship it' } as never)
+    await $.tool.call({ tool: PLAN, tasks: ['One', 'Two', 'Three'] } as never)
+    armed = true
+    await $.tool.call({ tool: 'mcp__goal-run__update', id: 't1', status: 'done' } as never)
+    const after = w.saved['goal:/repo'] as Goal
+    expect(after.tasks.map(t => [t.id, t.status])).toEqual([['t1', 'done'], ['t2', 'pending'], ['t3', 'done']])
+    expect(after.tasks[2]!.tokens).toBe(400)
   })
 })

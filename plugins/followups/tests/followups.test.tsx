@@ -1173,3 +1173,23 @@ describe('inspector open-bugs: followups (#1, #11)', () => {
     expect((twice.match(/<!-- followups:end -->/g) ?? []).length).toBe(1)
   })
 })
+
+describe('inspector open-bugs: followups across sessions (#12)', () => {
+  test('"Not needed" in another session is taken in at the next prompt, not only at session start', async ($, on) => {
+    const saved: Record<string, unknown> = {}
+    engine(on, {}, saved)
+    const asked: string[] = []
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+      asked.push(e.questions[0]!.question)
+      return { result: { questions: e.questions, answers: { [e.questions[0]!.question]: 'Add to to-do' } } } as never
+    })
+    on('turn.start', (_, e) => ({ turnId: e.turnId }) as never)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true } as never)
+    // Another session in the folder turns it down after this one started.
+    saved['skipped:/repo'] = ['check the retry budget']
+    await $.turn.start({ text: 'go on', turnId: 'n1' } as never)
+    const r = await $.tool.call({ tool: TOOL, title: 'Check the retry budget' } as never)
+    expect(String(r.result)).toMatch(/already said "Check the retry budget" isn't needed/)
+    expect(asked).toEqual([])
+  })
+})
