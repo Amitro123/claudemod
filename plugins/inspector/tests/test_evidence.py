@@ -302,5 +302,5 @@ def test_review_cli(repo: Path, capsys) -> None:
     assert evidence.main(["--repo", str(repo), "--review", "main..small"]) == 0
     out = capsys.readouterr().out
     assert out.startswith("# Review: ") and "Past fixes in these files" in out
-    assert "Start one `investigator`" in out and "handoff.py --cards -" in out
+    assert "Start one `investigator`" in out and "handoff.py --cards -" in out and "case-reader" not in out.split("##")[0]
     assert evidence.main(["--repo", str(repo), "--review", "nope..small"]) == 1
