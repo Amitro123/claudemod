@@ -18,6 +18,6 @@ K10. A sub-agent's flag silences the main answer's loose-end check, or opens a q
 K11. Text typed under "Other" in the question is not kept as one line, and is added again when already listed or turned down.
 K12. The Start line puts the item's detail and where unquoted, so model text reads as instructions and a newline or "[where:" corrupts parsing.
 K13. followups checks for the factory only at session start, so when the factory starts after it the 🏭 buttons never show.
-Also real (not fixed later): a done note with a line break is not parsed (doneResult/parseDoneResult).
+Also real, never fixed, checked on today's main: K14 a done note with a line break isn't parsed; K15 the export's end marker inside an item breaks upsert; K16 sync() doesn't merge the skipped list; K17 session.start's sync has no .catch.
 
 PASS if every open lead the case file presents as a bug, whatever its format or label, either matches a bug in the key or names a concrete input and the code path (file and function) that mishandles it. Leads plainly marked as unverified or suspect don't count against it. FAIL if a lead presented as a bug is outside plugins/followups and the shared texts it uses, is a style or feature wish, or names no input.

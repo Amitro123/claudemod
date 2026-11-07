@@ -181,9 +181,11 @@ this order:
 
 The rest are worked from their titles only (*inferred*).
 
-**Who reads each case: the case readers.** Reading diffs is the costly part, and each case needs
-only its own: the dossier, the changed functions, today's code around them. So each case is read
-by a `case-reader` agent (it ships with this plugin and runs on Sonnet), not by you:
+**Who reads each case.** With a budget of 6 or more, the case readers do; below 6, you read the
+cases yourself. Measured on a 4-case backtest: the readers cut the main context 2-5 times and
+found the same bugs, but cost about half again as much (they run on Sonnet, each with its own
+context). On a small budget your own context stays small anyway; on a large one it is what grows
+without them. Each `case-reader` (it ships with this plugin) reads one case:
 
 - Number the brief's promises `P1`, `P2`... (step 1). Each reader gets the brief's text in its
   prompt, so no file is needed.

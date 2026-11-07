@@ -70,6 +70,20 @@ fixed. Next: `--case 'backtest-01*' --runs 3`, about $1.50.
 | (same run) | without | 0.67 | K12 K11 · 2-3 per the judge · 2 | 1/3 | 6-7 |
 | + triage and dossiers by the collector | with | 0.85 | K12 K2 K1 K8 · K1 · K1 K12 K2 | 3/3 | 14-21 |
 
+| + case readers (Sonnet), cards, cross-check | with | 0.74 | K1 · K1 K12 · K1, and three real bugs not in the key then (now K15-K17) | 3/3 | 9-11 (main), 4 readers each |
+
+The last row, measured: the readers started in every run, 4 in parallel. The main context fell
+from 400-640k cached tokens to 88-284k, at the same time (about 2 minutes). The cost per run rose
+from $0.27-0.41 to $0.52-0.57. On 4 cases, then, the readers don't pay; the skill now uses them
+from a budget of 6. They kept finding three bugs the key didn't have. Checked on main, all three
+are real, so they were added (K15-K17), and earlier runs' scores understate the skill.
+
+Before the readers could start, two sandbox findings had to be fixed:
+- the eval gives each Bash command its own `/tmp` and lets no command write anywhere (not `.git`,
+  not the tree);
+- so nothing in the skill may need a writable folder: dossiers come from a command, cards come
+  back in the readers' replies, and the cross-check reads them on stdin.
+
 - The skill triggered by itself in every run.
 - On this narrow question a direct read of the code finds about as many key bugs as the skill.
   What the skill adds is consistency (K1, reproduced, in every run) and precision (no lead

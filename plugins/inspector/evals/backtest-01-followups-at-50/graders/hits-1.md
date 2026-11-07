@@ -18,6 +18,10 @@ K10. A sub-agent's flag silences the main answer's loose-end check, or opens a q
 K11. Text typed under "Other" in the question is not kept as one line, and is added again when already listed or turned down.
 K12. The Start line puts the item's detail and where unquoted, so model text reads as instructions and a newline or "[where:" corrupts parsing.
 K13. followups checks for the factory only at session start, so when the factory starts after it the 🏭 buttons never show.
-Also real (not fixed later): a done note with a line break is not parsed (doneResult/parseDoneResult).
+Also real, never fixed, checked on today's main (they count as matches too):
+K14. A done note with a line break is not parsed (doneResult/parseDoneResult).
+K15. quoted() doesn't neutralise the export's end marker (<!-- followups:end -->): an item holding it breaks the next export's upsert.
+K16. sync() doesn't merge the "Not needed" (skipped) list: it is read only at session start, so a refusal in another session isn't seen.
+K17. session.start's `await sync($)` has no .catch (turn.start's has): a store error skips the rest of the session start.
 
 PASS if at least 1 of the case file's open leads (reproduced, read or suspect) each match a different bug in the key (same code and same mechanism; wording may differ). FAIL otherwise. Say which key items matched.
