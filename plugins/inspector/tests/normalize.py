@@ -1,8 +1,8 @@
 """Normalize an evidence run so two runs can be diffed: volatile fields (absolute paths, run folders,
 the script's own location, path separators) are replaced by placeholders. Results are untouched.
 
-    python normalize.py A.json B.json            # exit 0 if equal after normalizing, else print the first differences
-    python normalize.py A.md B.md --repo X --repo Y   # (md) --repo is given once per file, in order
+    python normalize.py A.json B.json --out-a RUN_A_DIR --out-b RUN_B_DIR   # exit 0 if equal after normalizing
+    python normalize.py A.md B.md --out-a RUN_A_DIR --out-b RUN_B_DIR
 """
 from __future__ import annotations
 
@@ -42,21 +42,23 @@ def normalize_md(text: str, volatile: list[str]) -> str:
 
 
 def _main(argv: list[str]) -> int:
-    files = [a for a in argv if not a.startswith("--") and a not in ()]
+    """normalize.py A B [--out-a DIR] [--out-b DIR]: compare two evidence.json (or .md) files."""
+    files = [x for x in argv if not x.startswith("--")]
+    outs = {k: argv[i + 1] for i, k in enumerate(argv) if k in ("--out-a", "--out-b") and i + 1 < len(argv)}
+    files = [x for x in files if x not in outs.values()]
     if len(files) != 2:
         print(__doc__)
         return 2
-    a, b = (Path(f).read_text(encoding="utf-8") for f in files)
     if files[0].endswith(".json"):
-        na, nb = normalize_json(json.loads(a)), normalize_json(json.loads(b))
-        if na == nb:
-            print("IDENTICAL after normalization")
-            return 0
-        for k in na:
-            if na[k] != nb.get(k):
-                print("differs:", k)
-        return 1
-    na, nb = a.replace("\\", "/"), b.replace("\\", "/")
+        ra, rb = (json.loads(Path(f).read_text(encoding="utf-8")) for f in files)
+        na = normalize_json(ra, [outs.get("--out-a", "")])
+        nb = normalize_json(rb, [outs.get("--out-b", "")])
+        bad = [k for k in na if na[k] != nb.get(k)]
+        print("IDENTICAL after normalization" if not bad else "differs: " + ", ".join(bad))
+        return 1 if bad else 0
+    na = normalize_md(Path(files[0]).read_text(encoding="utf-8"), [outs.get("--out-a", "")])
+    nb = normalize_md(Path(files[1]).read_text(encoding="utf-8"), [outs.get("--out-b", "")])
+    print("IDENTICAL after normalization" if na == nb else "differs")
     return 0 if na == nb else 1
 
 

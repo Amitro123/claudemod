@@ -47,12 +47,15 @@ def _has_history() -> bool:
     return shallow == "false" and known
 
 
-pytestmark = pytest.mark.skipif(not _has_history(), reason="needs the full claudemod history up to #72")
+pytestmark = [pytest.mark.skipif(not _has_history(), reason="needs the full claudemod history up to #72"),
+              pytest.mark.slow]       # one collector run over ~100 units; deselect with -m "not slow"
 
 
 @pytest.fixture(scope="module")
-def ev() -> dict:
-    return evidence.investigate(str(ROOT), ref=PR72, min_lines=3)
+def ev(tmp_path_factory) -> dict:
+    # one run shared by every test here; the blame cache goes to a temp folder, not into this checkout's .git
+    return evidence.investigate(str(ROOT), ref=PR72, min_lines=3,
+                                cache_dir=str(tmp_path_factory.mktemp("blame-cache")))
 
 
 def test_fix_verdicts(ev: dict) -> None:

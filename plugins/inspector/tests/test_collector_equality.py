@@ -36,6 +36,13 @@ RUNS = {
 }
 
 
+# Same question as RUNS["default"], asked with other execution settings: the answer must not move.
+SAME_AS_DEFAULT = {
+    "serial": ["--min-lines", "1", "--workers", "1", "--no-cache"],
+    "threads": ["--min-lines", "1", "--workers", "8", "--no-cache"],
+}
+
+
 def _tokenize(text: str, seen: dict[str, str]) -> str:
     def sub(m: re.Match) -> str:
         return seen.setdefault(m.group(0)[:8], f"<SHA{len(seen)}>")
@@ -84,3 +91,37 @@ def test_the_snapshot_is_not_vacuous(results: dict) -> None:
     assert j["fixes"] >= 4 and j["fix_of_fix"], "the synthetic history must contain fixes and a fix-of-fix"
     assert j["left_behind"] and any(u["version_bumps"] for u in j["timeline"])
     assert any(c.get("introduced_by") for u in j["timeline"] for c in u["commits"])
+
+
+@pytest.mark.parametrize("name", sorted(SAME_AS_DEFAULT))
+def test_workers_and_cache_settings_do_not_change_results(small_repo: Path, tmp_path: Path, name: str) -> None:
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))["default"]
+    got = snapshot(small_repo, tmp_path / "o", SAME_AS_DEFAULT[name])
+    assert got == golden
+
+
+def test_a_warm_blame_cache_gives_the_same_results(small_repo: Path, tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    args = ["--min-lines", "1", "--cache-dir", str(cache)]
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))["default"]
+    assert snapshot(small_repo, tmp_path / "cold", args) == golden
+    assert any(cache.rglob("*.json")), "the cold run fills the cache"
+    assert snapshot(small_repo, tmp_path / "warm", args) == golden
+
+
+def test_the_default_cache_is_the_only_write_inside_git(small_repo: Path, tmp_path: Path) -> None:
+    before = {p for p in (small_repo / ".git").rglob("*") if p.is_file()}
+    assert evidence.main(["--repo", str(small_repo), "--out", str(tmp_path / "o"), "--min-lines", "1"]) == 0
+    new = {p.relative_to(small_repo / ".git").parts[:2] for p in (small_repo / ".git").rglob("*") if p.is_file()} - \
+          {p.relative_to(small_repo / ".git").parts[:2] for p in before}
+    assert new <= {("inspector", "cache")}, new
+
+
+def test_default_excludes_are_overridden_by_path_and_component_root() -> None:
+    names = lambda ex: {e.split("**/")[1].split("/")[0] for e in ex if e.startswith(":(exclude,glob)")}
+    assert names(evidence.effective_excludes()) == set(evidence.DEFAULT_EXCLUDES)
+    assert "vendor" not in names(evidence.effective_excludes(path="vendor/lib"))
+    assert "dist" not in names(evidence.effective_excludes(path="packages/x/dist"))
+    assert "build" not in names(evidence.effective_excludes(component_roots=["build"]))
+    assert evidence.effective_excludes(defaults=False) == []
+    assert evidence.effective_excludes(extra=["gen"], defaults=False) == [":(exclude)gen"]

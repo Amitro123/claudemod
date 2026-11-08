@@ -59,9 +59,10 @@ SUM = """function total(items) {
 MANIFEST = '{\n  "name": "a",\n  "version": "%s"\n}\n'
 
 
-@pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    r = new_repo(tmp_path / "repo")
+@pytest.fixture(scope="module")
+def repo(tmp_path_factory) -> Path:
+    """Built once per module: the tests read it (the default-out test only adds a folder under .git)."""
+    r = new_repo(tmp_path_factory.mktemp("evrepo") / "repo")
     commit(r, {"README.md": "# demo\n", "plugins/a/.claude-plugin/plugin.json": MANIFEST % "0.1.0"}, "initial")
     # 1: a feature with an off-by-one in it; its PR also has a housekeeping "fix lint" commit
     merge_pr(r, 1, "feat", [({"plugins/a/sum.js": SUM, "plugins/a/.claude-plugin/plugin.json": MANIFEST % "0.2.0"},
@@ -80,12 +81,24 @@ def repo(tmp_path: Path) -> Path:
     return r
 
 
+_RUNS: dict = {}
+
+
+def inv(repo: Path, **kw) -> dict:
+    """evidence.investigate on the shared repo, once per distinct set of arguments: tests share a run
+    where they ask the same question. Results are only read."""
+    key = (str(repo), tuple(sorted(kw.items())))
+    if key not in _RUNS:
+        _RUNS[key] = evidence.investigate(str(repo), **kw)
+    return _RUNS[key]
+
+
 def by_unit(r: dict) -> dict:
     return {u["unit"]: u for u in r["timeline"]}
 
 
 def test_units_are_prs_oldest_first(repo: Path) -> None:
-    r = evidence.investigate(str(repo))
+    r = inv(repo)
     assert [u["unit"] for u in r["timeline"]][1:] == ["#1", "#2", "#3", "#4"]
     assert r["timeline"][1]["title"] == "a: add total"
     assert r["timeline"][2]["base"]
@@ -93,7 +106,7 @@ def test_units_are_prs_oldest_first(repo: Path) -> None:
 
 
 def test_fix_detection(repo: Path) -> None:
-    by = by_unit(evidence.investigate(str(repo)))
+    by = by_unit(inv(repo))
     assert not by["#1"]["is_fix"], "a feature PR with a 'fix lint' commit is not a fix"
     assert by["#2"]["is_fix"]
     assert by["#3"]["is_fix"]
@@ -118,7 +131,7 @@ def test_subject_verdict(subject: str, is_fix: bool) -> None:
 
 
 def test_blame_traces_the_culprit_and_the_chain(repo: Path) -> None:
-    r = evidence.investigate(str(repo), min_lines=1)
+    r = inv(repo, min_lines=1)
     by = by_unit(r)
     assert [e["unit"] for e in by["#2"]["introduced_by"]] == ["#1"]
     assert not by["#2"]["fix_of_fix"]
@@ -130,30 +143,30 @@ def test_blame_traces_the_culprit_and_the_chain(repo: Path) -> None:
 
 
 def test_manifest_and_readme_lines_are_not_blamed(repo: Path) -> None:
-    by = by_unit(evidence.investigate(str(repo), min_lines=1))
+    by = by_unit(inv(repo, min_lines=1))
     for e in by["#2"]["introduced_by"]:
         assert all(not f.endswith(("plugin.json", "README.md")) for f in e["files"])
 
 
 def test_since_keeps_attribution_beyond_the_window(repo: Path) -> None:
     second = run(repo, "rev-list", "--first-parent", "--max-count=1", "HEAD~2").strip()
-    r = evidence.investigate(str(repo), since=second, min_lines=1)
+    r = inv(repo, since=second, min_lines=1)
     assert [u["unit"] for u in r["timeline"]] == ["#3", "#4"]
     assert r["fix_of_fix"] == ["#3"], "#2 is before the work window but still known as a fix"
 
 
 def test_unit_and_path_scopes(repo: Path) -> None:
-    r = evidence.investigate(str(repo), unit="#3", min_lines=1)
+    r = inv(repo, unit="#3", min_lines=1)
     assert [u["unit"] for u in r["timeline"]] == ["#3"] and r["fix_of_fix"] == ["#3"]
-    inner = by_unit(evidence.investigate(str(repo)))["#3"]["commits"][0]["sha"]
-    assert [u["unit"] for u in evidence.investigate(str(repo), unit=inner)["timeline"]] == ["#3"]
-    assert [u["unit"] for u in evidence.investigate(str(repo), path="plugins/b")["timeline"]] == ["#3", "#4"]
+    inner = by_unit(inv(repo))["#3"]["commits"][0]["sha"]
+    assert [u["unit"] for u in inv(repo, unit=inner)["timeline"]] == ["#3"]
+    assert [u["unit"] for u in inv(repo, path="plugins/b")["timeline"]] == ["#3", "#4"]
     with pytest.raises(RuntimeError):
-        evidence.investigate(str(repo), unit="#99")
+        inv(repo, unit="#99")
 
 
 def test_truncation_is_warned(repo: Path) -> None:
-    r = evidence.investigate(str(repo), limit=2)
+    r = inv(repo, limit=2)
     assert r["truncated"] and any("--max 2" in w for w in r["warnings"])
 
 
@@ -246,7 +259,7 @@ def test_default_out_is_a_new_folder(repo: Path, capsys) -> None:
     assert evidence.main(["--repo", str(repo)]) == 0
     saved = capsys.readouterr().out.strip().splitlines()[-1]
     assert saved.startswith("Saved: ") and Path(saved.split()[1].rstrip(".")).exists()
-    assert "/.git/inspector/" in saved, "the default folder lasts between commands and is out of the tree"
+    assert "/.git/inspector/" in saved.replace("\\", "/"), "the default folder lasts between commands and is out of the tree"
     assert run(repo, "status", "--porcelain") == ""
 
 
