@@ -31,6 +31,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 # Strong: the words people use for a fix. Weak: words fixes use, and so do features; they only
@@ -94,11 +95,12 @@ class Timing:
     phase_now = "other"
     seconds: dict[str, float] = {}
     calls: dict[str, int] = {}
+    extra: dict[str, str] = {}
     _lock = threading.Lock()
 
     @classmethod
     def reset(cls, enabled: bool) -> None:
-        cls.enabled, cls.phase_now, cls.seconds, cls.calls = enabled, "other", {}, {}
+        cls.enabled, cls.phase_now, cls.seconds, cls.calls, cls.extra = enabled, "other", {}, {}, {}
 
     @classmethod
     def count(cls) -> None:
@@ -111,6 +113,7 @@ class Timing:
         names = list(dict.fromkeys([*cls.seconds, *cls.calls]))
         rows = [f"{n:<12} {cls.seconds.get(n, 0.0):8.2f}s {cls.calls.get(n, 0):6d} git calls" for n in names]
         rows.append(f"{'total':<12} {sum(cls.seconds.values()):8.2f}s {sum(cls.calls.values()):6d} git calls")
+        rows += [f"{k}: {v}" for k, v in cls.extra.items()]
         return "\n".join(rows)
 
 
@@ -190,16 +193,51 @@ def subject_verdict(subject: str) -> tuple[bool, list[str]]:
     return True, strong + weak
 
 
-def first_parent(repo: str, ref: str, limit: int, since: str | None) -> list[Unit]:
-    rng = [ref]
+def pmap(fn, items, workers: int):
+    """fn over items, in order; on a thread pool when workers > 1. Git calls are independent
+    subprocesses, so threads overlap their start-up cost (the dominant cost on Windows)."""
+    items = list(items)
+    if workers <= 1 or len(items) <= 1:
+        return [fn(i) for i in items]
+    with ThreadPoolExecutor(max_workers=min(workers, len(items))) as ex:
+        return list(ex.map(fn, items))
+
+
+@dataclass
+class RepoInfo:
+    shallow: bool
+    toplevel: str
+    git_dir: str
+    shallow_file: str
+
+
+def repo_info(repo: str) -> RepoInfo:
+    """One rev-parse for what used to be four calls."""
+    out = git(repo, "rev-parse", "--is-shallow-repository", "--show-toplevel", "--absolute-git-dir",
+              "--git-path", "shallow").splitlines()
+    sf = out[3].strip()
+    return RepoInfo(out[0].strip() == "true", out[1].strip(), out[2].strip(),
+                    sf if os.path.isabs(sf) else os.path.join(repo, sf))
+
+
+def _range(ref: str, since: str | None) -> list[str]:
     if since and re.fullmatch(r"\d{4}-\d{2}-\d{2}", since):
-        rng = [f"--since={since}", ref]
-    elif since:
-        rng = [f"{since}..{ref}"]
+        return [f"--since={since}", ref]
+    return [f"{since}..{ref}"] if since else [ref]
+
+
+def work_window(repo: str, ref: str, limit: int, since: str | None) -> list[str]:
+    """The shas of the work window: a bare log (the units themselves come from the attribution walk)."""
+    return git(repo, "log", "--first-parent", f"--max-count={limit}", "--format=%H", *_range(ref, since)).split()
+
+
+def first_parent(repo: str, ref: str, limit: int, since: str | None, shallow: set[str] | None = None,
+                 workers: int = 1) -> list[Unit]:
     out = git(repo, "log", "--first-parent", f"--max-count={limit}",
-              "--format=%H%x1f%P%x1f%cs%x1f%s%x1f%b%x1e", *rng)
-    shallow = set(read_shallow(repo))
-    units = []
+              "--format=%H%x1f%P%x1f%cs%x1f%s%x1f%b%x1e", *_range(ref, since))
+    if shallow is None:
+        shallow = set(read_shallow(repo))
+    units, tasks = [], []
     for rec in out.split("\x1e"):
         rec = rec.strip("\n")
         if not rec:
@@ -214,12 +252,15 @@ def first_parent(repo: str, ref: str, limit: int, since: str | None) -> list[Uni
             u = Unit(sha, "pr", pr, title, date, parents[0])
             u.commits = []
             for side in parents[1:]:           # octopus merges: every merged branch
-                u.commits += inner_commits(repo, parents[0], side)
+                tasks.append((u, parents[0], side))
         else:
             u = Unit(sha, "pr" if pr else "commit", pr, subject, date, parents[0] if parents else "")
-            u.commits = [{"sha": sha, "subject": subject}]
+            u.commits = [{"sha": sha, "subject": subject, "parent": parents[0] if parents else ""}]
             u.boundary = sha in shallow
         units.append(u)
+    # one `git log` per merged branch, side by side; results land in log order
+    for (u, _, _), commits in zip(tasks, pmap(lambda t: inner_commits(repo, t[1], t[2]), tasks, workers)):
+        u.commits += commits
     units.reverse()
     return units
 
@@ -235,41 +276,83 @@ def read_shallow(repo: str) -> list[str]:
 
 
 def inner_commits(repo: str, base: str, head: str) -> list[dict]:
-    out = git(repo, "log", "--no-merges", "--format=%H%x1f%s%x1e", f"{base}..{head}")
+    out = git(repo, "log", "--no-merges", "--format=%H%x1f%s%x1f%P%x1e", f"{base}..{head}")
     res = []
     for rec in out.split("\x1e"):
         rec = rec.strip("\n")
         if rec:
-            sha, subject = (rec.split("\x1f") + [""])[:2]
-            res.append({"sha": sha, "subject": subject})
+            sha, subject, parents = (rec.split("\x1f") + ["", ""])[:3]
+            res.append({"sha": sha, "subject": subject, "parent": (parents.split() or [""])[0]})
     res.reverse()
     return res
 
 
-def fill_changes(repo: str, u: Unit, roots: set[str]) -> None:
-    if u.boundary:
-        u.tags.append("shallow-boundary")
+MANIFESTS = ("package.json", "plugin.json", "pyproject.toml", "Cargo.toml", "manifest.json")
+
+
+def _log_diff(repo: str, ref: str, n: int, *flags: str, pathspec: tuple[str, ...] = ()) -> list[tuple[str, str]]:
+    """(sha, text) per first-parent commit among the newest n: its diff against its first parent."""
+    tail = ["--", *pathspec] if pathspec else []
+    common = ["--first-parent", "--no-color", "--root", f"--max-count={n}", "--format=%x1e%H", *flags, ref, *tail]
+    try:
+        out = git(repo, "log", "--diff-merges=first-parent", *common)
+    except RuntimeError:                        # git older than 2.31
+        out = git(repo, "log", "-m", *common)
+    res = []
+    for rec in out.split("\x1e"):
+        if rec.strip():
+            sha, _, text = rec.partition("\n")
+            res.append((sha.strip(), text))
+    return res
+
+
+def fill_all_changes(repo: str, units: list[Unit], roots: set[str], ref: str, n: int) -> None:
+    """The per-unit stats of every unit, from one `git log --numstat` pass (it was a `git diff` per unit),
+    and the version bumps from one more pass over the manifests only."""
+    todo = [u for u in units if not u.boundary]
+    for u in units:
+        if u.boundary:
+            u.tags.append("shallow-boundary")
+    if not todo:
         return
-    base = u.base or git(repo, "hash-object", "-t", "tree", "/dev/null").strip()
-    for line in git(repo, "diff", "--numstat", "-M", base, u.sha).splitlines():
-        a, d, path = line.split("\t", 2)
-        if " => " in path:
-            path = re.sub(r"\{[^}]* => ([^}]*)\}", r"\1", path).split(" => ")[-1].replace("//", "/")
-        ins, dele = (int(a) if a != "-" else 0), (int(d) if d != "-" else 0)
-        u.files.append({"path": path, "ins": ins, "del": dele})
-        u.insertions += ins
-        u.deletions += dele
-    u.components = sorted({component(f["path"], roots) for f in u.files})
-    for path in [f["path"] for f in u.files if f["path"].endswith(("package.json", "plugin.json",
-                 "pyproject.toml", "Cargo.toml", "manifest.json"))]:
-        old = new = None
-        for ln in git(repo, "diff", "-U0", base, u.sha, "--", path).splitlines():
-            m = JSON_VERSION.match(ln) or TOML_VERSION.match(ln)
-            if m:
-                v = tuple(int(x) for x in m.groups()[2:])
-                old, new = (v, new) if m.group(1) == "-" else (old, v)
-        if old and new:
-            u.version_bumps.append(f"{path}: {'.'.join(map(str, old))}->{'.'.join(map(str, new))}")
+    stats = dict(_log_diff(repo, ref, n, "-M", "--numstat"))
+    for u in todo:
+        for line in stats.get(u.sha, "").splitlines():
+            if "\t" not in line:
+                continue
+            a, d, path = line.split("\t", 2)
+            if " => " in path:
+                path = re.sub(r"\{[^}]* => ([^}]*)\}", r"\1", path).split(" => ")[-1].replace("//", "/")
+            ins, dele = (int(a) if a != "-" else 0), (int(d) if d != "-" else 0)
+            u.files.append({"path": path, "ins": ins, "del": dele})
+            u.insertions += ins
+            u.deletions += dele
+        u.components = sorted({component(f["path"], roots) for f in u.files})
+    if not any(f["path"].endswith(MANIFESTS) for u in todo for f in u.files):
+        return
+    # `*suffix` (wildcards cross slashes) is the same test as the endswith above; --no-renames so a
+    # moved manifest reads as an addition, as it did when each path was diffed alone.
+    sections: dict[tuple[str, str], tuple] = {}
+    for sha, text in _log_diff(repo, ref, n, "--no-renames", "-p", "-U0",
+                               pathspec=tuple("*" + m for m in MANIFESTS)):
+        for sec in re.split(r"(?m)^(?=diff --git )", text):
+            head = sec.split("\n", 1)[0]
+            if not head.startswith("diff --git a/"):
+                continue
+            rest = head[len("diff --git a/"):]
+            path = rest[: (len(rest) - 3) // 2]
+            old = new = None
+            for ln in sec.splitlines():
+                m = JSON_VERSION.match(ln) or TOML_VERSION.match(ln)
+                if m:
+                    v = tuple(int(x) for x in m.groups()[2:])
+                    old, new = (v, new) if m.group(1) == "-" else (old, v)
+            sections[(sha, path)] = (old, new)
+    for u in todo:
+        for path in [f["path"] for f in u.files if f["path"].endswith(MANIFESTS)]:
+            old, new = sections.get((u.sha, path), (None, None))
+            if old and new:
+                u.version_bumps.append(f"{path}: {'.'.join(map(str, old))}->{'.'.join(map(str, new))}")
 
 
 def judge(u: Unit) -> None:
@@ -325,59 +408,167 @@ def component_of(u: Unit, path: str) -> str:
     return path.split("/")[0] if "/" in path else "(root)"
 
 
-def blame_origins(repo: str, commit: str, budget: int, ignore: str | None) -> Counter:
-    """(commit, path) -> lines: who last wrote the lines `commit` deleted or changed."""
-    origins: Counter = Counter()
-    try:
-        parent = git(repo, "rev-parse", f"{commit}^").strip()
-    except RuntimeError:
-        return origins
-    status = git(repo, "diff", "--name-status", "-M", "--diff-filter=MDR", parent, commit)
-    pairs = []
-    for ln in status.splitlines():
-        parts = ln.split("\t")
-        if parts[0].startswith("R") and len(parts) == 3:
-            pairs.append((parts[1], parts[2]))
-        elif len(parts) == 2:
-            pairs.append((parts[1], parts[1]))
-    for old, new in pairs:
-        if not blamed(old) or budget <= 0:
+# Trees nobody writes by hand. Their diffs and lines are left out of blame and of the copies search
+# (the units' own file lists and stats still count them). `--path` or `--component-root` naming one of
+# them, or `--no-default-excludes`, brings it back; `--exclude PATH` adds more. Rename detection and
+# blame on a regenerated tree are the costly part of a big diff, and they say nothing about who broke what.
+DEFAULT_EXCLUDES = ("node_modules", "vendor", "third_party", "dist", "build", ".venv")
+
+
+def effective_excludes(path: str | None = None, component_roots=(), extra=(), defaults: bool = True) -> list[str]:
+    """Pathspecs (git magic) for the trees to leave out of blame diffs and the copies search."""
+    out = []
+    for d in DEFAULT_EXCLUDES if defaults else ():
+        p = (path or "").strip("/")
+        if d in set(component_roots) or p == d or p.startswith(d + "/") or f"/{d}/" in f"/{p}/":
             continue
-        diff = git(repo, "diff", "-U0", "-M", "--no-color", parent, commit, "--", old, new)
-        for m in HUNK_RE.finditer(diff):
+        out.append(f":(exclude,glob)**/{d}/**")
+    out += [f":(exclude){e}" for e in extra]
+    return out
+
+
+class BlameCache:
+    """(parent commit, file, line ranges, ignore-revs content) -> who wrote those lines. Commits are
+    content-addressed, so an entry never goes stale. The one place the collector writes inside .git."""
+
+    def __init__(self, folder: str | None):
+        self.folder = folder
+        self.hits = self.misses = 0
+
+    def _file(self, key: str) -> str:
+        return os.path.join(self.folder, key[:2], key + ".json")
+
+    def get(self, key: str):
+        if not self.folder:
+            return None
+        try:
+            with open(self._file(key), encoding="utf-8") as f:
+                val = json.load(f)
+            self.hits += 1
+            return val
+        except (OSError, ValueError):
+            self.misses += 1
+            return None
+
+    def put(self, key: str, val) -> None:
+        if not self.folder:
+            return
+        try:
+            fp = self._file(key)
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            tmp = f"{fp}.{os.getpid()}.{threading.get_ident()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(val, f)
+            os.replace(tmp, fp)
+        except OSError:
+            pass                                # a read-only repository just runs uncached
+
+
+def _blame_key(parent: str, old: str, ranges: list[tuple[int, int]], ignore_id: str) -> str:
+    import hashlib
+    raw = json.dumps(["v1", parent, old, ranges, ignore_id], ensure_ascii=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _count_origins(out: str) -> list[list]:
+    """[[sha, lines], ...] in order of first appearance, trivial lines left out."""
+    res: dict[str, int] = {}
+    sha = None
+    for ln in out.splitlines():
+        if re.match(r"^[0-9a-f]{40} ", ln):
+            sha = ln.split()[0]
+        elif ln.startswith("\t"):
+            content = ln[1:].strip()
+            if sha and content and content not in ("}", "{", ")", "];", "});", "end", "fi"):
+                res[sha] = res.get(sha, 0) + 1
+    return [[k, v] for k, v in res.items()]
+
+
+def split_patch(diff: str) -> tuple[list[tuple[str, str, str]], list[str], str]:
+    """`git diff --patch-with-raw` -> ([(status, old, new)], [one patch section per file], the patch)."""
+    lines = diff.split("\n")
+    raws, i = [], 0
+    while i < len(lines) and lines[i].startswith(":"):
+        meta, *paths = lines[i].split("\t")
+        raws.append((meta.split()[-1], paths[0] if paths else "", paths[1] if len(paths) > 1 else ""))
+        i += 1
+    patch = "\n".join(lines[i:]).lstrip("\n")
+    sections = [s for s in re.split(r"(?m)^(?=diff --git )", patch) if s.startswith("diff --git ")]
+    return raws, sections, patch
+
+
+def blame_origins(repo: str, commit: str, budget: int, ignore: str | None, parent: str | None = None,
+                  diff: str | None = None, excludes: list[str] = (), cache: BlameCache | None = None,
+                  ignore_id: str = "") -> Counter:
+    """(commit, path) -> lines: who last wrote the lines `commit` deleted or changed.
+    One diff of the commit and one blame per file (all its hunks as -L ranges), not one of each per hunk."""
+    origins: Counter = Counter()
+    if parent is None:
+        try:
+            parent = git(repo, "rev-parse", f"{commit}^").strip()
+        except RuntimeError:
+            return origins
+    if diff is None:
+        diff = commit_diff(repo, parent, commit, excludes)
+    raws, sections, _ = split_patch(diff)
+    plan: dict[str, list[tuple[int, int]]] = {}
+    for (status, old, new), sec in zip(raws, sections):
+        if status[:1] not in ("M", "D", "R") or not old or not blamed(old) or budget <= 0:
+            continue
+        if status[0] == "R" and not new:
+            continue
+        for m in HUNK_RE.finditer(sec):
             start, count = int(m.group(1)), int(m.group(2) or "1")
             if count == 0 or budget <= 0:
                 continue
             count = min(count, budget)
             budget -= count
-            args = ["blame", "-w", "-M", "--porcelain", "-L", f"{start},+{count}"]
-            if ignore:
-                args += ["--ignore-revs-file", ignore]
+            plan.setdefault(old, []).append((start, count))
+    for old, ranges in plan.items():
+        key = _blame_key(parent, old, ranges, ignore_id) if cache and cache.folder else ""
+        got = cache.get(key) if key else None
+        if got is None:
+            got = blame_ranges(repo, parent, old, ranges, ignore)
+            if key:
+                cache.put(key, got)
+        for sha, n in got:
+            origins[(sha, old)] += n
+    return origins
+
+
+def blame_ranges(repo: str, parent: str, old: str, ranges: list[tuple[int, int]], ignore: str | None) -> list[list]:
+    """One `git blame` for all of a file's hunks. If git refuses the set, fall back to one per hunk,
+    skipping the ones it refuses."""
+    extra = ["--ignore-revs-file", ignore] if ignore else []
+    try:
+        args = ["blame", "-w", "-M", "--porcelain"]
+        for s, c in ranges:
+            args += ["-L", f"{s},+{c}"]
+        return _count_origins(git(repo, *args, *extra, parent, "--", old))
+    except RuntimeError:
+        merged: dict[str, int] = {}
+        for s, c in ranges:
             try:
-                out = git(repo, *args, parent, "--", old)
+                out = git(repo, "blame", "-w", "-M", "--porcelain", "-L", f"{s},+{c}", *extra, parent, "--", old)
             except RuntimeError:
                 continue
-            sha = None
-            for ln in out.splitlines():
-                if re.match(r"^[0-9a-f]{40} ", ln):
-                    sha = ln.split()[0]
-                elif ln.startswith("\t"):
-                    content = ln[1:].strip()
-                    if sha and content and content not in ("}", "{", ")", "];", "});", "end", "fi"):
-                        origins[(sha, old)] += 1
-    return origins
+            for sha, n in _count_origins(out):
+                merged[sha] = merged.get(sha, 0) + n
+        return [[k, v] for k, v in merged.items()]
+
+
+def commit_diff(repo: str, parent: str, commit: str, excludes: list[str] = ()) -> str:
+    """The commit's whole diff once: raw status lines plus -U0 patch, rename-aware. Serves blame and the copies search."""
+    tail = ["--", ".", *excludes] if excludes else []
+    return git(repo, "diff", "-U0", "-M", "--no-color", "--patch-with-raw", parent, commit, *tail)
 
 
 TRIVIAL = re.compile(r"^[\s{}()\[\];,]*$|^\s*(//|#|\*|/\*|--)|^\s*(return|else|end|fi|pass|break|continue)\s*;?\s*$")
 
 
-def left_behind(repo: str, commit: str, ref: str, cap: int = 8) -> list[dict]:
-    """Lines this fix deleted that still exist somewhere at `ref`: a copy the fix may have missed."""
-    try:
-        parent = git(repo, "rev-parse", f"{commit}^").strip()
-    except RuntimeError:
-        return []
-    diff = git(repo, "diff", "-U0", "-M", "--no-color", parent, commit)
+def removed_lines(patch: str) -> list[str]:
+    """Lines this fix deleted in place of others: the candidates for a copy left somewhere else."""
+    diff = patch
     added = {ln[1:].strip() for ln in diff.splitlines() if ln.startswith("+") and not ln.startswith("+++")}
     removed, path, hunk = [], None, {"-": [], "+": 0}
 
@@ -402,13 +593,51 @@ def left_behind(repo: str, commit: str, ref: str, cap: int = 8) -> list[dict]:
             if len(t) >= 16 and not TRIVIAL.search(t):
                 hunk["-"].append(t)
     close()
+    return removed[:40]
+
+
+def grep_hits(repo: str, ref: str, patterns: list[str], excludes: list[str] = ()) -> dict[str, list[str]]:
+    """pattern -> up to every `path:line` at `ref` (tests left out) that contains it: one `git grep -f`
+    for all patterns of the run, where it used to be one `git grep` per line."""
+    patterns = list(dict.fromkeys(patterns))
+    if not patterns:
+        return {}
+    fd, pf = tempfile.mkstemp(prefix="inspector-patterns-")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(("\n".join(patterns) + "\n").encode("utf-8"))
+        out = git(repo, "grep", "-n", "-F", "-I", "-f", pf, ref, "--", ".", *excludes, ok_codes=(0, 1))
+    finally:
+        os.unlink(pf)
+    res: dict[str, list[str]] = {t: [] for t in patterns}
+    for h in out.splitlines():
+        h = h.split(":", 1)[1] if h.startswith(ref + ":") else h
+        parts = h.split(":", 2)
+        if len(parts) < 3 or TEST_PATH.search(parts[0]):
+            continue
+        at = ":".join(parts[:2])
+        for t in patterns:
+            if t in parts[2]:
+                res[t].append(at)
+    return res
+
+
+def left_behind(repo: str, commit: str, ref: str, cap: int = 8, removed: list[str] | None = None,
+                hits: dict[str, list[str]] | None = None) -> list[dict]:
+    """Lines this fix deleted that still exist somewhere at `ref`: a copy the fix may have missed."""
+    if removed is None:
+        try:
+            parent = git(repo, "rev-parse", f"{commit}^").strip()
+        except RuntimeError:
+            return []
+        removed = removed_lines(split_patch(commit_diff(repo, parent, commit))[2])
+    if hits is None:
+        hits = grep_hits(repo, ref, removed)
     out = []
-    for t in removed[:40]:
-        hits = git(repo, "grep", "-n", "-F", "-I", "-e", t, ref, "--", ".", ok_codes=(0, 1)).splitlines()
-        hits = [h.split(":", 1)[1] if h.startswith(ref + ":") else h for h in hits]
-        hits = [":".join(h.split(":", 2)[:2]) for h in hits if not TEST_PATH.search(h.split(":", 1)[0])]
-        if 0 < len(hits) <= 3:          # a line found in many places is an idiom, not a copy
-            out.append({"line": t[:160], "at": hits})
+    for t in removed:
+        found = hits.get(t, [])
+        if 0 < len(found) <= 3:          # a line found in many places is an idiom, not a copy
+            out.append({"line": t[:160], "at": found})
         if len(out) >= cap:
             break
     return out
@@ -417,14 +646,27 @@ def left_behind(repo: str, commit: str, ref: str, cap: int = 8) -> list[dict]:
 def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: int = 200,
                 max_blame: int = 400, min_lines: int = 3, history: int = 500,
                 unit: str | None = None, path: str | None = None,
-                roots: set[str] | None = None) -> dict:
+                roots: set[str] | None = None, workers: int | None = None,
+                cache_dir: str | None = None, use_cache: bool = True,
+                excludes: list[str] | None = None) -> dict:
+    """`workers`: git calls in flight (default min(8, cpus)). `cache_dir`/`use_cache`: the blame cache
+    (default <git dir>/inspector/cache). `excludes`: pathspecs left out of blame diffs and the copies
+    search (default: effective_excludes(path, roots))."""
     roots = roots or MONOREPO_ROOTS
+    workers = max(1, workers if workers is not None else min(8, os.cpu_count() or 1))
     with phase("discovery"):
-        shallow = git(repo, "rev-parse", "--is-shallow-repository").strip() == "true"
-        work = first_parent(repo, ref, limit, since)
-        truncated = len(work) >= limit
+        info = repo_info(repo)
+        shallow = info.shallow
+        work_list = work_window(repo, ref, limit, since)
+        truncated = len(work_list) >= limit
         # The attribution window holds the work window (both walk back from the same ref).
-        units = first_parent(repo, ref, max(history, limit), None)
+        try:
+            with open(info.shallow_file, encoding="utf-8") as f:
+                boundary = set(f.read().split())
+        except OSError:
+            boundary = set()
+        n_units = max(history, limit)
+        units = first_parent(repo, ref, n_units, None, boundary, workers)
     by_sha = {u.sha: u for u in units}
     owner: dict[str, Unit] = {}
     for u in units:
@@ -432,13 +674,12 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
         for c in u.commits:
             owner.setdefault(c["sha"], u)
     with phase("changes"):
-        for u in units:
-            fill_changes(repo, u, roots)
+        fill_all_changes(repo, units, roots, ref, n_units)
     with phase("judge"):
         for u in units:
             judge(u)
 
-    work_shas = {u.sha for u in work if u.sha in by_sha}
+    work_shas = {s for s in work_list if s in by_sha}
     if unit:
         want = unit.lstrip("#")
         hit = None
@@ -453,12 +694,42 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
         p = path.rstrip("/")
         work_shas = {s for s in work_shas if any(f["path"] == p or f["path"].startswith(p + "/")
                                                 for f in by_sha[s].files)}
-    ignore = None
-    top = git(repo, "rev-parse", "--show-toplevel").strip()
-    if os.path.exists(os.path.join(top, ".git-blame-ignore-revs")):
-        ignore = os.path.join(top, ".git-blame-ignore-revs")
+    ignore, ignore_id = None, ""
+    if os.path.exists(os.path.join(info.toplevel, ".git-blame-ignore-revs")):
+        ignore = os.path.join(info.toplevel, ".git-blame-ignore-revs")
+        try:
+            import hashlib
+            with open(ignore, "rb") as f:
+                ignore_id = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            ignore_id = "unreadable"
+    if excludes is None:
+        excludes = effective_excludes(path, roots - MONOREPO_ROOTS)
+    cache = BlameCache(None if not use_cache else (cache_dir or os.path.join(info.git_dir, "inspector", "cache")))
 
     worked = [u for u in units if u.sha in work_shas]
+    jobs = [(u, c) for u in worked if u.is_fix for c in u.commits if c.get("is_fix")]
+
+    def analyze(job):
+        # per fix commit: one diff, one blame per file touched; independent of every other commit
+        c = job[1]
+        parent = c.get("parent")
+        if parent is None:                       # a commit dict built elsewhere: ask git
+            try:
+                parent = git(repo, "rev-parse", f"{c['sha']}^").strip()
+            except RuntimeError:
+                parent = ""
+        if not parent:
+            return Counter(), []
+        diff = commit_diff(repo, parent, c["sha"], excludes)
+        origins = blame_origins(repo, c["sha"], max_blame, ignore, parent, diff, excludes, cache, ignore_id)
+        return origins, removed_lines(split_patch(diff)[2])
+
+    with phase("blame"):
+        results = pmap(analyze, jobs, workers)
+    with phase("copies"):
+        hits = grep_hits(repo, ref, [t for _, rem in results for t in rem], excludes)
+    by_job = {id(c): res for (_, c), res in zip(jobs, results)}
     for u in worked:
         if not u.is_fix:
             continue
@@ -467,8 +738,7 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
             if not c.get("is_fix"):
                 continue
             c_intro: Counter = Counter()
-            with phase("blame"):
-                origins = blame_origins(repo, c["sha"], max_blame, ignore)
+            origins, removed = by_job[id(c)]
             for (sha, fpath), n in origins.items():
                 src = owner.get(sha)
                 if src is u:
@@ -481,11 +751,11 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
                 e["lines"] += n
                 e["files"].add(fpath)
             c["introduced_by"] = [{"unit": k, "lines": n} for k, n in c_intro.most_common(5)]
-            with phase("copies"):
-                c["left_behind"] = left_behind(repo, c["sha"], ref)
+            c["left_behind"] = left_behind(repo, c["sha"], ref, removed=removed, hits=hits)
         u.introduced_by = sorted(({**e, "files": sorted(e["files"])} for e in per_unit.values()),
                                  key=lambda e: -e["lines"])
         u.fix_of_fix = any(e["is_fix"] and e["lines"] >= min_lines for e in u.introduced_by)
+    Timing.extra["blame cache hits/misses"] = f"{cache.hits}/{cache.misses}"
 
     fixes = [u for u in worked if u.is_fix]
     code_files = lambda u: [f["path"] for f in u.files if blamed(f["path"])]
@@ -743,6 +1013,12 @@ def main(argv=None) -> int:
                     help="a top-level folder whose subfolders are components (repeatable; adds to the defaults)")
     ap.add_argument("--budget", type=int, default=12, help="cases to triage and write dossiers for (default 12)")
     ap.add_argument("--max-blame-lines", type=int, default=400, help="per fix commit")
+    ap.add_argument("--workers", type=int, help="git calls in flight (default min(8, cpu count); 1 = one at a time)")
+    ap.add_argument("--cache-dir", help="where blame results are cached (default <git dir>/inspector/cache: the only thing written inside .git)")
+    ap.add_argument("--no-cache", action="store_true", help="do not read or write the blame cache")
+    ap.add_argument("--exclude", action="append", default=[],
+                    help="a path prefix left out of blame diffs and the copies search (repeatable; adds to " + ", ".join(DEFAULT_EXCLUDES) + ")")
+    ap.add_argument("--no-default-excludes", action="store_true", help="do not leave " + ", ".join(DEFAULT_EXCLUDES) + " out of blame and the copies search")
     ap.add_argument("--min-lines", type=int, default=3, help="blamed lines from an earlier fix that make a fix-of-fix")
     ap.add_argument("--out", help="folder for evidence.json, evidence.md and cases/ (default: a new .git/inspector/<time>)")
     ap.add_argument("--json", help="write the full evidence here instead of <out>/evidence.json")
@@ -782,7 +1058,9 @@ def main(argv=None) -> int:
     Timing.reset(a.timing or os.environ.get("INSPECTOR_TIMING") == "1")
     try:
         r = investigate(a.repo, a.ref, a.since, a.max, a.max_blame_lines, a.min_lines, a.history,
-                        a.unit, a.path, MONOREPO_ROOTS | set(a.component_root))
+                        a.unit, a.path, MONOREPO_ROOTS | set(a.component_root), a.workers,
+                        a.cache_dir, not a.no_cache,
+                        effective_excludes(a.path, a.component_root, a.exclude, not a.no_default_excludes))
     except RuntimeError as e:
         print(f"evidence.py: {e}", file=sys.stderr)
         return 1
@@ -823,6 +1101,14 @@ def finish(a, r: dict, owner_sha: dict) -> int:
     by = {u["unit"]: u for u in r["timeline"]}
     me = os.path.abspath(__file__)
     lines = []
+
+    def build(label):
+        try:
+            return dossier(r["repo_path"], by[label], owner_sha, path=a.path)
+        except (OSError, RuntimeError) as e:
+            return e
+    # the dossiers are independent git reads: build them side by side, write them in order
+    built = pmap(build, r["cases"], a.workers if a.workers is not None else min(8, os.cpu_count() or 1)) if case_dir else []
     for i, label in enumerate(r["cases"], 1):
         cmd = (f"python3 {me} --repo {r['repo_path']} --unit '{label}'" + (f" --path {a.path}" if a.path else "")
                + " --dossier")
@@ -830,7 +1116,9 @@ def finish(a, r: dict, owner_sha: dict) -> int:
         if case_dir:
             fp = os.path.join(case_dir, "cases", f"{i:02d}-{label.lstrip('#')}.md")
             try:
-                write(fp, dossier(r["repo_path"], by[label], owner_sha, path=a.path))
+                if isinstance(built[i - 1], Exception):
+                    raise built[i - 1]
+                write(fp, built[i - 1])
                 where = f"`{fp}` (or `{cmd}`)"
             except (OSError, RuntimeError):
                 case_dir = None
