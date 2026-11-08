@@ -76,7 +76,6 @@ import {
   resumePrompt,
 } from './flow'
 import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, forbiddenTool, routeReview } from './route'
-import { hasCommand } from './runtime'
 import { FACTORY_START_TOOL, factoryArgs, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, parsePlanResultArgs, toolText } from './texts'
 
 const run = atom({ plugin: 'factory', key: 'run' } as const, null as Run | null)
@@ -172,7 +171,11 @@ async function run$($: EngineInterface, argv: string[], cwd: string) {
 const describe = (role: Role, r: Run) =>
   role === 'builder' ? `builder, round ${buildRound(r)}` : role === 'spec' ? 'spec-writer' : role === 'approver' ? 'approver' : role === 'skeptic' ? 'skeptic' : `${ROLES[role].label} review`
 
-const goalRunThere = ($: EngineInterface) => hasCommand($, 'session-goal')
+// Whether goal-run's command is registered now, asked fresh each time (mods start in no set order).
+// Inlined, not hasCommand from ./runtime: some CLI releases' hooks compiler follows $ only into a
+// function declared in the same file, and a module that fails that rule does not load at all
+// (seen with CLI 2.1.286; 2.1.312, which CI pins, allows it).
+const goalRunThere = async ($: EngineInterface) => (await $.command.list().catch(() => [])).some(c => c.name === 'session-goal')
 
 // Starts one role's agent in the run's worktree. A role type the engine refused to register falls
 // back to a general-purpose agent carrying the role's instructions in its prompt.
@@ -808,15 +811,30 @@ async function onSkeptic($: EngineInterface, answer: string, why: string) {
   if (!r) return
   const disputed = r.disputed ?? []
   const { dropped } = why ? { dropped: [] } : applyRulings(disputed.map(x => x.finding), answer, f => disputed.some(x => x.finding === f && x.role === 'security'))
-  const gone = new Map(dropped.map(d => [d.finding, d]))
+  // A ruling is matched to its finding by role, where and text, and each match takes one: two
+  // findings alike (the same one twice from a reviewer, or from two) each get their own ruling,
+  // not the first one's. A dropped finding whose disputed entry can't be found (state that crossed
+  // a serialization, say) is kept for the record under the reviewer it best matches.
+  const queue = new Map<string, Array<(typeof dropped)[number]>>()
+  const roleOf = (d: (typeof dropped)[number]): Reviewer =>
+    disputed.find(y => y.finding === d.finding)?.role
+    ?? disputed.find(y => y.finding.where === d.finding.where && y.finding.text === d.finding.text)?.role
+    ?? 'code'
+  for (const d of dropped) {
+    const role = roleOf(d)
+    const key = `${role}\0${d.finding.where}\0${d.finding.text}`
+    const list = queue.get(key) ?? []
+    list.push(d)
+    queue.set(key, list)
+  }
   const after = await patch($, cur => ({
     ...cur,
     disputed: [],
-    refuted: [...(cur.refuted ?? []), ...dropped.map(d => ({ role: disputed.find(x => x.finding === d.finding)!.role, finding: d.finding, ruling: d.ruling, why: d.why }))],
+    refuted: [...(cur.refuted ?? []), ...dropped.map(d => ({ role: roleOf(d), finding: d.finding, ruling: d.ruling, why: d.why }))],
     reviews: cur.reviews.map(x => {
       if (x.round !== cur.round || (x.state !== 'changes' && cur.kind !== 'review')) return x
       const findings = x.findings.flatMap(f => {
-        const d = gone.get(disputed.find(y => y.role === x.role && y.finding.where === f.where && y.finding.text === f.text)?.finding as never)
+        const d = queue.get(`${x.role}\0${f.where}\0${f.text}`)?.shift()
         return !d ? [f] : d.ruling === 'downgraded' ? [{ ...f, severity: 'minor' as const }] : []
       })
       return { ...x, findings, state: x.state === 'changes' && findings.some(f => f.severity !== 'minor') ? x.state : x.state === 'changes' ? 'pass' : x.state }
