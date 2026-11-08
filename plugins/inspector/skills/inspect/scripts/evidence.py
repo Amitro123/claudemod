@@ -28,6 +28,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -85,7 +87,49 @@ def blamed(path: str) -> bool:
     return bool(INSTRUCTIONS.search(path)) or not NOT_BLAMED.search(path)
 
 
+class Timing:
+    """Off by default (--timing or INSPECTOR_TIMING=1): wall time and git subprocess calls per phase.
+    Never part of evidence.json; printed to stderr."""
+    enabled = False
+    phase_now = "other"
+    seconds: dict[str, float] = {}
+    calls: dict[str, int] = {}
+    _lock = threading.Lock()
+
+    @classmethod
+    def reset(cls, enabled: bool) -> None:
+        cls.enabled, cls.phase_now, cls.seconds, cls.calls = enabled, "other", {}, {}
+
+    @classmethod
+    def count(cls) -> None:
+        if cls.enabled:
+            with cls._lock:
+                cls.calls[cls.phase_now] = cls.calls.get(cls.phase_now, 0) + 1
+
+    @classmethod
+    def report(cls) -> str:
+        names = list(dict.fromkeys([*cls.seconds, *cls.calls]))
+        rows = [f"{n:<12} {cls.seconds.get(n, 0.0):8.2f}s {cls.calls.get(n, 0):6d} git calls" for n in names]
+        rows.append(f"{'total':<12} {sum(cls.seconds.values()):8.2f}s {sum(cls.calls.values()):6d} git calls")
+        return "\n".join(rows)
+
+
+class phase:
+    """Context manager: git calls and time inside it are booked to `name`."""
+    def __init__(self, name: str):
+        self.name = name
+
+    def __enter__(self):
+        self.prev, Timing.phase_now, self.t0 = Timing.phase_now, self.name, time.perf_counter()
+
+    def __exit__(self, *exc):
+        if Timing.enabled:
+            Timing.seconds[self.name] = Timing.seconds.get(self.name, 0.0) + time.perf_counter() - self.t0
+        Timing.phase_now = self.prev
+
+
 def git(repo: str, *args: str, ok_codes=(0,)) -> str:
+    Timing.count()
     p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     if p.returncode not in ok_codes:
@@ -375,20 +419,24 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
                 unit: str | None = None, path: str | None = None,
                 roots: set[str] | None = None) -> dict:
     roots = roots or MONOREPO_ROOTS
-    shallow = git(repo, "rev-parse", "--is-shallow-repository").strip() == "true"
-    work = first_parent(repo, ref, limit, since)
-    truncated = len(work) >= limit
-    # The attribution window holds the work window (both walk back from the same ref).
-    units = first_parent(repo, ref, max(history, limit), None)
+    with phase("discovery"):
+        shallow = git(repo, "rev-parse", "--is-shallow-repository").strip() == "true"
+        work = first_parent(repo, ref, limit, since)
+        truncated = len(work) >= limit
+        # The attribution window holds the work window (both walk back from the same ref).
+        units = first_parent(repo, ref, max(history, limit), None)
     by_sha = {u.sha: u for u in units}
     owner: dict[str, Unit] = {}
     for u in units:
         owner.setdefault(u.sha, u)
         for c in u.commits:
             owner.setdefault(c["sha"], u)
-    for u in units:
-        fill_changes(repo, u, roots)
-        judge(u)
+    with phase("changes"):
+        for u in units:
+            fill_changes(repo, u, roots)
+    with phase("judge"):
+        for u in units:
+            judge(u)
 
     work_shas = {u.sha for u in work if u.sha in by_sha}
     if unit:
@@ -419,7 +467,9 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
             if not c.get("is_fix"):
                 continue
             c_intro: Counter = Counter()
-            for (sha, fpath), n in blame_origins(repo, c["sha"], max_blame, ignore).items():
+            with phase("blame"):
+                origins = blame_origins(repo, c["sha"], max_blame, ignore)
+            for (sha, fpath), n in origins.items():
                 src = owner.get(sha)
                 if src is u:
                     continue
@@ -431,7 +481,8 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
                 e["lines"] += n
                 e["files"].add(fpath)
             c["introduced_by"] = [{"unit": k, "lines": n} for k, n in c_intro.most_common(5)]
-            c["left_behind"] = left_behind(repo, c["sha"], ref)
+            with phase("copies"):
+                c["left_behind"] = left_behind(repo, c["sha"], ref)
         u.introduced_by = sorted(({**e, "files": sorted(e["files"])} for e in per_unit.values()),
                                  key=lambda e: -e["lines"])
         u.fix_of_fix = any(e["is_fix"] and e["lines"] >= min_lines for e in u.introduced_by)
@@ -698,6 +749,7 @@ def main(argv=None) -> int:
     ap.add_argument("--md", help="write the summary here instead of <out>/evidence.md")
     ap.add_argument("--github", action="store_true", help="also read the last merged PRs through gh (automatic on a shallow clone)")
     ap.add_argument("--prs", type=int, default=10, help="how many merged PRs the GitHub fallback reads (default 10)")
+    ap.add_argument("--timing", action="store_true", help="print wall time and git call counts per phase to stderr (or INSPECTOR_TIMING=1)")
     ap.add_argument("--dossier", action="store_true", help="with --unit: print that unit's case dossier to stdout and exit (needs no saved run)")
     ap.add_argument("--show", help="print one unit ('#N' or sha) as a case dossier, from a saved run (--out or --json), and exit")
     a = ap.parse_args(argv)
@@ -727,6 +779,7 @@ def main(argv=None) -> int:
             print(f"evidence.py: {e}", file=sys.stderr)
             return 1
         return 0
+    Timing.reset(a.timing or os.environ.get("INSPECTOR_TIMING") == "1")
     try:
         r = investigate(a.repo, a.ref, a.since, a.max, a.max_blame_lines, a.min_lines, a.history,
                         a.unit, a.path, MONOREPO_ROOTS | set(a.component_root))
@@ -741,6 +794,14 @@ def main(argv=None) -> int:
             return 2
         sys.stdout.write(dossier(r["repo_path"], r["timeline"][0], owner_sha, path=a.path))
         return 0
+    with phase("output"):
+        rc = finish(a, r, owner_sha)
+    if Timing.enabled:
+        print(Timing.report(), file=sys.stderr)
+    return rc
+
+
+def finish(a, r: dict, owner_sha: dict) -> int:
     r["cases"] = triage(r, a.budget)
     if (r["shallow"] or a.github) and not a.dossier:
         slug = github_slug(a.repo)
