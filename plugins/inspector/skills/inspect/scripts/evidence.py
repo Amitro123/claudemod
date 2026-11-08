@@ -18,6 +18,9 @@ the diff, not a verdict.
     python evidence.py [--repo .] [--ref HEAD] [--since REF|YYYY-MM-DD] [--max 200]
                        [--unit '#N'|SHA] [--path PREFIX] [--json out.json] [--md out.md]
     python evidence.py --show '#N' --json out.json      # one unit from a saved run
+
+Speed (see plugins/inspector/docs/perf-2026-11.md): --workers N, --cache-dir DIR / --no-cache (blame cache,
+default <git dir>/inspector/cache), --exclude PATH / --no-default-excludes, --timing (per-phase time and git calls).
 """
 from __future__ import annotations
 
@@ -290,23 +293,34 @@ def inner_commits(repo: str, base: str, head: str) -> list[dict]:
 MANIFESTS = ("package.json", "plugin.json", "pyproject.toml", "Cargo.toml", "manifest.json")
 
 
-def _log_diff(repo: str, ref: str, n: int, *flags: str, pathspec: tuple[str, ...] = ()) -> list[tuple[str, str]]:
-    """(sha, text) per first-parent commit among the newest n: its diff against its first parent."""
+def _log_diff(repo: str, ref: str, n: int, *flags: str, pathspec: tuple[str, ...] = (),
+              workers: int = 1) -> list[tuple[str, str]]:
+    """(sha, text) per first-parent commit among the newest n: its diff against its first parent.
+    A long window is cut into slices (--skip/--max-count) that git works on side by side."""
     tail = ["--", *pathspec] if pathspec else []
-    common = ["--first-parent", "--no-color", "--root", f"--max-count={n}", "--format=%x1e%H", *flags, ref, *tail]
-    try:
-        out = git(repo, "log", "--diff-merges=first-parent", *common)
-    except RuntimeError:                        # git older than 2.31
-        out = git(repo, "log", "-m", *common)
-    res = []
-    for rec in out.split("\x1e"):
-        if rec.strip():
-            sha, _, text = rec.partition("\n")
-            res.append((sha.strip(), text))
-    return res
+
+    def one(sl: tuple[int, int]) -> list[tuple[str, str]]:
+        skip, count = sl
+        common = ["--first-parent", "--no-color", "--root", f"--max-count={count}", f"--skip={skip}",
+                  "--format=%x1e%H", *flags, ref, *tail]
+        try:
+            out = git(repo, "log", "--diff-merges=first-parent", *common)
+        except RuntimeError:                    # git older than 2.31
+            out = git(repo, "log", "-m", *common)
+        res = []
+        for rec in out.split("\x1e"):
+            if rec.strip():
+                sha, _, text = rec.partition("\n")
+                res.append((sha.strip(), text))
+        return res
+
+    parts = min(workers, max(1, n // 12))        # slices of at least 12 commits
+    size = -(-n // parts)
+    slices = [(i * size, min(size, n - i * size)) for i in range(parts)]
+    return [x for part in pmap(one, slices, workers) for x in part]
 
 
-def fill_all_changes(repo: str, units: list[Unit], roots: set[str], ref: str, n: int) -> None:
+def fill_all_changes(repo: str, units: list[Unit], roots: set[str], ref: str, n: int, workers: int = 1) -> None:
     """The per-unit stats of every unit, from one `git log --numstat` pass (it was a `git diff` per unit),
     and the version bumps from one more pass over the manifests only."""
     todo = [u for u in units if not u.boundary]
@@ -315,7 +329,7 @@ def fill_all_changes(repo: str, units: list[Unit], roots: set[str], ref: str, n:
             u.tags.append("shallow-boundary")
     if not todo:
         return
-    stats = dict(_log_diff(repo, ref, n, "-M", "--numstat"))
+    stats = dict(_log_diff(repo, ref, n, "-M", "--numstat", workers=workers))
     for u in todo:
         for line in stats.get(u.sha, "").splitlines():
             if "\t" not in line:
@@ -334,7 +348,7 @@ def fill_all_changes(repo: str, units: list[Unit], roots: set[str], ref: str, n:
     # moved manifest reads as an addition, as it did when each path was diffed alone.
     sections: dict[tuple[str, str], tuple] = {}
     for sha, text in _log_diff(repo, ref, n, "--no-renames", "-p", "-U0",
-                               pathspec=tuple("*" + m for m in MANIFESTS)):
+                               pathspec=tuple("*" + m for m in MANIFESTS), workers=workers):
         for sec in re.split(r"(?m)^(?=diff --git )", text):
             head = sec.split("\n", 1)[0]
             if not head.startswith("diff --git a/"):
@@ -674,7 +688,7 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
         for c in u.commits:
             owner.setdefault(c["sha"], u)
     with phase("changes"):
-        fill_all_changes(repo, units, roots, ref, n_units)
+        fill_all_changes(repo, units, roots, ref, n_units, workers)
     with phase("judge"):
         for u in units:
             judge(u)
