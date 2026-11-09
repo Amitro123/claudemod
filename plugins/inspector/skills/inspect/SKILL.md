@@ -127,6 +127,18 @@ The summary lists:
 Blame results map to the last 500 units (`--history`), so a culprit just before the work window
 is still known.
 
+**Saved evidence is a snapshot, not a current-code cache.** The collector records its plugin
+version, content fingerprint, repository, SHA and collection settings. `--show` and cross-check
+validate new snapshots. A changed plugin or unsupported schema requires collection again.
+A moved checkout can be supplied with `--repo <new-path>` if it contains the snapshot commit.
+Legacy evidence has no provenance: collect again before relying on it. Treat warnings about a
+different HEAD or local edits as a requirement to choose one source: read and probe the saved
+commit in a temporary worktree, or collect at the current HEAD. Never combine saved line numbers
+with current working-tree code. Local uncommitted changes are not investigated by this collector.
+To compare the plugin copy in use with another on disk, run
+`python3 "<skill_root>/scripts/doctor.py" --repo <repo> --compare-plugin <other-plugin-root>`.
+This compares files only; verify which plugin the Claude session loaded separately.
+
 It is a lead sheet, not a verdict:
 
 - **Shallow clone** (a Warning): ask the user whether to run `git fetch --unshallow`. If yes, run
@@ -223,13 +235,21 @@ From an investigator: read its case file, then cross-check its leads against the
 below (pass its cases as cards if it listed them, or skip the cross-check) and check its reproduced
 and read leads at their places before you report them. From case readers: each replies with its
 card, as JSON. Then cross-check the readers against the collector,
-the cards on stdin (with the same scope flags the collector ran with):
+the cards on stdin. Reuse the saved evidence whenever available; this preserves the exact
+ref and scope and avoids collecting the history again:
 
 ```bash
-python3 "<skill_root>/scripts/crosscheck.py" --repo . [--path P | --since R] --cards - <<'CARDS'
+python3 "<skill_root>/scripts/crosscheck.py" --evidence "<out>/evidence.json" --cards - <<'CARDS'
 [ <card 1>, <card 2>, ... ]
 CARDS
 ```
+
+Only when evidence could not be saved, use `--repo <repo> --ref <collected-sha>`
+and the original `--unit`, `--path`, `--since`, `--max`, `--history`, custom `--component-root` values and blame limits.
+
+If cross-check or handoff exits nonzero, correct the input or output-path problem before
+continuing. Do not replace malformed or unreadable cards with an empty list. `[]` is valid only
+when the investigation actually returned no cards or leads. "Both unknown" is not corroboration.
 
 For each card it says whether the reader's culprit agrees with blame's. It says whether each
 sibling the reader reports sits on a copy the collector found ("both") or not ("reader only").

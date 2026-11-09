@@ -5,7 +5,7 @@ Two layers. The first is free and runs in CI; the second costs model calls and i
 ## 1. Free: the collector against known answers (CI)
 
 ```bash
-python -m pytest plugins/inspector/tests -q        # 27 tests, ~10 s, no model
+python -m pytest plugins/inspector/tests -q        # deterministic tests, no model
 ```
 
 - `test_evidence.py`: small repositories built in the test, one per behaviour:
@@ -20,6 +20,10 @@ python -m pytest plugins/inspector/tests -q        # 27 tests, ~10 s, no model
   - one fix that only adds lines, so it has no culprit.
 
   CI checks out the full history for it (`fetch-depth: 0`); a shallow clone skips it.
+
+The offline wrapper also runs `claude plugin validate`; its exit status is nonzero if either
+validation or pytest fails. A missing Claude CLI is a validation failure, not a successful
+plugin run. You can still run the pytest command above separately.
 
 ## 2. Paid: what the skill does with the evidence (6 cases)
 
