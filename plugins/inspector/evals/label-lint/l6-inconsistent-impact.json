@@ -1,0 +1,14 @@
+[
+  {
+    "where": "src/a.py:1",
+    "what": "the loop skips the last item",
+    "level": "reproduced",
+    "probe": "src/a.py:1 read",
+    "reach": "default-on",
+    "category": "broken-flow",
+    "impact": {
+      "what": "x",
+      "level": "unverified"
+    }
+  }
+]
