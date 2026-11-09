@@ -7,8 +7,14 @@ Slow set: everything that builds a repository or runs the collector, one reposit
 import pytest
 
 # modules whose tests build repositories / run the collector, minus a few pure-logic tests inside them
-SLOW_MODULES = {"test_evidence", "test_collector_equality", "test_dossier_big"}
-PURE = {"test_subject_verdict", "test_default_excludes_are_overridden_by_path_and_component_root"}
+SLOW_MODULES = {"test_evidence", "test_collector_equality", "test_dossier_big", "test_github_enrich"}
+PURE = {"test_subject_verdict", "test_default_excludes_are_overridden_by_path_and_component_root",
+        # test_github_enrich: mocked gh, no repository
+        "test_one_call_per_pr_with_labels_closes_and_body", "test_an_issue_without_labels_costs_one_extra_call_only_for_that_issue",
+        "test_merged_pr_is_cached_and_a_failure_is_not", "test_an_unmerged_pr_is_not_cached",
+        "test_cache_version_is_part_of_the_key", "test_first_failure_stops_the_remaining_calls",
+        "test_fix_signals_name_the_label_or_issue", "test_note_for_the_timeline_and_the_dossier",
+        "test_cli_has_no_github_flag_and_help_mentions_it"}
 
 
 # single tests that build a repository or spawn a long subprocess inside otherwise fast modules
