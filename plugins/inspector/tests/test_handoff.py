@@ -36,7 +36,7 @@ def test_words_and_levels_go_out_as_given(monkeypatch, capsys) -> None:
     code, out, _ = run(monkeypatch, capsys, [CARD])
     assert code == 0
     row = next(l for l in out.splitlines() if W in l)
-    assert row.startswith("| suspect |")
+    assert row.startswith("| suspect [production: unknown] |")
     assert "the pane open is skipped [unverified]" in row and "commands" not in row
     lines = [l for l in out.splitlines() if l.startswith("| reproduced") or l.startswith("| suspect")]
     assert lines[0].startswith("| reproduced"), "the strongest lead first"
@@ -47,7 +47,7 @@ def test_a_level_can_be_lowered_never_raised(monkeypatch, capsys) -> None:
     code, _, err = run(monkeypatch, capsys, [CARD], "--lower", f"{W}=read")
     assert code == 2 and "may not raise suspect to read" in err
     code, out, _ = run(monkeypatch, capsys, [CARD], "--lower", "plugins/followups/hooks/register.tsx:400=read")
-    assert code == 0 and "| read | `plugins/followups/hooks/register.tsx:400`" in out
+    assert code == 0 and "| read [production: unknown] | `plugins/followups/hooks/register.tsx:400`" in out
 
 
 def test_notes_are_marked_and_drops_drop(monkeypatch, capsys) -> None:
@@ -61,7 +61,7 @@ def test_notes_are_marked_and_drops_drop(monkeypatch, capsys) -> None:
 def test_an_investigators_leads_and_a_missing_impact(monkeypatch, capsys) -> None:
     leads = [{"where": "a.py:3", "what": "x", "level": "read", "breaks": "P2", "change": "y", "test": "z"}]
     code, out, _ = run(monkeypatch, capsys, leads)
-    assert code == 0 and "| read | `a.py:3` | x | not stated [unverified] |" in out
+    assert code == 0 and "| read [production: unknown] | `a.py:3` | x | not stated [unverified] |" in out
 
 
 HOST = {"case": "#9", "complete": {"siblings": [
@@ -79,9 +79,9 @@ def test_needs_host_check_is_shown_next_to_the_level_and_never_raises_it(monkeyp
     code, out, err = run(monkeypatch, capsys, [HOST])
     assert code == 0
     rows = {l.split("`")[1]: l for l in out.splitlines() if l.startswith("| ") and "`" in l}
-    assert rows["a/b.ts:3"].startswith("| read [needs-host-check] |")
-    assert rows["a/c.ts:4"].startswith("| suspect [needs-host-check] |")
-    assert rows["a/d.ts:5"].startswith("| read |")
+    assert rows["a/b.ts:3"].startswith("| read [needs-host-check] [production: unknown] |")
+    assert rows["a/c.ts:4"].startswith("| suspect [needs-host-check] [production: unknown] |")
+    assert rows["a/d.ts:5"].startswith("| read [production: unknown] |")
 
 
 TRIPLE = {"security_input": "req.body.url (a/b.ts:2)", "security_boundary": "no allow-list (a/b.ts:3)",
@@ -89,8 +89,12 @@ TRIPLE = {"security_input": "req.body.url (a/b.ts:2)", "security_boundary": "no 
 FIELDS = ("security_input", "security_boundary", "security_sink", "security_actor")
 
 
+COUNTER = {"security_counter": "the actor already has repo write access",
+           "security_counter_refuted_by": "a/b.ts:3 accepts input from any tenant"}
+
+
 def _sec(**kw):
-    lead = {**HOST["complete"]["siblings"][0], "probe": "a/b.ts:3 read", **kw}
+    lead = {**HOST["complete"]["siblings"][0], "probe": "a/b.ts:3 read", **COUNTER, **kw}
     return [{"case": "#9", "complete": {"siblings": [lead]}}]
 
 
@@ -184,7 +188,7 @@ def test_reach_is_shown_in_the_level_cell_and_breaks_ties(monkeypatch, capsys) -
     assert rows["c.py:1"].endswith("| conditional: format drift |")
     assert rows["d.py:1"].endswith("| default-on |")
     assert rows["m.py:1"].endswith("| unknown |") and rows["u.py:1"].endswith("| unknown |")
-    assert rows["o.py:1"].startswith("| read |"), "the level cell is unchanged"
+    assert rows["o.py:1"].startswith("| read [production: unknown] |"), "the level cell is unchanged"
     order = [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l]
     assert order == ["d.py:1", "c.py:1", "m.py:1", "u.py:1", "o.py:1", "s.py:1"],         "default-on, conditional, unknown, opt-in; ties keep input order"
 
@@ -203,7 +207,7 @@ def test_not_verified_prints_under_the_impact_and_is_no_level(monkeypatch, capsy
     _, out, _ = run(monkeypatch, capsys, [lead])
     row = _rows(out)["a.py:1"]
     assert "bad [read: a.py:2] not verified: also after reload; format Y fails |" in row
-    assert row.startswith("| read |")
+    assert row.startswith("| read [production: unknown] |")
     _, out, _ = run(monkeypatch, capsys, [{**lead, "not_verified": "oops"}, {**lead, "where": "b.py:1", "not_verified": 5}])
     assert "not verified: oops" in _rows(out)["a.py:1"] and "not verified" not in _rows(out)["b.py:1"]
 
@@ -212,7 +216,7 @@ def test_reach_next_to_needs_host_check(monkeypatch, capsys) -> None:
     lead = {**HOST["complete"]["siblings"][0], "reach": "opt-in"}
     _, out, _ = run(monkeypatch, capsys, [{"case": "x", "complete": {"siblings": [lead]}}])
     row = _rows(out)["a/b.ts:3"]
-    assert row.startswith("| read [needs-host-check] |") and row.endswith("| opt-in |")
+    assert row.startswith("| read [needs-host-check] [production: unknown] |") and row.endswith("| opt-in |")
 
 
 LABELS = "skills/inspect/references/labels.md"
@@ -318,3 +322,79 @@ def test_reconcile_checklist_exists_and_is_pointed_to() -> None:
               "skills/inspect/references/case-file.md"):
         assert "references/reconcile.md" in _text(f) or "reconcile.md" in _text(f), f
         assert "Checks against the source of truth" in _text(f) or "reconcile.md" in _text(f), f
+
+
+def test_security_counter_is_printed_in_the_quadruple_cell_without_warning(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _sec(**TRIPLE))
+    row = _rows(out)["a/b.ts:3"]
+    assert "actor: an end user who submits the url | counter: the actor already has repo write access" in row
+    assert "| refuted by: a/b.ts:3 accepts input from any tenant)" in row
+    assert err == ""
+
+
+def test_security_missing_the_counter_or_refutation_warns_naming_it(monkeypatch, capsys) -> None:
+    code, _, err = run(monkeypatch, capsys, _sec(**TRIPLE, security_counter=""))
+    assert code == 0 and "a/b.ts:3" in err and "security_counter" in err and "security_counter_refuted_by" not in err
+    code, _, err = run(monkeypatch, capsys, _sec(**TRIPLE, security_counter_refuted_by=" "))
+    assert code == 0 and "a/b.ts:3" in err and "security_counter_refuted_by" in err
+    assert "missing: security_counter," not in err
+
+
+def test_non_security_with_the_counter_fields_does_not_warn(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _sec(category="hardening"))
+    assert err == "" and "counter: the actor already has repo write access" in out
+    _, _, err = run(monkeypatch, capsys, _sec(category="hardening", security_counter="", security_counter_refuted_by=""))
+    assert err == ""
+
+
+def test_production_tag_defaults_to_unknown_and_sorts_yes_first_at_equal_level(monkeypatch, capsys) -> None:
+    def lead(w, prod=None, reach=None, lvl="read", **kw):
+        d = {"where": w, "what": "x", "level": lvl, "probe": "p"}
+        if prod:
+            d["observed_in_production"] = prod
+        if reach:
+            d["reach"] = reach
+        return {**d, **kw}
+    leads = [lead("d.py:1", reach="default-on"), lead("n.py:1", "no", "default-on"),
+             lead("y.py:1", "yes", "opt-in", observed_source="job history"), lead("s.py:1", "yes", lvl="suspect"),
+             lead("u.py:1", "unknown", "conditional")]
+    _, out, _ = run(monkeypatch, capsys, leads)
+    rows = _rows(out)
+    assert rows["d.py:1"].startswith("| read [production: unknown] |")
+    assert rows["n.py:1"].startswith("| read [production: no] |")
+    assert rows["y.py:1"].startswith("| read [production: yes: job history] |")
+    assert [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l] == [
+        "y.py:1", "d.py:1", "n.py:1", "u.py:1", "s.py:1"], "yes first, then reach; a lower level stays below"
+
+
+def test_production_tag_sits_after_needs_host_check(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, _sec(**TRIPLE, observed_in_production="yes"))
+    assert _rows(out)["a/b.ts:3"].startswith("| read [needs-host-check] [production: yes] |")
+
+
+def test_documented_is_printed_under_the_impact_only_when_given(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p", documented="README: a batch with a duplicate name is refused",
+                                               reconcile="rows per day vs source"))
+    assert "documented: README: a batch with a duplicate name is refused" in out
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p"))
+    assert "documented" not in out
+
+
+def test_documented_without_reconcile_or_production_yes_warns(monkeypatch, capsys) -> None:
+    code, _, err = run(monkeypatch, capsys, _lead(probe="p", documented="test_x pins it"))
+    assert code == 0 and "a.py:1" in err and "documented" in err and "reconcile" in err
+    _, _, err = run(monkeypatch, capsys, _lead(probe="p", documented="test_x pins it", reconcile="freshness query"))
+    assert err == ""
+    _, _, err = run(monkeypatch, capsys, _lead(probe="p", documented="test_x pins it", observed_in_production="yes"))
+    assert err == ""
+    _, _, err = run(monkeypatch, capsys, _lead(probe="p", documented="test_x pins it", observed_in_production="no"))
+    assert "documented" in err
+    _, _, err = run(monkeypatch, capsys, _lead(probe="p", documented=""))
+    assert err == ""
+
+
+def test_the_agents_point_to_the_counter_and_documented_fields() -> None:
+    for f in ("agents/case-reader.md", "agents/investigator.md"):
+        t = _text(f)
+        assert "`security_counter`" in t and "`documented`" in t and "`observed_in_production`" in t, f
+        assert "references/labels.md" in t, f

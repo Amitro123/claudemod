@@ -61,7 +61,7 @@ Reply with this JSON, nothing else:
     "verdict": "yes | no | unknown",
     "siblings": [
       {"where": "path:line", "what": "the same bug, here", "breaks": "P3 or 'sibling of <case>'", "level": "reproduced | read | suspect",
-       "category": "security | broken-flow | hardening | cost | other", "security_input": "path:line, required when category is security", "security_boundary": "path:line, same", "security_sink": "path:line, same", "security_actor": "named outsider, same", "needs_host_check": false, "change_status": "verified | unverified", "reach": "default-on | conditional | opt-in | unknown", "reach_when": "short text, optional", "not_verified": ["untraced sub-claim"],
+       "category": "security | broken-flow | hardening | cost | other", "security_input": "path:line, required when category is security", "security_boundary": "path:line, same", "security_sink": "path:line, same", "security_actor": "named outsider, same", "security_counter": "one-line counter, required for security", "security_counter_refuted_by": "named fact, same", "documented": "optional", "observed_in_production": "yes | no | unknown, optional", "needs_host_check": false, "change_status": "verified | unverified", "reach": "default-on | conditional | opt-in | unknown", "reach_when": "short text, optional", "not_verified": ["untraced sub-claim"],
        "impact": {"what": "what a user or the next code sees", "level": "reproduced | read | unverified", "source": "path:line you traced to, or the doc or type that says so"},
        "change": "the fix it needs", "test": "the test that proves it"}
     ],
@@ -79,3 +79,4 @@ Paths are relative to the repository, with today's line numbers.
 For a lead about data that is missing or stale, trace the producer first: references/producers.md.
 
 For a pipeline's data, propose a check against the source of truth (a human runs it): references/reconcile.md; optional lead field `reconcile`.
+Before emitting `security`, write `security_counter` and `security_counter_refuted_by`; a documented or test-pinned behaviour gets `documented` and `observed_in_production`, and its severity is not set from code alone: references/labels.md.

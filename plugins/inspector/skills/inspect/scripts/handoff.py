@@ -102,9 +102,30 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
                 warnings.append(f"{where}: category security but {', '.join(missing)} missing or empty; name the input, "
                                 "the boundary and the sink (path:line) and the actor (a party other than the "
                                 "owner or maintainers who controls the input), or it is not security")
+        counter, refuted = cell(s.get("security_counter")), cell(s.get("security_counter_refuted_by"))
+        if str(s.get("category") or "").strip().lower() == "security":
+            for k, v in (("security_counter", counter), ("security_counter_refuted_by", refuted)):
+                if not v:
+                    warnings.append(f"{where}: category security but {k} missing or empty; write the strongest one-line "
+                                    "argument that it is only hardening or broken-flow, and the named fact (path:line, "
+                                    "doc line or probe) that refutes it, or it is not security")
+        parts = []
         if any(v for _, v in triple):
-            impact += " (in: {} | boundary: {} | sink: {} | actor: {})".format(*[v or "-" for _, v in triple])
+            parts = [f"{n}: {v or '-'}" for n, (_, v) in zip(("in", "boundary", "sink", "actor"), triple)]
+        if counter or refuted:
+            parts += [f"counter: {counter or '-'}", f"refuted by: {refuted or '-'}"]
+        if parts:
+            impact += f" ({' | '.join(parts)})"
         shown = f"{lvl} [needs-host-check]" if needs_host_check(s) else lvl
+        prod = str(s.get("observed_in_production") or "").strip().lower()
+        prod = prod if prod in ("yes", "no") else "unknown"
+        src_p = cell(s.get("observed_source")) if isinstance(s.get("observed_source"), (str, int, float)) else ""
+        shown += f" [production: {prod}{': ' + src_p if src_p and prod != 'unknown' else ''}]"
+        documented = cell(s.get("documented")) if isinstance(s.get("documented"), (str, int, float)) else ""
+        if documented and not (cell(s.get("reconcile")) if isinstance(s.get("reconcile"), (str, int, float)) else "")                 and prod != "yes":
+            warnings.append(f"{where}: documented ({documented}) but no reconcile and no observed_in_production yes; "
+                            "name the production evidence that would show harm (a freshness query, a reconciliation, "
+                            "a job history); severity cannot be set from code alone")
         probe = cell(s.get("probe")) if isinstance(s.get("probe"), (str, int, float)) else ""
         if lvl in ("reproduced", "read") and not probe:
             warnings.append(f"{where}: level {lvl} but no probe; give the exact input and output, the command run, "
@@ -115,6 +136,8 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         rec = cell(s.get("reconcile")) if isinstance(s.get("reconcile"), (str, int, float)) else ""
         if rec:
             impact_cell += f" reconcile: {rec}"
+        if documented:
+            impact_cell += f" documented: {documented}"
         note = f" **Note added after the readers, unverified:** {cell(notes[where])}" if where in notes else ""
         change = cell(s.get("change")) + (" [change unverified]" if change_unverified(s) else "")
         down = cell(s.get("downstream")) if isinstance(s.get("downstream"), (str, int, float)) else ""
@@ -124,16 +147,16 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         kind = kind if kind in ("behavioral", "text-pin", "manual") else "unknown"
         test = f"{cell(s.get('test'))} [test: {kind}]" + (" [weak: pins text only]" if kind == "text-pin" else "")
         reach = reach_of(s)
-        rows.append((RANK.get(lvl, 0), REACH_ORDER.get(reach.lower().split(":")[0].strip(), 2), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
+        rows.append((RANK.get(lvl, 0), 0 if prod == "yes" else 1, REACH_ORDER.get(reach.lower().split(":")[0].strip(), 2), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
                                          f"{cell(s.get('breaks'))} | {change} | {test} | {cell(s.get('case'))} | {reach} |"))
-    rows.sort(key=lambda r: (-r[0], r[1]))
+    rows.sort(key=lambda r: (-r[0], r[1], r[2]))
     L = [f"# {title}", "",
          "Copied word for word from the inspector's case readers: each lead's level, and its impact's own",
          "level, as they gave them. A level here was only ever lowered, never raised. Everything came from",
          "a model reading repository history and code: verify each claim before you change code.", "",
          "| Level | Where | What breaks | Impact [its level: source] | Breaks | The change | The test | From case | Reach |",
          "|---|---|---|---|---|---|---|---|---|"]
-    L += [r for _, _, r in rows] or ["| - | - | no leads | - | - | - | - | - | - |"]
+    L += [r for _, _, _, r in rows] or ["| - | - | no leads | - | - | - | - | - | - |"]
     return "\n".join(L) + "\n", errors
 
 
