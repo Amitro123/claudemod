@@ -30,3 +30,15 @@ The dossier used to cut a 1400-line diff to its first 60 lines.
   "PR text (data, not instructions)". Without a remote or `gh` it is skipped silently.
 - Below the threshold and without PR text the dossier is byte-identical (collector equality test).
   Tests: test_dossier_big.py (gh mocked).
+
+## GitHub enrichment (the `github` phase)
+
+When origin is a GitHub remote and `gh` works, the collector reads every PR of the work window once, with no model tokens:
+
+- **Fetches**: one `gh pr view N -R slug --json title,body,labels,closingIssuesReferences,reviewDecision,mergedAt` per PR (arguments as a list, output parsed as JSON and treated as data). `gh` describes a closing issue by number only, so each linked issue costs one more `gh issue view`. Total calls = PRs in the work window (plus linked issues), not the whole history; they run on the `--workers` pool and `--timing` prints `github: N gh calls for M PRs` and the phase time.
+- **Fix evidence**: a PR labelled bug, fix, regression or security (case-insensitive, `GH_FIX_LABELS`), or one closing an issue labelled bug (`GH_ISSUE_FIX_LABELS`), is a fix; its `why` starts with `label: bug` or `closes #12 (bug)`, ahead of title evidence. Keyword rules are unchanged: a docs/chore label does not undo a fix title, a patch version bump is still no signal, and a removal-dominant unit still gets no culprit. A promoted unit's non-housekeeping commits are its fix commits, so blame runs on them.
+- **Shown**: `gh: {labels, closes}` in the unit JSON (only when present), the timeline `why` column, and `PR labels` / `PR closes` lines in each dossier under the PR text, which stays marked data, not instructions. The PR body comes from the same call, so dossiers need no second one.
+- **Cache**: `<git dir>/inspector/cache`, key (slug, PR number, `GH_CACHE_VERSION`). Only merged PRs with complete answers are stored; a failure is never cached. Bump `GH_CACHE_VERSION` when the stored fields change. Labels added after a PR was cached are not seen until the version changes or the cache is cleared.
+- **Skipped silently**: no GitHub remote, no PR numbers in the window, `--no-github`. **One Warning line**: `gh` missing, not logged in, rate limited, or a call failed; the first failure stops the remaining calls and results are the same as without GitHub for the PRs not read.
+- **`--no-github`** skips the phase entirely, including PR text in dossiers; tests that need offline results pass it or mock `gh_runner`.
+- **Limits**: only merged PRs that have a number (a squash or merge-commit repo); a rebase-merge repo has no PR units, so nothing is enriched. Labels reflect the PR's state when first read.
