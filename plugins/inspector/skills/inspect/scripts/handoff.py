@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crosscheck import read_cards  # noqa: E402
 
+SEC_FIELDS = ("security_input", "security_boundary", "security_sink")
 RANK = {"reproduced": 3, "read": 2, "suspect": 1, "unverified": 0}
 
 
@@ -81,9 +82,14 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         impact = cell(imp.get("what")) or "not stated"
         ilvl = level_word(imp.get("level")) if imp.get("what") else "unverified"
         src = cell(imp.get("source"))
-        if str(s.get("category") or "").strip().lower() == "security" and ilvl == "unverified":
-            warnings.append(f"{where}: category security but the impact is unverified; "
-                            "without an observed or traced consequence it is broken-flow, cost or other")
+        triple = [(k, cell(s.get(k))) for k in SEC_FIELDS]
+        if str(s.get("category") or "").strip().lower() == "security":
+            missing = [k for k, v in triple if not v]
+            if missing:
+                warnings.append(f"{where}: category security but {', '.join(missing)} missing or empty; "
+                                "name the input, the boundary and the sink (path:line), or it is not security")
+        if any(v for _, v in triple):
+            impact += " (in: {} | boundary: {} | sink: {})".format(*[v or "-" for _, v in triple])
         shown = f"{lvl} [needs-host-check]" if needs_host_check(s) else lvl
         impact_cell = f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]"
         note = f" **Note added after the readers, unverified:** {cell(notes[where])}" if where in notes else ""

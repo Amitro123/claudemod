@@ -84,11 +84,42 @@ def test_needs_host_check_is_shown_next_to_the_level_and_never_raises_it(monkeyp
     assert rows["a/d.ts:5"].startswith("| read |")
 
 
-def test_security_with_an_unverified_impact_warns_but_does_not_fail(monkeypatch, capsys) -> None:
-    code, _, err = run(monkeypatch, capsys, [HOST])
-    assert code == 0
-    assert "a/b.ts:3" in err and "security" in err and "unverified" in err
-    assert "a/d.ts:5" not in err
+TRIPLE = {"security_input": "req.body.url (a/b.ts:2)", "security_boundary": "no allow-list (a/b.ts:3)",
+          "security_sink": "fetch(url) (a/b.ts:9)"}
+
+
+def _sec(**kw):
+    lead = {**HOST["complete"]["siblings"][0], **kw}
+    return [{"case": "#9", "complete": {"siblings": [lead]}}]
+
+
+def test_security_with_the_triple_and_unverified_impact_does_not_warn(monkeypatch, capsys) -> None:
+    code, out, err = run(monkeypatch, capsys, _sec(**TRIPLE))
+    assert code == 0 and "warning" not in err and err == ""
+
+
+def test_the_triple_is_rendered_in_the_row(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, _sec(**TRIPLE))
+    row = _rows(out)["a/b.ts:3"]
+    assert "in: req.body.url (a/b.ts:2) | boundary: no allow-list (a/b.ts:3) | sink: fetch(url) (a/b.ts:9)" in row.replace("/", "/")
+
+
+def test_security_missing_a_field_warns_and_names_it(monkeypatch, capsys) -> None:
+    code, _, err = run(monkeypatch, capsys, _sec(**{**TRIPLE, "security_boundary": "  "}))
+    assert code == 0 and "a/b.ts:3" in err and "security_boundary" in err
+    assert "security_input" not in err and "security_sink" not in err
+    code, _, err = run(monkeypatch, capsys, _sec())
+    assert code == 0 and all(k in err for k in TRIPLE)
+
+
+def test_non_security_with_the_fields_prints_them_without_warning(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _sec(category="broken-flow", **TRIPLE))
+    assert err == "" and "sink: fetch(url) (a/b.ts:9)" in out
+
+
+def test_non_security_without_fields_prints_no_triple(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _sec(category="broken-flow"))
+    assert err == "" and "in:" not in out
 
 
 def _rows(out):
@@ -160,3 +191,17 @@ def test_the_new_rule_text_is_in_all_four_files() -> None:
 def test_skill_md_stays_within_its_size_budget() -> None:
     words = len((PLUGIN / "skills/inspect/SKILL.md").read_text(encoding="utf-8").split())
     assert words <= 4450, words
+
+
+def test_the_boundary_and_needs_host_check_sentences_are_in_all_four_files() -> None:
+    for f in RULE_FILES:
+        t = " ".join((PLUGIN / f).read_text(encoding="utf-8").split())
+        assert "could not already cross" in t and "`broken-flow`, not security" in t, f
+        assert "`security_input`" in t and "`security_boundary`" in t and "`security_sink`" in t, f
+        assert "trigger or the sink's behaviour in the real environment was not observed" in t, f
+
+
+def test_the_investigator_case_file_carries_the_leads_as_a_json_block() -> None:
+    for f in ["agents/investigator.md", "skills/inspect/references/case-file.md"]:
+        t = " ".join((PLUGIN / f).read_text(encoding="utf-8").split())
+        assert "fenced ```json block" in t and "not only a table" in t, f
