@@ -27,8 +27,8 @@ Each lead has a mechanism and an impact, and they are two claims. Trace the impa
 from the failing point (what runs after it, what it skips), or cite where the host's behaviour is
 written, or mark it unverified. A mechanism you read doesn't make its impact read.
 Impact that depends on unobserved host behaviour: level `unverified`, flag `needs-host-check`.
-`category` `security` needs an untrusted input crossing a trust boundary and an observed or traced
-consequence; else `broken-flow` (host dependency stated), `cost` or `other`.
+`category`: `security` needs a documented or code-traced path from an input an outsider or another system controls to a sensitive sink (a secret persisted or sent on, a guard bypassed, injection); it is `traced` even when the real-world trigger was not observed. Name the input, the boundary and the sink, one line each; a lead that cannot is not security. `needs-host-check` says what would confirm the trigger and never changes the category. Otherwise `broken-flow`, `cost` or `other`.
+`change_status` `verified` | `unverified`: `unverified` when the change depends on host or tool semantics nobody observed (a variable format that doubles quotes the query already adds); the change line then says what to verify first. `reach` `default-on` | `opt-in` | `unknown`, plus a short text (`trigger: none, flag defaults off`). Give both on every lead.
 
 When the case file is written, reply with at most 300 words:
 - **Findings**: the verdict, and the open leads by level;

@@ -44,9 +44,8 @@ titles only go last, one line each.
 |---|---|---|---|---|---|---|---|---|---|
 
 Level: reproduced | read | suspect; add `[needs-host-check]` when the impact depends on host
-behaviour nobody observed (its impact level is then `unverified`). Category `security` only with an
-untrusted input crossing a trust boundary and a traced consequence, else `broken-flow`, `cost` or
-`other`. Ranked as SKILL.md step 5 says: a broken promise a user hits,
+behaviour nobody observed (its impact level is then `unverified`). Category `security` needs a documented or code-traced path from an input an outsider or another system controls to a sensitive sink (a secret persisted or sent on, a guard bypassed, injection); it is `traced` even when the real-world trigger was not observed. Name the input, the boundary and the sink, one line each; a lead that cannot is not security. `needs-host-check` says what would confirm the trigger and never changes the category. Otherwise `broken-flow`, `cost` or `other`.
+Each lead also carries `change_status` `verified` | `unverified`: `unverified` when the change depends on host or tool semantics nobody observed (a variable format that doubles quotes the query already adds); the change line then says what to verify first. `reach` `default-on` | `opt-in` | `unknown`, plus a short text (`trigger: none, flag defaults off`). Ranked as SKILL.md step 5 says: a broken promise a user hits,
 then a seam with a fix-of-fix history, then the rest; reproduced first within each. A row with no
 promise and no sibling in Breaks belongs under Recommendations, not here.
 

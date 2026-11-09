@@ -334,12 +334,10 @@ Decide each lead:
 - **suspect**: the pattern fits; you can't name the failing input;
 - **clear**: you looked and it's handled. One line each, under "Checked and clear".
 
-**Labels.** `category`: `security` only with an untrusted input crossing a trust boundary AND an
-observed or traced consequence (data exposure, a guard bypassed, injection). Otherwise `broken-flow`
-(a documented promise doesn't hold), `cost` or `other`; a fail-open or deny-list weakness whose
-reach depends on the host is `broken-flow`, with the host dependency stated. A claim whose truth
-depends on host or runtime behaviour not observed in this session: impact level `unverified` and
-the flag `needs-host-check` (the mechanism may still be `read`; the impact is not).
+**Labels.** `category`: `security` needs a documented or code-traced path from an input an outsider or another system controls to a sensitive sink (a secret persisted or sent on, a guard bypassed, injection); it is `traced` even when the real-world trigger was not observed. Name the input, the boundary and the sink, one line each; a lead that cannot is not security. `needs-host-check` says what would confirm the trigger and never changes the category. Otherwise `broken-flow`, `cost` or `other`.
+A claim whose truth depends on host or runtime behaviour not observed in this session: impact level
+`unverified` and the flag `needs-host-check` (the mechanism may still be `read`; the impact is not).
+`change_status` `verified` | `unverified`: `unverified` when the change depends on host or tool semantics nobody observed (a variable format that doubles quotes the query already adds); the change line then says what to verify first. `reach` `default-on` | `opt-in` | `unknown`, plus a short text (`trigger: none, flag defaults off`).
 
 **The gate.** Each lead names what it breaks, in the table's Breaks column: a promise from the
 brief (quote it), or the fixed bug it is a sibling of (the case). A finding that names neither is
