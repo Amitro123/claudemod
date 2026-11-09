@@ -33,6 +33,25 @@ def git(repo: str, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def path_list(path) -> list[str]:
+    """--path as a list: None, one prefix (str) or several (list) -> [] / [p] / [p, ...]."""
+    return [] if not path else [path] if isinstance(path, str) else list(dict.fromkeys(path))
+
+
+def scope_path(paths):
+    """The value recorded for --path: None, the prefix itself for one (as before --path was repeatable),
+    a list for several."""
+    paths = path_list(paths)
+    return None if not paths else paths[0] if len(paths) == 1 else paths
+
+
+def same_scope(key: str, saved, wanted) -> bool:
+    """Saved and requested scope values agree; a repeated --path is a set (order does not matter)."""
+    if key == 'path':
+        return sorted(path_list(saved)) == sorted(path_list(wanted))
+    return saved == wanted
+
+
 def metadata(repo: str, options: dict, repo_path: str | None = None) -> dict:
     return {'schema': SCHEMA_VERSION, 'plugin': plugin_identity(), 'options': options,
             'repo_path': repo_path or git(repo, 'rev-parse', '--show-toplevel')}
@@ -75,7 +94,7 @@ def validate(data: dict, repo: str | None = None, expected_ref: str | None = Non
     if not isinstance(options, dict):
         raise ValueError('Invalid saved collection options; collect again.')
     for key, value in (expected_scope or {}).items():
-        if value is not None and options.get(key) != value:
+        if value is not None and not same_scope(key, options.get(key), value):
             raise ValueError(f'Requested {key} differs from saved evidence; collect again for that scope.')
     target = repo or meta.get('repo_path')
     sha = data.get('ref_sha')

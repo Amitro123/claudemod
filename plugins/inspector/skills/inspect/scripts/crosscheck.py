@@ -195,7 +195,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--evidence", help="the collector's evidence.json; without it, the evidence is collected again")
     ap.add_argument("--repo", help="with no --evidence: the repository")
-    ap.add_argument("--path", help="with no --evidence: the same --path the collector ran with")
+    ap.add_argument("--path", action="append", help="with no --evidence: the same --path the collector ran with (repeatable)")
     ap.add_argument("--since", help="with no --evidence: the same --since the collector ran with")
     ap.add_argument("--ref", help="fallback collection: pin to the original ref SHA")
     ap.add_argument("--unit", help="fallback collection: original unit")
@@ -207,6 +207,7 @@ def main(argv=None) -> int:
     ap.add_argument("--cards", required=True, help="a folder of case cards (*.json), or - for stdin")
     ap.add_argument("--json", help="write the result here too")
     a = ap.parse_args(argv)
+    a.path = snapshot.scope_path(a.path)
     cards, bad = read_cards(a.cards)
     if bad:
         print("crosscheck.py: invalid cards: " + "; ".join(bad), file=sys.stderr)
