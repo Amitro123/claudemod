@@ -111,7 +111,7 @@ What it gives, per unit:
   root, else the top folder; pass `--component-root <folder>` for another);
 - its version bumps;
 - whether it looks like a fix, and **why** (the title or most commit subjects say fix in strong
-  words, or it is a patch release and nothing else);
+  words; a patch version bump is recorded but is not a fix signal);
 - tags: `tests-only`, `docs-only`, `instructions-only`, `adds-only`, `multi-component`;
 - for a fix, **introduced_by**, per unit and per commit: the earlier units that last wrote the
   lines the fix's own commits deleted or changed;

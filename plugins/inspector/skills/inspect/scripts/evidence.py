@@ -382,23 +382,17 @@ def judge(u: Unit) -> None:
         c["is_fix"] = ok
     n_fix = sum(ok for ok, _ in verdicts)
     feature_title = starts_as_feature(u.title) and not t_fix
-    # A patch release, and only patch releases: a unit that also bumps a minor version is a feature.
-    kinds = []
-    for b in u.version_bumps:
-        o, n = (tuple(map(int, v.split("."))) for v in b.split(": ")[1].split("->"))
-        kinds.append("patch" if o[:2] == n[:2] and n[2] > o[2] else "other")
-    patch = bool(kinds) and all(k == "patch" for k in kinds)
+    # A patch version bump is recorded (u.version_bumps) but is no fix signal: releases bump patch numbers
+    # for features, docs and chores too (PRs 113 and 123 of the model-router run).
     if t_fix:
         u.is_fix, u.why = True, ["title: " + ", ".join(t_why)]
     elif u.commits and n_fix * 2 > len(u.commits) and not feature_title:
         u.is_fix, u.why = True, [f"{n_fix}/{len(u.commits)} commits say fix"]
-    elif patch and not feature_title:
-        u.is_fix, u.why = True, ["patch version bump"]
     elif n_fix:
         u.why = [f"{n_fix}/{len(u.commits)} commits say fix (a feature unit: fixes inside are not worked)"]
-    if u.is_fix and (t_fix or patch):
-        # A fix by its title ("review fixes", "Fix the findings F1-F13") or a patch release: each of
-        # its commits is one of the fixes, whatever its own subject says, except housekeeping.
+    if u.is_fix and t_fix:
+        # A fix by its title ("review fixes", "Fix the findings F1-F13"): each of its commits is one of
+        # the fixes, whatever its own subject says, except housekeeping.
         for c in u.commits:
             c["is_fix"] = not (CHORE.search(c["subject"]) or BUMP.search(c["subject"]))
     code = [f for f in u.files if blamed(f["path"])]
