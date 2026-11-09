@@ -397,6 +397,10 @@ the session:
 - for a class that recurred 3+ times, a rule for `CLAUDE.md` or `.claude/rules/`
   (brain-hud's `/brain-hud:mistake-brain promote`), and a regression test per seam that broke twice.
 
+## 7. Verify (optional)
+
+Before the leads are handed off, an independent verifier can re-check them (references/verify.md).
+
 ## Limits
 
 - It finds siblings of bug kinds the history already shows. A new kind of bug, or one in a
