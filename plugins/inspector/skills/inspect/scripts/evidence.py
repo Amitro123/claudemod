@@ -493,9 +493,15 @@ class BlameCache:
             pass                                # a read-only repository just runs uncached
 
 
+# Part of every blame cache key. RULE: bump it whenever what a blame entry stores, or how it is computed
+# (blame flags, filtering of trivial lines, range handling, ignore handling), changes; otherwise stale
+# disk entries from an older collector would be reused silently. v2: removal/ignore changes on fix/inspector-precision.
+BLAME_CACHE_VERSION = "v2"
+
+
 def _blame_key(parent: str, old: str, ranges: list[tuple[int, int]], ignore_id: str) -> str:
     import hashlib
-    raw = json.dumps(["v1", parent, old, ranges, ignore_id], ensure_ascii=True)
+    raw = json.dumps([BLAME_CACHE_VERSION, parent, old, ranges, ignore_id], ensure_ascii=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
