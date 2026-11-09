@@ -102,8 +102,20 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
                 warnings.append(f"{where}: category security but {', '.join(missing)} missing or empty; name the input, "
                                 "the boundary and the sink (path:line) and the actor (a party other than the "
                                 "owner or maintainers who controls the input), or it is not security")
+        counter, refuted = cell(s.get("security_counter")), cell(s.get("security_counter_refuted_by"))
+        if str(s.get("category") or "").strip().lower() == "security":
+            for k, v in (("security_counter", counter), ("security_counter_refuted_by", refuted)):
+                if not v:
+                    warnings.append(f"{where}: category security but {k} missing or empty; write the strongest one-line "
+                                    "argument that it is only hardening or broken-flow, and the named fact (path:line, "
+                                    "doc line or probe) that refutes it, or it is not security")
+        parts = []
         if any(v for _, v in triple):
-            impact += " (in: {} | boundary: {} | sink: {} | actor: {})".format(*[v or "-" for _, v in triple])
+            parts = [f"{n}: {v or '-'}" for n, (_, v) in zip(("in", "boundary", "sink", "actor"), triple)]
+        if counter or refuted:
+            parts += [f"counter: {counter or '-'}", f"refuted by: {refuted or '-'}"]
+        if parts:
+            impact += f" ({' | '.join(parts)})"
         shown = f"{lvl} [needs-host-check]" if needs_host_check(s) else lvl
         probe = cell(s.get("probe")) if isinstance(s.get("probe"), (str, int, float)) else ""
         if lvl in ("reproduced", "read") and not probe:

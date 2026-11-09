@@ -11,6 +11,7 @@ SKILL.md step 5, `agents/case-reader.md`, `agents/investigator.md` and `referenc
 - The boundary must be one the actor could not already cross (the path gives them access, data, or influence over a sensitive sink they did not have); a path that only repeats access the actor already holds is `broken-flow`, not security.
 - `security_actor` is a named party other than the repository owner or its maintainers who controls the input: a third party, a vendor or API response, an end user, another tenant, an outside PR author, or a model reading content that an outsider can write. Text from the owner's own repository read by the owner's own model is not adversarial unless an outsider can write it (say how). A lead that cannot name such an actor is `broken-flow` or `hardening`, not security.
 - A filled-in input, boundary and sink are not enough: the boundary has to be one this actor was kept out of.
+- Security counter-argument: before a lead is emitted as `security`, write `security_counter`, the strongest one-line argument that it is only `hardening` or `broken-flow` (for example: the actor already has this access; the output never reaches the actor; the input is the owner's own). The lead stays `security` only if a named fact refutes the counter (a path:line, a doc line or a probe), written in `security_counter_refuted_by`. handoff.py prints both next to the quadruple and warns on stderr when either is missing.
 
 ## needs-host-check, change_status
 

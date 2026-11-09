@@ -89,8 +89,12 @@ TRIPLE = {"security_input": "req.body.url (a/b.ts:2)", "security_boundary": "no 
 FIELDS = ("security_input", "security_boundary", "security_sink", "security_actor")
 
 
+COUNTER = {"security_counter": "the actor already has repo write access",
+           "security_counter_refuted_by": "a/b.ts:3 accepts input from any tenant"}
+
+
 def _sec(**kw):
-    lead = {**HOST["complete"]["siblings"][0], "probe": "a/b.ts:3 read", **kw}
+    lead = {**HOST["complete"]["siblings"][0], "probe": "a/b.ts:3 read", **COUNTER, **kw}
     return [{"case": "#9", "complete": {"siblings": [lead]}}]
 
 
@@ -318,3 +322,26 @@ def test_reconcile_checklist_exists_and_is_pointed_to() -> None:
               "skills/inspect/references/case-file.md"):
         assert "references/reconcile.md" in _text(f) or "reconcile.md" in _text(f), f
         assert "Checks against the source of truth" in _text(f) or "reconcile.md" in _text(f), f
+
+
+def test_security_counter_is_printed_in_the_quadruple_cell_without_warning(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _sec(**TRIPLE))
+    row = _rows(out)["a/b.ts:3"]
+    assert "actor: an end user who submits the url | counter: the actor already has repo write access" in row
+    assert "| refuted by: a/b.ts:3 accepts input from any tenant)" in row
+    assert err == ""
+
+
+def test_security_missing_the_counter_or_refutation_warns_naming_it(monkeypatch, capsys) -> None:
+    code, _, err = run(monkeypatch, capsys, _sec(**TRIPLE, security_counter=""))
+    assert code == 0 and "a/b.ts:3" in err and "security_counter" in err and "security_counter_refuted_by" not in err
+    code, _, err = run(monkeypatch, capsys, _sec(**TRIPLE, security_counter_refuted_by=" "))
+    assert code == 0 and "a/b.ts:3" in err and "security_counter_refuted_by" in err
+    assert "missing: security_counter," not in err
+
+
+def test_non_security_with_the_counter_fields_does_not_warn(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _sec(category="hardening"))
+    assert err == "" and "counter: the actor already has repo write access" in out
+    _, _, err = run(monkeypatch, capsys, _sec(category="hardening", security_counter="", security_counter_refuted_by=""))
+    assert err == ""
