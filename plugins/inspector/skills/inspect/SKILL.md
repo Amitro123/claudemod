@@ -334,7 +334,7 @@ Decide each lead:
 - **suspect**: the pattern fits; you can't name the failing input;
 - **clear**: you looked and it's handled. One line each, under "Checked and clear".
 
-**Labels.** `category`: `security`, `broken-flow`, `hardening`, `cost`, `other`. `security` only with a traced path from an input an outsider controls (a named `security_actor`, not the owner or maintainers) across a boundary that actor was kept out of, to a sensitive sink. Also `needs-host-check`, `change_status`, `reach`, `reach_when`, `not_verified`: rules in references/labels.md.
+**Labels.** `category`: `security`, `broken-flow`, `hardening`, `cost`, `other`. `security` only with a traced path from an input an outsider controls (a named `security_actor`, not the owner or maintainers) across a boundary that actor was kept out of, to a sensitive sink. Also `needs-host-check`, `change_status`, `reach`, `reach_when`, `not_verified`, `probe`, `test_kind`, `downstream`: rules in references/labels.md.
 
 **The gate.** Each lead names what it breaks, in the table's Breaks column: a promise from the
 brief (quote it), or the fixed bug it is a sibling of (the case). A finding that names neither is
