@@ -157,7 +157,7 @@ def test_label_and_closing_issue_become_fix_evidence_ranked_first(gh_repo):
 def test_unavailable_gh_changes_nothing_but_one_warning(gh_repo):
     base = evidence.investigate(str(gh_repo), "main", min_lines=1)
     bad = evidence.investigate(str(gh_repo), "main", min_lines=1, github=True,
-                               gh_run=FakeGh(fail="gh is not installed"), workers=1)
+                               gh_run=FakeGh(fail="gh is not installed"), workers=1, use_cache=False)
     assert bad["timeline"] == base["timeline"] and bad["fixes"] == base["fixes"]
     new = [w for w in bad["warnings"] if w not in base["warnings"]]
     assert len(new) == 1 and "gh is not installed" in new[0]

@@ -50,7 +50,7 @@ def _tokenize(text: str, seen: dict[str, str]) -> str:
 
 
 def snapshot(repo: Path, out: Path, args: list[str]) -> dict:
-    assert evidence.main(["--repo", str(repo), "--out", str(out), *args]) == 0
+    assert evidence.main(["--repo", str(repo), "--out", str(out), "--no-github", *args]) == 0   # offline: never gh
     seen: dict[str, str] = {}
     r = json.loads((out / "evidence.json").read_text(encoding="utf-8"))
     nj = normalize.normalize_json(r, [str(out)])
@@ -111,7 +111,7 @@ def test_a_warm_blame_cache_gives_the_same_results(small_repo: Path, tmp_path: P
 
 def test_the_default_cache_is_the_only_write_inside_git(small_repo: Path, tmp_path: Path) -> None:
     before = {p for p in (small_repo / ".git").rglob("*") if p.is_file()}
-    assert evidence.main(["--repo", str(small_repo), "--out", str(tmp_path / "o"), "--min-lines", "1"]) == 0
+    assert evidence.main(["--repo", str(small_repo), "--out", str(tmp_path / "o"), "--no-github", "--min-lines", "1"]) == 0
     new = {p.relative_to(small_repo / ".git").parts[:2] for p in (small_repo / ".git").rglob("*") if p.is_file()} - \
           {p.relative_to(small_repo / ".git").parts[:2] for p in before}
     assert new <= {("inspector", "cache")}, new
