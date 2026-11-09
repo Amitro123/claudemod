@@ -138,6 +138,7 @@ with current working-tree code. Local uncommitted changes are not investigated b
 To compare the plugin copy in use with another on disk, run
 `python3 "<skill_root>/scripts/doctor.py" --repo <repo> --compare-plugin <other-plugin-root>`.
 This compares files only; verify which plugin the Claude session loaded separately.
+While editing the plugin itself, `INSPECTOR_ALLOW_PLUGIN_CHANGE=1` turns the changed-plugin rejection into a warning.
 
 It is a lead sheet, not a verdict:
 
