@@ -334,6 +334,13 @@ Decide each lead:
 - **suspect**: the pattern fits; you can't name the failing input;
 - **clear**: you looked and it's handled. One line each, under "Checked and clear".
 
+**Labels.** `category`: `security` only with an untrusted input crossing a trust boundary AND an
+observed or traced consequence (data exposure, a guard bypassed, injection). Otherwise `broken-flow`
+(a documented promise doesn't hold), `cost` or `other`; a fail-open or deny-list weakness whose
+reach depends on the host is `broken-flow`, with the host dependency stated. A claim whose truth
+depends on host or runtime behaviour not observed in this session: impact level `unverified` and
+the flag `needs-host-check` (the mechanism may still be `read`; the impact is not).
+
 **The gate.** Each lead names what it breaks, in the table's Breaks column: a promise from the
 brief (quote it), or the fixed bug it is a sibling of (the case). A finding that names neither is
 not a lead, however odd or however easy to reproduce: an input no promise mentions, a missing

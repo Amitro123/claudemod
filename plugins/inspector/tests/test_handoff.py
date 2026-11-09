@@ -62,3 +62,30 @@ def test_an_investigators_leads_and_a_missing_impact(monkeypatch, capsys) -> Non
     leads = [{"where": "a.py:3", "what": "x", "level": "read", "breaks": "P2", "change": "y", "test": "z"}]
     code, out, _ = run(monkeypatch, capsys, leads)
     assert code == 0 and "| read | `a.py:3` | x | not stated [unverified] |" in out
+
+
+HOST = {"case": "#9", "complete": {"siblings": [
+    {"where": "a/b.ts:3", "what": "deny-list misses a kind", "breaks": "P1", "level": "read", "category": "security",
+     "needs_host_check": True,
+     "impact": {"what": "depends on which kinds the host sends", "level": "unverified"},
+     "change": "allow-list", "test": "send kind x"},
+    {"where": "a/c.ts:4", "what": "flagged by string", "breaks": "P1", "level": "suspect", "flags": ["needs-host-check"],
+     "impact": {"what": "x", "level": "unverified"}, "change": "c", "test": "t"},
+    {"where": "a/d.ts:5", "what": "plain", "breaks": "P1", "level": "read", "category": "broken-flow",
+     "impact": {"what": "y", "level": "read", "source": "a/d.ts:9"}, "change": "c", "test": "t"}]}}
+
+
+def test_needs_host_check_is_shown_next_to_the_level_and_never_raises_it(monkeypatch, capsys) -> None:
+    code, out, err = run(monkeypatch, capsys, [HOST])
+    assert code == 0
+    rows = {l.split("`")[1]: l for l in out.splitlines() if l.startswith("| ") and "`" in l}
+    assert rows["a/b.ts:3"].startswith("| read [needs-host-check] |")
+    assert rows["a/c.ts:4"].startswith("| suspect [needs-host-check] |")
+    assert rows["a/d.ts:5"].startswith("| read |")
+
+
+def test_security_with_an_unverified_impact_warns_but_does_not_fail(monkeypatch, capsys) -> None:
+    code, _, err = run(monkeypatch, capsys, [HOST])
+    assert code == 0
+    assert "a/b.ts:3" in err and "security" in err and "unverified" in err
+    assert "a/d.ts:5" not in err

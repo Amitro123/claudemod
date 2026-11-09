@@ -41,8 +41,17 @@ def cell(v: object) -> str:
     return " ".join(str(v if v is not None else "").split()).replace("|", "/")
 
 
-def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[str, str], title: str) -> tuple[str, list[str]]:
+def needs_host_check(s: dict) -> bool:
+    """The lead's impact depends on host/runtime behaviour nobody observed: a boolean or a flag in `flags`."""
+    flags = s.get("flags")
+    flags = [flags] if isinstance(flags, str) else flags or []
+    return bool(s.get("needs_host_check")) or "needs-host-check" in [str(f).strip().lower() for f in flags]
+
+
+def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[str, str], title: str,
+          warnings: list[str] | None = None) -> tuple[str, list[str]]:
     errors, rows = [], []
+    warnings = warnings if warnings is not None else []
     for s in leads:
         where = cell(s.get("where"))
         if where in drop:
@@ -58,9 +67,13 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         impact = cell(imp.get("what")) or "not stated"
         ilvl = level_word(imp.get("level")) if imp.get("what") else "unverified"
         src = cell(imp.get("source"))
+        if str(s.get("category") or "").strip().lower() == "security" and ilvl == "unverified":
+            warnings.append(f"{where}: category security but the impact is unverified; "
+                            "without an observed or traced consequence it is broken-flow, cost or other")
+        shown = f"{lvl} [needs-host-check]" if needs_host_check(s) else lvl
         impact_cell = f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]"
         note = f" **Note added after the readers, unverified:** {cell(notes[where])}" if where in notes else ""
-        rows.append((RANK.get(lvl, 0), f"| {lvl} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
+        rows.append((RANK.get(lvl, 0), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
                                          f"{cell(s.get('breaks'))} | {cell(s.get('change'))} | {cell(s.get('test'))} | {cell(s.get('case'))} |"))
     rows.sort(key=lambda r: -r[0])
     L = [f"# {title}", "",
@@ -95,7 +108,10 @@ def main(argv=None) -> int:
     if bad:
         print("handoff.py: invalid cards: " + "; ".join(bad), file=sys.stderr)
         return 2
-    text, errors = build(leads_of(items), pairs(a.lower), {d.strip().strip("`") for d in a.drop}, pairs(a.note), a.title)
+    warns: list[str] = []
+    text, errors = build(leads_of(items), pairs(a.lower), {d.strip().strip("`") for d in a.drop}, pairs(a.note), a.title, warns)
+    for w in warns:
+        print(f"handoff.py: warning: {w}", file=sys.stderr)
     for e in errors + [f"unreadable: {b}" for b in bad]:
         print(f"handoff.py: {e}", file=sys.stderr)
     if errors:

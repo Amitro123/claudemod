@@ -26,6 +26,9 @@ Work the cases the brief lists, in its order, within its budget.
 Each lead has a mechanism and an impact, and they are two claims. Trace the impact line by line
 from the failing point (what runs after it, what it skips), or cite where the host's behaviour is
 written, or mark it unverified. A mechanism you read doesn't make its impact read.
+Impact that depends on unobserved host behaviour: level `unverified`, flag `needs-host-check`.
+`category` `security` needs an untrusted input crossing a trust boundary and an observed or traced
+consequence; else `broken-flow` (host dependency stated), `cost` or `other`.
 
 When the case file is written, reply with at most 300 words:
 - **Findings**: the verdict, and the open leads by level;
