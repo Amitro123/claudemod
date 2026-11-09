@@ -42,3 +42,4 @@ handoff word for word.
 For a lead about data that is missing or stale, trace the producer first: references/producers.md.
 
 For a pipeline's data, propose a check against the source of truth (a human runs it): references/reconcile.md; optional lead field `reconcile`.
+Before emitting `security`, write `security_counter` and `security_counter_refuted_by`; a documented or test-pinned behaviour gets `documented` and `observed_in_production`, and its severity is not set from code alone: references/labels.md.

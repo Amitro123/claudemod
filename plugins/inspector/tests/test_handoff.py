@@ -391,3 +391,10 @@ def test_documented_without_reconcile_or_production_yes_warns(monkeypatch, capsy
     assert "documented" in err
     _, _, err = run(monkeypatch, capsys, _lead(probe="p", documented=""))
     assert err == ""
+
+
+def test_the_agents_point_to_the_counter_and_documented_fields() -> None:
+    for f in ("agents/case-reader.md", "agents/investigator.md"):
+        t = _text(f)
+        assert "`security_counter`" in t and "`documented`" in t and "`observed_in_production`" in t, f
+        assert "references/labels.md" in t, f
