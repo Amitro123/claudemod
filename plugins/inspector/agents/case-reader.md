@@ -75,3 +75,5 @@ Reply with this JSON, nothing else:
 A sibling must name what it breaks: a promise from the brief, or the fixed bug it copies. A
 finding with neither goes in `checked_clear` with your note, or nowhere. Keep strings short.
 Paths are relative to the repository, with today's line numbers.
+
+For a lead about data that is missing or stale, trace the producer first: references/producers.md.

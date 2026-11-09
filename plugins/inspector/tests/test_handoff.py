@@ -295,3 +295,10 @@ def test_the_investigator_case_file_carries_the_leads_as_a_json_block() -> None:
     for f in ["agents/investigator.md", "skills/inspect/references/case-file.md"]:
         t = " ".join((PLUGIN / f).read_text(encoding="utf-8").split())
         assert "fenced ```json block" in t and "not only a table" in t, f
+
+
+def test_producer_trace_checklist_exists_and_is_pointed_to() -> None:
+    t = (PLUGIN / "skills/inspect/references/producers.md").read_text(encoding="utf-8")
+    assert 0 < len(t.splitlines()) <= 40
+    for f in ("skills/inspect/SKILL.md", "agents/investigator.md", "agents/case-reader.md"):
+        assert "references/producers.md" in _text(f), f

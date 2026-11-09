@@ -38,3 +38,5 @@ The case file itself must contain the open leads as a fenced ```json block (the 
 list of objects, each with the keys of a case reader's sibling (`where`, `what`, `breaks`, `level`,
 `impact` {`what`, `level`, `source`}, `change`, `test`). The main conversation turns it into the
 handoff word for word.
+
+For a lead about data that is missing or stale, trace the producer first: references/producers.md.
