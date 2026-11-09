@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Deterministic lint for leads: catches label mistakes before a person or a verifier spends time.
+
+    python lint_leads.py <leads.json | folder of *.json | -> [--strict]
+
+Input: a JSON array of leads, or case cards (their `complete.siblings`), from a file, a folder or
+stdin (`-`). Output, one line per finding: `<where> | <rule id> | <warn|info> | <message>`.
+Exit 0 always, except `--strict` (exit 1 when any warn) and invalid input (exit 2).
+Rules L1-L8: references/labels.md says what each label means.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import re
+import sys
+
+OWNER_ACTOR_RE = re.compile(
+    r"\b(owner|maintainers?|we|our|same team|own repo(?:sitory)?|the person|the user themselves?|"
+    r"administrators?|admin|anyone with dashboard access)\b", re.I)
+DRIFT_RE = re.compile(
+    r"format drift|drifts?\b|model output (?:varies|varying|differs)|output (?:varies|varying)|varying output|"
+    r"non-?determinis|rare input|rarely|\brace\b|race condition", re.I)
+BEHAVIORAL_RE = re.compile(
+    r"behaviou?ral|exercis|invok|\bcalls?\b|runs? the|end-to-end|fails? on the unfixed|\bintegration\b", re.I)
+BY_DESIGN_RE = re.compile(r"\b(documented|by design|intended|pinned)\b", re.I)
+EXTERNAL_TOOL_RE = re.compile(r"\bflags?\b|(?<![\w-])--[a-z]|\boptions?\b|\bCLI\b", re.I)
+FLAG_TOKEN_RE = re.compile(r"(?<![\w-])--[a-z][\w-]*")
+VERIFIED_LEVELS = ("reproduced", "read")
+
+Finding = tuple[str, str, str]  # rule id, severity, message
+
+
+def text(v: object) -> str:
+    if isinstance(v, (str, int, float)) and not isinstance(v, bool):
+        return " ".join(str(v).split())
+    return ""
+
+
+def level_of(s: dict) -> str:
+    v = text(s.get("level")).lower()
+    return next((k for k in ("reproduced", "read", "suspect", "unverified") if v.startswith(k)), v)
+
+
+def host_check(s: dict) -> bool:
+    flags = s.get("flags")
+    flags = [flags] if isinstance(flags, str) else flags if isinstance(flags, list) else []
+    return bool(s.get("needs_host_check")) or "needs-host-check" in [str(f).strip().lower() for f in flags]
+
+
+def is_security(s: dict) -> bool:
+    return text(s.get("category")).lower() == "security"
+
+
+def rule_l1(s: dict) -> list[Finding]:
+    if not is_security(s):
+        return []
+    actor = text(s.get("security_actor"))
+    if not actor:
+        return [("L1", "warn", "category security but no security_actor; name an outsider who controls the input, or it is not security")]
+    m = OWNER_ACTOR_RE.search(actor)
+    if m:
+        return [("L1", "warn", f"security_actor reads like an owner ('{m.group(0)}'); an actor who already holds that access makes this broken-flow")]
+    return []
+
+
+def rule_l2(s: dict) -> list[Finding]:
+    if is_security(s) and host_check(s) and level_of(s) != "reproduced" and not text(s.get("security_sink")):
+        return [("L2", "warn", "security with needs-host-check and no security_sink: the consequence is not traced")]
+    return []
+
+
+def rule_l3(s: dict) -> list[Finding]:
+    if text(s.get("reach")).lower().split(":")[0].strip() != "default-on":
+        return []
+    when = text(s.get("reach_when"))
+    if when:
+        return [("L3", "warn", f"reach default-on but reach_when is set ('{when[:40]}'); that is conditional")]
+    m = DRIFT_RE.search(text(s.get("what")))
+    if m:
+        return [("L3", "warn", f"reach default-on but the lead mentions '{m.group(0)}'; that is conditional")]
+    return []
+
+
+def rule_l4(s: dict) -> list[Finding]:
+    if level_of(s) in VERIFIED_LEVELS and not text(s.get("probe")):
+        return [("L4", "warn", f"level {level_of(s)} but no probe; give the input and output, command, or path:line read")]
+    return []
+
+
+def rule_l5(s: dict) -> list[Finding]:
+    if text(s.get("test_kind")).lower() == "text-pin" and not BEHAVIORAL_RE.search(text(s.get("test"))):
+        return [("L5", "info", "test_kind text-pin and no behavioral test mentioned; a text pin does not fail on changed behavior")]
+    return []
+
+
+def rule_l6(s: dict) -> list[Finding]:
+    imp = s.get("impact")
+    ilvl = text(imp.get("level")).lower() if isinstance(imp, dict) else ""
+    if ilvl.startswith("unverified") and level_of(s) == "reproduced" and not host_check(s):
+        return [("L6", "warn", "level reproduced but impact level unverified without needs-host-check; one of them is wrong")]
+    return []
+
+
+def rule_l7(s: dict) -> list[Finding]:
+    m = BY_DESIGN_RE.search(text(s.get("what")) + " " + text(s.get("breaks")))
+    if m and not s.get("documented") and not text(s.get("reconcile")):
+        return [("L7", "warn", f"'{m.group(0)}' with no documented field and no reconcile; severity cannot be set from code alone")]
+    return []
+
+
+def rule_l8(s: dict) -> list[Finding]:
+    what, probe = text(s.get("what")), text(s.get("probe"))
+    if not EXTERNAL_TOOL_RE.search(what):
+        return []
+    if not probe:
+        return [("L8", "warn", "headline claim about an external tool or flag with no probe; run its --help or move it to not_verified")]
+    tokens = FLAG_TOKEN_RE.findall(what)
+    if tokens and not any(t in probe for t in tokens):
+        return [("L8", "warn", f"claim names {', '.join(tokens[:3])} but the probe does not mention it")]
+    return []
+
+
+RULES = (rule_l1, rule_l2, rule_l3, rule_l4, rule_l5, rule_l6, rule_l7, rule_l8)
+
+
+def lint(lead: dict) -> list[Finding]:
+    return [f for r in RULES for f in r(lead)]
+
+
+def leads_of(items: list) -> list[dict]:
+    out = []
+    for x in items:
+        if not isinstance(x, dict):
+            raise ValueError("expected an object")
+        c = x.get("complete")
+        sibs = c.get("siblings") if isinstance(c, dict) else None
+        out.extend(s for s in (sibs if isinstance(sibs, list) else [x] if "where" in x or "what" in x else [])
+                   if isinstance(s, dict))
+    return out
+
+
+def load(src: str) -> list[dict]:
+    if src == "-":
+        raw = sys.stdin.read()
+        if not raw.strip():
+            raise ValueError("stdin is empty; use [] for an intentionally empty result")
+        data = json.loads(raw)
+        return leads_of(data if isinstance(data, list) else [data])
+    paths = sorted(glob.glob(os.path.join(src, "*.json"))) if os.path.isdir(src) else [src]
+    items: list = []
+    for p in paths:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        items.extend(d if isinstance(d, list) else [d])
+    return leads_of(items)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("leads", help="a leads JSON file, a folder of *.json, or - for stdin")
+    ap.add_argument("--strict", action="store_true", help="exit 1 when any finding is a warn")
+    a = ap.parse_args(argv)
+    try:
+        leads = load(a.leads)
+    except (OSError, ValueError) as exc:
+        print(f"lint_leads.py: invalid input: {exc}", file=sys.stderr)
+        return 2
+    warns = 0
+    for i, s in enumerate(leads):
+        where = text(s.get("where")) or f"#{i + 1}"
+        for rule, sev, msg in lint(s):
+            warns += sev == "warn"
+            print(f"{where} | {rule} | {sev} | {msg}")
+    return 1 if a.strict and warns else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

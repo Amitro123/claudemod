@@ -1,0 +1,26 @@
+{
+  "l1-owner-actor.json": [
+    "L1"
+  ],
+  "l2-untraced-sink.json": [
+    "L2"
+  ],
+  "l3-default-on-drift.json": [
+    "L3"
+  ],
+  "l4-no-probe.json": [
+    "L4"
+  ],
+  "l5-text-pin.json": [
+    "L5"
+  ],
+  "l6-inconsistent-impact.json": [
+    "L6"
+  ],
+  "l7-by-design.json": [
+    "L7"
+  ],
+  "l8-tool-flag.json": [
+    "L8"
+  ]
+}

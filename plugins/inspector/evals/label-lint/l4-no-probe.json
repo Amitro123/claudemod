@@ -1,0 +1,13 @@
+[
+  {
+    "where": "src/a.py:1",
+    "what": "the loop skips the last item",
+    "level": "read",
+    "reach": "default-on",
+    "category": "broken-flow",
+    "impact": {
+      "what": "last item lost",
+      "level": "read"
+    }
+  }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "where": "src/a.py:1",
+    "what": "the --force flag is ignored",
+    "level": "suspect",
+    "probe": "",
+    "reach": "default-on",
+    "category": "broken-flow",
+    "impact": {
+      "what": "last item lost",
+      "level": "read"
+    }
+  }
+]
