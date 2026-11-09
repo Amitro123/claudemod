@@ -88,6 +88,11 @@ NOT_BLAMED = re.compile(
     r"(\.md$|\.mdx$|\.rst$|\.txt$|\.lock$|package-lock\.json$|pnpm-lock\.yaml$|yarn\.lock$|"
     r"(^|/)plugin\.json$|marketplace\.json$|\.(png|gif|jpg|jpeg|svg|ico|webp|pdf)$|(^|/)evals/results/)",
     re.I)
+# A unit whose code deletions dominate its additions (a skill or module removed) is a removal, not a
+# repair: the authors of deleted files are not culprits, so it gets verdict "removal" and no blame.
+# Deleted code lines must be at least REMOVAL_RATIO times the added ones and at least REMOVAL_MIN_DELETED.
+REMOVAL_RATIO = 4.0
+REMOVAL_MIN_DELETED = 20
 TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|spec)/|(\.|_)(test|spec)\.[a-z]+$|(^|/)test_[^/]+$", re.I)
 
 
@@ -174,6 +179,7 @@ class Unit:
     tags: list[str] = field(default_factory=list)
     introduced_by: list[dict] = field(default_factory=list)
     fix_of_fix: bool = False
+    verdict: str = ""             # "removal" (see REMOVAL_RATIO) or "" (no verdict beyond is_fix)
 
     def label(self) -> str:
         return f"#{self.pr}" if self.pr else self.sha[:8]
@@ -404,6 +410,10 @@ def judge(u: Unit) -> None:
         u.tags.append("instructions-only")
     if code and sum(f["del"] for f in code) == 0:
         u.tags.append("adds-only")
+    deleted, added = sum(f["del"] for f in code), sum(f["ins"] for f in code)
+    if deleted >= REMOVAL_MIN_DELETED and deleted >= REMOVAL_RATIO * max(added, 1):
+        u.verdict = "removal"
+        u.tags.append("removal")
     if len(code_components(u)) >= 2:
         u.tags.append("multi-component")
 
@@ -725,7 +735,7 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
     cache = BlameCache(None if not use_cache else (cache_dir or os.path.join(info.git_dir, "inspector", "cache")))
 
     worked = [u for u in units if u.sha in work_shas]
-    jobs = [(u, c) for u in worked if u.is_fix for c in u.commits if c.get("is_fix")]
+    jobs = [(u, c) for u in worked if u.is_fix and u.verdict != "removal" for c in u.commits if c.get("is_fix")]
 
     def analyze(job):
         # per fix commit: one diff, one blame per file touched; independent of every other commit
@@ -748,7 +758,7 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
         hits = grep_hits(repo, ref, [t for _, rem in results for t in rem], excludes)
     by_job = {id(c): res for (_, c), res in zip(jobs, results)}
     for u in worked:
-        if not u.is_fix:
+        if not u.is_fix or u.verdict == "removal":     # no blame for removals: nobody broke what was deleted
             continue
         per_unit: dict[str, dict] = {}
         for c in u.commits:
@@ -905,6 +915,7 @@ def unit_json(u: Unit) -> dict:
                      **({"left_behind": c["left_behind"]} if c.get("left_behind") else {})}
                     for c in u.commits],
         "introduced_by": u.introduced_by, "fix_of_fix": u.fix_of_fix,
+        **({"verdict": u.verdict} if u.verdict else {}),
     }
 
 

@@ -2,6 +2,7 @@
 ignore imports/comments/descriptions, and --path is repeatable. Tiny synthetic repositories."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -10,6 +11,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "inspect" / "scripts"))
 sys.path.insert(0, str(Path(__file__).parent))
 import evidence  # noqa: E402
+import snapshot  # noqa: E402
+from synth import commit, merge_pr, new_repo  # noqa: E402
 
 BUMP = ["plugins/a/.claude-plugin/plugin.json: 0.2.0->0.2.1"]
 
@@ -42,5 +45,33 @@ def test_real_fix_evidence_still_counts_with_a_bump():
     u = unit("a 0.2.1: release", ["fix: crash on empty list", "fix: wrong total", "bump a to 0.2.1"], BUMP)
     evidence.judge(u)
     assert u.is_fix and "commits say fix" in u.why[0]
+
+
+# ---- 2. removal-dominant units ----------------------------------------------------------------
+
+BODY = "".join(f"step {i}: do the thing {i}\n" for i in range(40))
+
+
+@pytest.fixture(scope="module")
+def removal_repo(tmp_path_factory):
+    r = new_repo(tmp_path_factory.mktemp("removal") / "r")
+    commit(r, {"README.md": "# demo\n", "skills/x/SKILL.md": BODY, "src/keep.py": "def keep():\n    return 1\n"}, "initial")
+    merge_pr(r, 1, "rm", [({"skills/x/SKILL.md": None}, "fix: remove the broken x skill")], "fix: remove the broken x skill")
+    merge_pr(r, 2, "fix", [({"src/keep.py": "def keep():\n    return 2\n"}, "fix: keep returns 2")], "fix: keep returns 2")
+    return r
+
+
+def test_removal_threshold_is_a_named_constant():
+    assert evidence.REMOVAL_RATIO > 1 and evidence.REMOVAL_MIN_DELETED > 0
+
+
+def test_removal_unit_gets_a_verdict_and_no_culprits(removal_repo):
+    ev = evidence.investigate(str(removal_repo))
+    by = {u["unit"]: u for u in ev["timeline"]}
+    assert by["#1"]["verdict"] == "removal" and "removal" in by["#1"]["tags"]
+    assert by["#1"]["introduced_by"] == [] and not by["#1"]["fix_of_fix"]
+    assert all("introduced_by" not in c for c in by["#1"]["commits"])
+    assert "#1" not in ev["fix_of_fix"]
+    assert "verdict" not in by["#2"] and by["#2"]["introduced_by"]       # a normal fix keeps its culprit
 
 
