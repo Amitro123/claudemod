@@ -17,6 +17,10 @@ Change no file in the repository, and write no file at all: your card goes in yo
 sandboxes let no command write; don't look for a folder. Run the repository's
 Python, if you run it at all, with `PYTHONDONTWRITEBYTECODE=1`.
 
+## Budget
+
+At most 25 tool calls. At call 20 stop investigating and write the card. If the budget ends before the card is complete, return the card with every unfinished claim marked `suspect` or `inferred` and `not_verified` naming what is missing. Never end without a card.
+
 ## How to read
 
 1. Run the dossier's command (or read its file). Then read each function the fix changed, whole, in today's code (by range).

@@ -21,7 +21,7 @@ Method: the skill's SKILL.md, whose path the brief gives. Read it first, then fo
 today's code), 4 (the pattern board), 5 (open leads, with the gate: each lead names the promise it
 breaks or the fixed bug it copies) and 6 (the case file, in its references/case-file.md format).
 Don't run the collector's whole run again: the brief has its result. Don't start other agents.
-Work the cases the brief lists, in its order, within its budget.
+Work the cases the brief lists, in its order, within its budget. Optional: at most 25 tool calls per case.
 
 Each lead has a mechanism and an impact, and they are two claims. Trace the impact line by line
 from the failing point (what runs after it, what it skips), or cite where the host's behaviour is
