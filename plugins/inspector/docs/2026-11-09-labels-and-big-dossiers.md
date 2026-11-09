@@ -42,3 +42,10 @@ When origin is a GitHub remote and `gh` works, the collector reads every PR of t
 - **Skipped silently**: no GitHub remote, no PR numbers in the window, `--no-github`. **One Warning line**: `gh` missing, not logged in, rate limited, or a call failed; the first failure stops the remaining calls and results are the same as without GitHub for the PRs not read.
 - **`--no-github`** skips the phase entirely, including PR text in dossiers; tests that need offline results pass it or mock `gh_runner`.
 - **Limits**: only merged PRs that have a number (a squash or merge-commit repo); a rebase-merge repo has no PR units, so nothing is enriched. Labels reflect the PR's state when first read.
+
+### Latency: batched GraphQL (measured 2026-11-09, Windows)
+
+- A bare `gh pr view` took 4.1 to 5.0 s on that day's machine; `gh --version` 2.2 s and a trivial `gh api graphql` (`viewer{login}`) 4.7 s. So most of a call is gh's own start-up plus network, not our code. Our `pmap` does run the calls concurrently: 9 `gh pr view` at 8 in parallel took 13.4 s, one at a time about 5.6 s each.
+- One `gh api graphql` call for 9 PRs (labels, linked issues and their labels in the same query) took 3.0 to 5.0 s, the same as a single trivial call.
+- **Path used now**: PRs not in the cache go in batches of at most 25 per `gh api graphql` call (`owner`/`name` as variables, PR numbers cast to int, slug checked against `^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`). No per-issue call is needed. A failed call, a missing field, or a list cut by the page size (20 labels, 10 closing issues) sends just those PRs through the per-PR path, which gives byte-identical results (tests compare both). Cache keys and `GH_CACHE_VERSION` are unchanged (stored data is the same).
+- Real run (OpenrouterMetrics @ 7690dbd, 9 PRs, cold cache): `github` phase 1.3 s, 1 gh call (was 13.2 s, 9 calls); fix set unchanged (#7 only).
