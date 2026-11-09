@@ -334,10 +334,7 @@ Decide each lead:
 - **suspect**: the pattern fits; you can't name the failing input;
 - **clear**: you looked and it's handled. One line each, under "Checked and clear".
 
-**Labels.** `category`: `security` needs a documented or code-traced path from an input an outsider or another system controls to a sensitive sink (a secret persisted or sent on, a guard bypassed, injection); it is `traced` even when the real-world trigger was not observed. Name the input, the boundary and the sink, one line each, as `security_input`, `security_boundary`, `security_sink` (a path:line where possible; all three required for security); a lead that cannot is not security. The boundary must be one the actor could not already cross (the path gives them access, data, or influence over a sensitive sink they did not have); a path that only repeats access the actor already holds is `broken-flow`, not security. `needs-host-check` flags that the trigger or the sink's behaviour in the real environment was not observed, and says what would confirm it; it never changes the category. Otherwise `broken-flow`, `cost` or `other`.
-A claim whose truth depends on host or runtime behaviour not observed in this session: impact level
-`unverified` and the flag `needs-host-check`.
-`change_status` `verified` | `unverified`: `unverified` when the change depends on host or tool semantics nobody observed; the change line then says what to verify first. `reach` `default-on` | `opt-in` | `unknown`, plus a short text.
+**Labels.** `category`: `security`, `broken-flow`, `hardening`, `cost`, `other`. `security` only with a traced path from an input an outsider controls (a named `security_actor`, not the owner or maintainers) across a boundary that actor was kept out of, to a sensitive sink. Also `needs-host-check`, `change_status`, `reach`, `reach_when`, `not_verified`: rules in references/labels.md.
 
 **The gate.** Each lead names what it breaks, in the table's Breaks column: a promise from the
 brief (quote it), or the fixed bug it is a sibling of (the case). A finding that names neither is

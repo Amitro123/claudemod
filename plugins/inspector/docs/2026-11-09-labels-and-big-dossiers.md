@@ -49,6 +49,12 @@ An end-to-end evaluation (investigator on a real repo, an independent skeptic, t
 
 Replay on 13 real leads fixed three defects: handoff.py no longer warns for security plus an `unverified` impact (security stays `traced`); instead security leads carry `security_input`, `security_boundary`, `security_sink`, shown in the impact cell as `in: ... | boundary: ... | sink: ...`, and a missing or empty field warns on stderr (exit code unchanged). The rule now requires a boundary the actor could not already cross (otherwise `broken-flow`), `needs-host-check` is defined as "the trigger or the sink's behaviour in the real environment was not observed", and the investigator's case file must carry the leads as a fenced json block.
 
+### Label rules, third pass (adversary, reach condition, traced claims)
+
+A third evaluation (investigator on the `factory` plugin, then an independent skeptic) found both `security` leads failing verification (text from the user's own repo read by the user's own model; no named input an outsider controls) and `reach: default-on` given to bugs that only fire when a model's output format drifts, plus two false sub-claims inside real leads ("also after reload", "fails for format X"). The rules now live in one file, `skills/inspect/references/labels.md`, and the other files point to it.
+
+Field list per lead: `category` (`security` | `broken-flow` | `hardening` | `cost` | `other`); for security `security_input`, `security_boundary`, `security_sink`, `security_actor` (a named party other than the owner or maintainers; missing warns on stderr, shown as `actor: ...`); `needs_host_check`; `change_status`; `reach` (`default-on` | `conditional` | `opt-in` | `unknown`) with optional `reach_when` (printed `conditional: format drift`; sort default-on, conditional, unknown, opt-in); optional `not_verified` (list, printed as `not verified: ...` under the impact, never a level). Every factual sub-claim in `what` must be traced or run, else dropped or moved to `not_verified`. Not yet tried on a real investigation. Tests: test_handoff.py.
+
 ### Latency: batched GraphQL (measured 2026-11-09, Windows)
 
 - A bare `gh pr view` took 4.1 to 5.0 s on that day's machine; `gh --version` 2.2 s and a trivial `gh api graphql` (`viewer{login}`) 4.7 s. So most of a call is gh's own start-up plus network, not our code. Our `pmap` does run the calls concurrently: 9 `gh pr view` at 8 in parallel took 13.4 s, one at a time about 5.6 s each.
