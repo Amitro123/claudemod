@@ -92,6 +92,9 @@ def main(argv=None) -> int:
     ap.add_argument("--note", action="append", default=[], help="'path:line=text': add a note, marked as yours and unverified")
     a = ap.parse_args(argv)
     items, bad = read_cards(a.cards)
+    if bad:
+        print("handoff.py: invalid cards: " + "; ".join(bad), file=sys.stderr)
+        return 2
     text, errors = build(leads_of(items), pairs(a.lower), {d.strip().strip("`") for d in a.drop}, pairs(a.note), a.title)
     for e in errors + [f"unreadable: {b}" for b in bad]:
         print(f"handoff.py: {e}", file=sys.stderr)
@@ -99,11 +102,12 @@ def main(argv=None) -> int:
         return 2
     if a.out:
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-            with open(a.out, "w", encoding="utf-8") as f:
-                f.write(text)
+            from evidence import write
+            write(a.out, text)
         except OSError as e:
             print(f"handoff.py: not saved ({e}); the list is below", file=sys.stderr)
+            sys.stdout.write(text)
+            return 1
     sys.stdout.write(text)
     return 0
 

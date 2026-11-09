@@ -31,7 +31,8 @@ def test_culprits_agree_disagree_and_unknown() -> None:
     assert got["#2"] == "agree"
     assert got["#3"].startswith("disagree") and "#2" in got["#3"]
     assert got["#4"] == "both unknown"
-    assert r["culprits_agree"] == 2
+    assert r["culprits_agree"] == 1
+    assert r["culprits_both_unknown"] == 1
 
 
 def test_siblings_by_source_and_unchecked_copies() -> None:
@@ -39,10 +40,9 @@ def test_siblings_by_source_and_unchecked_copies() -> None:
     own = {"where": "z.py:40", "level": "read", "breaks": "sibling of #2"}
     r = crosscheck.crosscheck(EV, [card("#2", "c2c2c2c", "#1", siblings=[sib, own])])
     assert [s["source"] for s in r["cases"][0]["siblings"]] == ["both", "reader only"]
-    # a copy counts as decided once any of its places was (b.py:3 is within 3 lines of b.py:2)
-    assert r["copies_left_unchecked"] == []
+    assert r["copies_left_unchecked"][0]["at"] == ["c.py:9"]
     r2 = crosscheck.crosscheck(EV, [card("#2", "c2c2c2c", "#1", clear=["c.py:9: escaped by its caller"])])
-    assert r2["copies_left_unchecked"] == []
+    assert r2["copies_left_unchecked"][0]["at"] == ["b.py:2"]
     r3 = crosscheck.crosscheck(EV, [card("#2", "c2c2c2c", "#1")])
     assert len(r3["copies_left_unchecked"]) == 1
 
@@ -53,9 +53,9 @@ def test_cli_reads_cards_and_reports_bad_ones(tmp_path: Path, capsys) -> None:
     cards.mkdir()
     (cards / "01.json").write_text(json.dumps(card("#2", "c2c2c2c", "#1")))
     (cards / "02.json").write_text("not json")
-    assert crosscheck.main(["--evidence", str(tmp_path / "ev.json"), "--cards", str(cards), "--json", str(tmp_path / "x.json")]) == 0
-    out = capsys.readouterr().out
-    assert "culprit agrees with blame: 1" in out and "02.json" in out
+    assert crosscheck.main(["--evidence", str(tmp_path / "ev.json"), "--cards", str(cards), "--json", str(tmp_path / "x.json")]) == 2
+    assert "02.json" in capsys.readouterr().err
+    assert not (tmp_path / "x.json").exists()
 
 
 def test_cards_on_stdin_and_evidence_collected_again(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -73,3 +73,44 @@ def test_cards_on_stdin_and_evidence_collected_again(tmp_path: Path, capsys, mon
     assert crosscheck.main(["--repo", str(r), "--cards", "-"]) == 0
     out = capsys.readouterr().out
     assert "Cards: 2; culprit agrees with blame: 1" in out
+
+
+def test_pr_numbers_do_not_match_by_prefix() -> None:
+    result = crosscheck.crosscheck(EV, [card("#2", "c2c2c2c", "#12")])
+    assert result["cases"][0]["culprit"].startswith("disagree")
+    assert crosscheck.same_unit("#1", "1")
+    assert not crosscheck.same_unit("#1", "#12")
+    assert crosscheck.same_unit("abcdef123", "abcdef123456")
+
+
+def test_all_copy_locations_must_be_decided() -> None:
+    result = crosscheck.crosscheck(EV, [card("#2", "c2c2c2c", "#1", clear=["b.py:2", "c.py:9"])])
+    assert result["copies_left_unchecked"] == []
+
+
+def test_saved_evidence_never_recollects(tmp_path: Path, monkeypatch) -> None:
+    import io
+    import evidence
+    saved = tmp_path / 'evidence.json'
+    saved.write_text(json.dumps(EV))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('saved evidence must not trigger git collection')
+    monkeypatch.setattr(evidence, 'investigate', forbidden)
+    monkeypatch.setattr('sys.stdin', io.StringIO('[]'))
+    assert crosscheck.main(['--evidence', str(saved), '--cards', '-']) == 0
+
+
+def test_fallback_preserves_scope_and_limits(monkeypatch) -> None:
+    import io
+    import evidence
+    seen = {}
+    def collect(repo, **kwargs):
+        seen.update(kwargs)
+        return EV
+    monkeypatch.setattr(evidence, 'investigate', collect)
+    monkeypatch.setattr('sys.stdin', io.StringIO('[]'))
+    assert crosscheck.main(['--cards', '-', '--ref', 'abcdef123', '--unit', '#2',
+                            '--max', '10', '--history', '20', '--max-blame-lines', '30',
+                            '--min-lines', '2']) == 0
+    assert seen['ref'] == 'abcdef123' and seen['unit'] == '#2'
+    assert (seen['limit'], seen['history'], seen['max_blame'], seen['min_lines']) == (10, 20, 30, 2)
