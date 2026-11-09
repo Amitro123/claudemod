@@ -27,15 +27,18 @@ Each lead has a mechanism and an impact, and they are two claims. Trace the impa
 from the failing point (what runs after it, what it skips), or cite where the host's behaviour is
 written, or mark it unverified. A mechanism you read doesn't make its impact read.
 Impact that depends on unobserved host behaviour: level `unverified`, flag `needs-host-check`.
-`category` `security` needs an untrusted input crossing a trust boundary and an observed or traced
-consequence; else `broken-flow` (host dependency stated), `cost` or `other`.
+Label rules (security gate with `security_actor`, needs-host-check, `change_status`, `reach`/`reach_when`, traced claims, `not_verified`): references/labels.md. `security` needs `security_input`, `security_boundary`, `security_sink`, `security_actor`. Give `change_status` and `reach` (+ `reach_when`) on every lead. Every factual sub-claim in `what` must have been traced or run; put any other in `not_verified`, or drop it. A `reproduced` or `read` lead needs a `probe`; give `test_kind` and, when known, `downstream`.
 
 When the case file is written, reply with at most 300 words:
 - **Findings**: the verdict, and the open leads by level;
 - **Files**: the case file's path, and each lead's `path:line`;
 - **Unsure-about**: what you couldn't confirm, and what you skipped.
 
-Don't paste the case file. After the 300 words, add one fenced `json` block: the open leads as a
+The case file itself must contain the open leads as a fenced ```json block (the same objects the hand-back carries), not only a table. Don't paste the case file. After the 300 words, add one fenced `json` block: the open leads as a
 list of objects, each with the keys of a case reader's sibling (`where`, `what`, `breaks`, `level`,
 `impact` {`what`, `level`, `source`}, `change`, `test`). The main conversation turns it into the
 handoff word for word.
+
+For a lead about data that is missing or stale, trace the producer first: references/producers.md.
+
+For a pipeline's data, propose a check against the source of truth (a human runs it): references/reconcile.md; optional lead field `reconcile`.

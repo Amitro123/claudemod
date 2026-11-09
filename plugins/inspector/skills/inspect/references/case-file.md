@@ -44,11 +44,16 @@ titles only go last, one line each.
 |---|---|---|---|---|---|---|---|---|---|
 
 Level: reproduced | read | suspect; add `[needs-host-check]` when the impact depends on host
-behaviour nobody observed (its impact level is then `unverified`). Category `security` only with an
-untrusted input crossing a trust boundary and a traced consequence, else `broken-flow`, `cost` or
-`other`. Ranked as SKILL.md step 5 says: a broken promise a user hits,
+behaviour nobody observed (its impact level is then `unverified`). Label rules (security gate with `security_actor`, needs-host-check, `change_status`, `reach`/`reach_when`, traced claims, `not_verified`): references/labels.md. `security` needs `security_input`, `security_boundary`, `security_sink`, `security_actor`.
+Each lead also carries `change_status`, `reach`, optional `reach_when` and `not_verified`. Ranked as SKILL.md step 5 says: a broken promise a user hits,
 then a seam with a fix-of-fix history, then the rest; reproduced first within each. A row with no
 promise and no sibling in Breaks belongs under Recommendations, not here.
+
+After the table, put the same open leads in a fenced ```json block (the objects the investigator's hand-back carries), not only a table.
+
+### Checks against the source of truth (optional)
+
+Only when the repository has a data pipeline (a job that ingests from an external system into a table that dashboards read). One reconciliation check per pipeline, written for a human or a later session with access: references/reconcile.md.
 
 ### Checked and clear
 

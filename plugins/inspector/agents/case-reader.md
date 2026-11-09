@@ -33,9 +33,7 @@ Python, if you run it at all, with `PYTHONDONTWRITEBYTECODE=1`.
    depends on how the host behaves (what the engine does when a hook throws, a framework's
    retry), cite where that is written (its types, its docs) or give the impact the level
    `unverified` and flag the lead `"needs_host_check": true`. Never state an impact you didn't trace.
-   `category`: `security` only with an untrusted input crossing a trust boundary AND an observed or
-   traced consequence; otherwise `broken-flow` (a documented promise doesn't hold), `cost` or `other`.
-   A fail-open or deny-list weakness whose reach depends on the host is `broken-flow`, host dependency stated.
+   Label rules (security gate with `security_actor`, needs-host-check, `change_status`, `reach`/`reach_when`, traced claims, `not_verified`): references/labels.md. `security` needs `security_input`, `security_boundary`, `security_sink`, `security_actor`; give `change_status`, `reach` (+ `reach_when`) and, for untraced sub-claims, `not_verified`; a `reproduced` or `read` lead needs a `probe`; give `test_kind` and, when known, `downstream`.
 6. Prove what you can cheaply. A probe that runs a copy of a function, or the project's own test
    for one file, counts as `reproduced` when you saw it fail. At most 3 probes. No installs.
 
@@ -63,7 +61,7 @@ Reply with this JSON, nothing else:
     "verdict": "yes | no | unknown",
     "siblings": [
       {"where": "path:line", "what": "the same bug, here", "breaks": "P3 or 'sibling of <case>'", "level": "reproduced | read | suspect",
-       "category": "security | broken-flow | cost | other", "needs_host_check": false,
+       "category": "security | broken-flow | hardening | cost | other", "security_input": "path:line, required when category is security", "security_boundary": "path:line, same", "security_sink": "path:line, same", "security_actor": "named outsider, same", "needs_host_check": false, "change_status": "verified | unverified", "reach": "default-on | conditional | opt-in | unknown", "reach_when": "short text, optional", "not_verified": ["untraced sub-claim"],
        "impact": {"what": "what a user or the next code sees", "level": "reproduced | read | unverified", "source": "path:line you traced to, or the doc or type that says so"},
        "change": "the fix it needs", "test": "the test that proves it"}
     ],
@@ -77,3 +75,7 @@ Reply with this JSON, nothing else:
 A sibling must name what it breaks: a promise from the brief, or the fixed bug it copies. A
 finding with neither goes in `checked_clear` with your note, or nowhere. Keep strings short.
 Paths are relative to the repository, with today's line numbers.
+
+For a lead about data that is missing or stale, trace the producer first: references/producers.md.
+
+For a pipeline's data, propose a check against the source of truth (a human runs it): references/reconcile.md; optional lead field `reconcile`.

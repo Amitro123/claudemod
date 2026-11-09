@@ -84,8 +84,237 @@ def test_needs_host_check_is_shown_next_to_the_level_and_never_raises_it(monkeyp
     assert rows["a/d.ts:5"].startswith("| read |")
 
 
-def test_security_with_an_unverified_impact_warns_but_does_not_fail(monkeypatch, capsys) -> None:
-    code, _, err = run(monkeypatch, capsys, [HOST])
-    assert code == 0
-    assert "a/b.ts:3" in err and "security" in err and "unverified" in err
-    assert "a/d.ts:5" not in err
+TRIPLE = {"security_input": "req.body.url (a/b.ts:2)", "security_boundary": "no allow-list (a/b.ts:3)",
+          "security_sink": "fetch(url) (a/b.ts:9)", "security_actor": "an end user who submits the url"}
+FIELDS = ("security_input", "security_boundary", "security_sink", "security_actor")
+
+
+def _sec(**kw):
+    lead = {**HOST["complete"]["siblings"][0], "probe": "a/b.ts:3 read", **kw}
+    return [{"case": "#9", "complete": {"siblings": [lead]}}]
+
+
+def test_security_with_the_triple_and_unverified_impact_does_not_warn(monkeypatch, capsys) -> None:
+    code, out, err = run(monkeypatch, capsys, _sec(**TRIPLE))
+    assert code == 0 and "warning" not in err and err == ""
+
+
+def test_the_triple_is_rendered_in_the_row(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, _sec(**TRIPLE))
+    row = _rows(out)["a/b.ts:3"]
+    assert ("in: req.body.url (a/b.ts:2) | boundary: no allow-list (a/b.ts:3) | sink: fetch(url) (a/b.ts:9)"
+            " | actor: an end user who submits the url") in row
+
+
+def test_security_missing_a_field_warns_and_names_it(monkeypatch, capsys) -> None:
+    code, _, err = run(monkeypatch, capsys, _sec(**{**TRIPLE, "security_boundary": "  "}))
+    assert code == 0 and "a/b.ts:3" in err and "security_boundary" in err
+    assert "security_input" not in err and "security_sink" not in err and "security_actor" not in err
+    code, _, err = run(monkeypatch, capsys, _sec())
+    assert code == 0 and all(k in err for k in FIELDS)
+
+
+def test_security_missing_only_the_actor_warns_naming_actor(monkeypatch, capsys) -> None:
+    for actor in (None, "", "  "):
+        lead = {k: v for k, v in TRIPLE.items() if k != "security_actor"}
+        if actor is not None:
+            lead["security_actor"] = actor
+        code, _, err = run(monkeypatch, capsys, _sec(**lead))
+        assert code == 0 and "security_actor" in err and "a/b.ts:3" in err
+        assert "security_input" not in err and "security_sink" not in err
+
+
+def test_non_security_with_an_actor_does_not_warn(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _sec(category="hardening", security_actor="a vendor"))
+    assert err == "" and "actor: a vendor" in out
+
+
+def test_non_security_with_the_fields_prints_them_without_warning(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _sec(category="broken-flow", **TRIPLE))
+    assert err == "" and "sink: fetch(url) (a/b.ts:9)" in out
+
+
+def test_non_security_without_fields_prints_no_triple(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _sec(category="broken-flow"))
+    assert err == "" and "in:" not in out
+
+
+def _rows(out):
+    return {l.split("`")[1]: l for l in out.splitlines() if l.startswith("| ") and "`" in l}
+
+
+def test_change_status_unverified_for_host_checked_leads_by_default(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, [HOST])
+    rows = _rows(out)
+    assert "| allow-list [change unverified] |" in rows["a/b.ts:3"]
+    assert "[change unverified]" in rows["a/c.ts:4"]
+    assert "[change unverified]" not in rows["a/d.ts:5"]
+
+
+def test_explicit_change_status_wins(monkeypatch, capsys) -> None:
+    card = {"case": "#9", "complete": {"siblings": [
+        {**HOST["complete"]["siblings"][0], "change_status": "verified"},
+        {**HOST["complete"]["siblings"][2], "change_status": "unverified"}]}}
+    _, out, _ = run(monkeypatch, capsys, [card])
+    rows = _rows(out)
+    assert "[change unverified]" not in rows["a/b.ts:3"]
+    assert "[change unverified]" in rows["a/d.ts:5"]
+
+
+def test_garbage_change_status_never_raises(monkeypatch, capsys) -> None:
+    lead = {"where": "a.py:1", "what": "x", "level": "read", "change": "c", "change_status": ["?"], "reach": 5}
+    code, out, _ = run(monkeypatch, capsys, [lead])
+    assert code == 0 and "a.py:1" in out
+
+
+def test_reach_is_shown_in_the_level_cell_and_breaks_ties(monkeypatch, capsys) -> None:
+    def lead(w, reach=None, lvl="read", when=None):
+        d = {"where": w, "what": "x", "level": lvl, "breaks": "P1", "change": "c", "test": "t"}
+        if reach is not None:
+            d["reach"] = reach
+        if when is not None:
+            d["reach_when"] = when
+        return d
+    leads = [lead("o.py:1", "opt-in", when="flag defaults off"), lead("m.py:1"), lead("d.py:1", "default-on"),
+             lead("u.py:1", "unknown"), lead("s.py:1", "opt-in", "suspect"),
+             lead("c.py:1", "conditional", when="format drift")]
+    _, out, _ = run(monkeypatch, capsys, leads)
+    rows = _rows(out)
+    assert rows["o.py:1"].endswith("| opt-in: flag defaults off |")
+    assert rows["c.py:1"].endswith("| conditional: format drift |")
+    assert rows["d.py:1"].endswith("| default-on |")
+    assert rows["m.py:1"].endswith("| unknown |") and rows["u.py:1"].endswith("| unknown |")
+    assert rows["o.py:1"].startswith("| read |"), "the level cell is unchanged"
+    order = [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l]
+    assert order == ["d.py:1", "c.py:1", "m.py:1", "u.py:1", "o.py:1", "s.py:1"],         "default-on, conditional, unknown, opt-in; ties keep input order"
+
+
+def test_reach_with_inline_text_still_sorts_and_prints(monkeypatch, capsys) -> None:
+    leads = [{"where": "o.py:1", "what": "x", "level": "read", "reach": "opt-in: flag"},
+             {"where": "c.py:1", "what": "x", "level": "read", "reach": "conditional: race"}]
+    _, out, _ = run(monkeypatch, capsys, leads)
+    assert [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l] == ["c.py:1", "o.py:1"]
+    assert _rows(out)["c.py:1"].endswith("| conditional: race |")
+
+
+def test_not_verified_prints_under_the_impact_and_is_no_level(monkeypatch, capsys) -> None:
+    lead = {"where": "a.py:1", "what": "x", "level": "read", "impact": {"what": "bad", "level": "read", "source": "a.py:2"},
+            "not_verified": ["also after reload", "format Y fails"]}
+    _, out, _ = run(monkeypatch, capsys, [lead])
+    row = _rows(out)["a.py:1"]
+    assert "bad [read: a.py:2] not verified: also after reload; format Y fails |" in row
+    assert row.startswith("| read |")
+    _, out, _ = run(monkeypatch, capsys, [{**lead, "not_verified": "oops"}, {**lead, "where": "b.py:1", "not_verified": 5}])
+    assert "not verified: oops" in _rows(out)["a.py:1"] and "not verified" not in _rows(out)["b.py:1"]
+
+
+def test_reach_next_to_needs_host_check(monkeypatch, capsys) -> None:
+    lead = {**HOST["complete"]["siblings"][0], "reach": "opt-in"}
+    _, out, _ = run(monkeypatch, capsys, [{"case": "x", "complete": {"siblings": [lead]}}])
+    row = _rows(out)["a/b.ts:3"]
+    assert row.startswith("| read [needs-host-check] |") and row.endswith("| opt-in |")
+
+
+LABELS = "skills/inspect/references/labels.md"
+POINTERS = ["skills/inspect/SKILL.md", "agents/case-reader.md", "agents/investigator.md",
+            "skills/inspect/references/case-file.md"]
+PLUGIN = Path(__file__).parent.parent
+
+
+def _text(f):
+    return " ".join((PLUGIN / f).read_text(encoding="utf-8").split())
+
+
+def test_labels_md_is_the_single_source_of_the_rules() -> None:
+    t = _text(LABELS)
+    assert "name the input, the boundary, the sink and the actor" in t.lower()
+    assert "`change_status`" in t and "`reach`" in t and "`reach_when`" in t and "`not_verified`" in t
+    assert "could not already cross" in t and "`broken-flow`, not security" in t
+    assert all(f"`{k}`" in t for k in FIELDS)
+    assert "other than the repository owner or its maintainers" in t
+    assert "trigger or the sink's behaviour in the real environment was not observed" in t
+    for w in ("`default-on`", "`conditional`", "`opt-in`", "`unknown`"):
+        assert w in t
+    assert "traced or run" in t
+
+
+def test_the_other_files_point_to_labels_md_and_carry_no_copy() -> None:
+    for f in POINTERS:
+        t = _text(f)
+        assert "references/labels.md" in t, f
+        assert "could not already cross" not in t, f
+    for f in ("agents/case-reader.md", "agents/investigator.md"):
+        assert "`security_actor`" in _text(f) and "`reach_when`" in _text(f) and "`not_verified`" in _text(f), f
+
+
+def _lead(**kw):
+    base = {"where": "a.py:1", "what": "w", "breaks": "P2", "level": "reproduced", "change": "c", "test": "t",
+            "impact": {"what": "i", "level": "read", "source": "a.py:2"}}
+    base.update(kw)
+    return [base]
+
+
+def test_probe_is_printed_and_no_warning(monkeypatch, capsys) -> None:
+    code, out, err = run(monkeypatch, capsys, _lead(probe="tool --help: no -R flag"))
+    assert code == 0 and "probe: tool --help: no -R flag" in out and "probe" not in err
+
+
+def test_missing_probe_warns_for_reproduced_and_read_not_suspect(monkeypatch, capsys) -> None:
+    code, _, err = run(monkeypatch, capsys, _lead())
+    assert code == 0 and "a.py:1" in err and "probe" in err
+    code, _, err = run(monkeypatch, capsys, _lead(level="read", probe=""))
+    assert code == 0 and "a.py:1" in err and "probe" in err
+    code, _, err = run(monkeypatch, capsys, _lead(level="suspect"))
+    assert code == 0 and "probe" not in err
+
+
+def test_test_kind_is_printed_and_text_pin_is_weak(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _lead(probe="p", test_kind="behavioral"))
+    assert "[test: behavioral]" in out and "weak" not in out
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p", test_kind="text-pin"))
+    assert "[test: text-pin] [weak: pins text only]" in out
+    _, out, err = run(monkeypatch, capsys, _lead(probe="p"))
+    assert "[test: unknown]" in out and "test_kind" not in err
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p", test_kind="manual"))
+    assert "[test: manual]" in out
+
+
+def test_downstream_is_printed_only_when_given(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p", downstream="new vulns still fail the gate"))
+    assert "downstream: new vulns still fail the gate" in out
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p"))
+    assert "downstream" not in out
+
+
+def test_skill_md_stays_within_its_size_budget() -> None:
+    words = len((PLUGIN / "skills/inspect/SKILL.md").read_text(encoding="utf-8").split())
+    assert words <= 4450, words
+
+
+def test_the_investigator_case_file_carries_the_leads_as_a_json_block() -> None:
+    for f in ["agents/investigator.md", "skills/inspect/references/case-file.md"]:
+        t = " ".join((PLUGIN / f).read_text(encoding="utf-8").split())
+        assert "fenced ```json block" in t and "not only a table" in t, f
+
+
+def test_producer_trace_checklist_exists_and_is_pointed_to() -> None:
+    t = (PLUGIN / "skills/inspect/references/producers.md").read_text(encoding="utf-8")
+    assert 0 < len(t.splitlines()) <= 40
+    for f in ("skills/inspect/SKILL.md", "agents/investigator.md", "agents/case-reader.md"):
+        assert "references/producers.md" in _text(f), f
+
+
+def test_reconcile_is_printed_only_when_given(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p", reconcile="30-day spend: table sum vs the vendor billing page"))
+    assert "reconcile: 30-day spend: table sum vs the vendor billing page" in out
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p"))
+    assert "reconcile" not in out
+
+
+def test_reconcile_checklist_exists_and_is_pointed_to() -> None:
+    t = (PLUGIN / "skills/inspect/references/reconcile.md").read_text(encoding="utf-8")
+    assert 0 < len(t.splitlines()) <= 35
+    for f in ("skills/inspect/SKILL.md", "agents/investigator.md", "agents/case-reader.md",
+              "skills/inspect/references/case-file.md"):
+        assert "references/reconcile.md" in _text(f) or "reconcile.md" in _text(f), f
+        assert "Checks against the source of truth" in _text(f) or "reconcile.md" in _text(f), f

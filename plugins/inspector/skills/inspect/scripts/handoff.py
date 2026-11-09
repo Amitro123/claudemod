@@ -19,6 +19,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crosscheck import read_cards  # noqa: E402
 
+SEC_FIELDS = ("security_input", "security_boundary", "security_sink", "security_actor")
+REACH_ORDER = {"default-on": 0, "conditional": 1, "unknown": 2, "opt-in": 3}
 RANK = {"reproduced": 3, "read": 2, "suspect": 1, "unverified": 0}
 
 
@@ -48,6 +50,32 @@ def needs_host_check(s: dict) -> bool:
     return bool(s.get("needs_host_check")) or "needs-host-check" in [str(f).strip().lower() for f in flags]
 
 
+def change_unverified(s: dict) -> bool:
+    """An explicit `change_status` wins; without one, a needs-host-check lead's change is unverified."""
+    st = s.get("change_status")
+    if isinstance(st, str) and st.strip().lower() in ("verified", "unverified"):
+        return st.strip().lower() == "unverified"
+    return needs_host_check(s)
+
+
+def reach_of(s: dict) -> str:
+    """`default-on` | `conditional` | `opt-in` | `unknown`; `reach_when` is appended (`conditional: format drift`).
+    A reach that already carries its text (`opt-in: flag`) is kept as given; missing is `unknown`."""
+    r = cell(s.get("reach")) if isinstance(s.get("reach"), (str, int, float)) else ""
+    when = cell(s.get("reach_when")) if isinstance(s.get("reach_when"), (str, int, float)) else ""
+    if r and when and ":" not in r:
+        r = f"{r}: {when}"
+    return r or "unknown"
+
+
+def not_verified_of(s: dict) -> str:
+    """Sub-claims nobody traced, as `not verified: a; b`. Printed only; never a level."""
+    nv = s.get("not_verified")
+    items = [nv] if isinstance(nv, str) else nv if isinstance(nv, list) else []
+    items = [cell(i) for i in items if isinstance(i, (str, int, float)) and cell(i)]
+    return f" not verified: {'; '.join(items)}" if items else ""
+
+
 def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[str, str], title: str,
           warnings: list[str] | None = None) -> tuple[str, list[str]]:
     errors, rows = [], []
@@ -67,22 +95,45 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         impact = cell(imp.get("what")) or "not stated"
         ilvl = level_word(imp.get("level")) if imp.get("what") else "unverified"
         src = cell(imp.get("source"))
-        if str(s.get("category") or "").strip().lower() == "security" and ilvl == "unverified":
-            warnings.append(f"{where}: category security but the impact is unverified; "
-                            "without an observed or traced consequence it is broken-flow, cost or other")
+        triple = [(k, cell(s.get(k))) for k in SEC_FIELDS]
+        if str(s.get("category") or "").strip().lower() == "security":
+            missing = [k for k, v in triple if not v]
+            if missing:
+                warnings.append(f"{where}: category security but {', '.join(missing)} missing or empty; name the input, "
+                                "the boundary and the sink (path:line) and the actor (a party other than the "
+                                "owner or maintainers who controls the input), or it is not security")
+        if any(v for _, v in triple):
+            impact += " (in: {} | boundary: {} | sink: {} | actor: {})".format(*[v or "-" for _, v in triple])
         shown = f"{lvl} [needs-host-check]" if needs_host_check(s) else lvl
-        impact_cell = f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]"
+        probe = cell(s.get("probe")) if isinstance(s.get("probe"), (str, int, float)) else ""
+        if lvl in ("reproduced", "read") and not probe:
+            warnings.append(f"{where}: level {lvl} but no probe; give the exact input and output, the command run, "
+                            "or the path:line read (for a claim about an external tool, its --help), or lower the "
+                            "level / move the claim to not_verified")
+        impact_cell = (f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}"
+                       + (f" probe: {probe}" if probe else ""))
+        rec = cell(s.get("reconcile")) if isinstance(s.get("reconcile"), (str, int, float)) else ""
+        if rec:
+            impact_cell += f" reconcile: {rec}"
         note = f" **Note added after the readers, unverified:** {cell(notes[where])}" if where in notes else ""
-        rows.append((RANK.get(lvl, 0), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
-                                         f"{cell(s.get('breaks'))} | {cell(s.get('change'))} | {cell(s.get('test'))} | {cell(s.get('case'))} |"))
-    rows.sort(key=lambda r: -r[0])
+        change = cell(s.get("change")) + (" [change unverified]" if change_unverified(s) else "")
+        down = cell(s.get("downstream")) if isinstance(s.get("downstream"), (str, int, float)) else ""
+        if down:
+            change += f" downstream: {down}"
+        kind = cell(s.get("test_kind")).lower() if isinstance(s.get("test_kind"), str) else ""
+        kind = kind if kind in ("behavioral", "text-pin", "manual") else "unknown"
+        test = f"{cell(s.get('test'))} [test: {kind}]" + (" [weak: pins text only]" if kind == "text-pin" else "")
+        reach = reach_of(s)
+        rows.append((RANK.get(lvl, 0), REACH_ORDER.get(reach.lower().split(":")[0].strip(), 2), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
+                                         f"{cell(s.get('breaks'))} | {change} | {test} | {cell(s.get('case'))} | {reach} |"))
+    rows.sort(key=lambda r: (-r[0], r[1]))
     L = [f"# {title}", "",
          "Copied word for word from the inspector's case readers: each lead's level, and its impact's own",
          "level, as they gave them. A level here was only ever lowered, never raised. Everything came from",
          "a model reading repository history and code: verify each claim before you change code.", "",
-         "| Level | Where | What breaks | Impact [its level: source] | Breaks | The change | The test | From case |",
-         "|---|---|---|---|---|---|---|---|"]
-    L += [r for _, r in rows] or ["| - | - | no leads | - | - | - | - | - |"]
+         "| Level | Where | What breaks | Impact [its level: source] | Breaks | The change | The test | From case | Reach |",
+         "|---|---|---|---|---|---|---|---|---|"]
+    L += [r for _, _, r in rows] or ["| - | - | no leads | - | - | - | - | - | - |"]
     return "\n".join(L) + "\n", errors
 
 
