@@ -286,3 +286,25 @@ def test_read_only_repository_still_reports(repo: Path, capsys, monkeypatch) -> 
     assert evidence.main(["--repo", str(repo), "--min-lines", "1"]) == 0
     out = capsys.readouterr().out
     assert "Cases to work, in order" in out and "--dossier" in out and "nothing saved" in out
+
+
+def test_dossier_handles_root_culprit(tmp_path: Path) -> None:
+    r = new_repo(tmp_path / 'root-culprit')
+    commit(r, {'a.py': 'value = 123456789\n'}, 'Initial helper')
+    commit(r, {'a.py': 'value = 987654321\n'}, 'fix: wrong value')
+    ev = evidence.investigate(str(r))
+    text = evidence.dossier(str(r), ev['timeline'][-1], ev['unit_shas'])
+    assert 'Culprit ' in text and '+value = 123456789' in text
+
+
+def test_cli_fallback_is_pinned_and_shell_quoted(repo: Path, tmp_path: Path, capsys) -> None:
+    import shlex
+    head = run(repo, 'rev-parse', 'HEAD').strip()
+    assert evidence.main(['--repo', str(repo), '--out', str(tmp_path / 'saved'), '--budget', '1']) == 0
+    out = capsys.readouterr().out
+    command = out.split('(or `', 1)[1].split('`)', 1)[0]
+    args = shlex.split(command)
+    assert args[args.index('--ref') + 1] == head
+    assert args[args.index('--unit') + 1].startswith('#')
+    saved = json.loads((tmp_path / 'saved' / 'evidence.json').read_text())
+    assert saved['ref'] == saved['ref_sha'] == head

@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,9 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # also under `python -I`, which drops the script folder
+import snapshot  # noqa: E402
 
 # Strong: the words people use for a fix. Weak: words fixes use, and so do features; they only
 # count beside a strong one. Scored on subjects and titles, never on bodies (a feature PR's body
@@ -669,6 +673,11 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
     roots = roots or MONOREPO_ROOTS
     workers = max(1, workers if workers is not None else min(8, os.cpu_count() or 1))
     with phase("discovery"):
+        # One call resolves the ref to an immutable commit; HEAD rides along for the workspace check.
+        if ref.startswith("-"):
+            raise ValueError(f"not a ref: {ref}")
+        resolved = git(repo, "rev-parse", f"{ref}^{{commit}}", "HEAD").split()
+        requested_ref, ref, head = ref, resolved[0], resolved[-1]
         info = repo_info(repo)
         shallow = info.shallow
         work_list = work_window(repo, ref, limit, since)
@@ -779,7 +788,8 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
     for u in fixes:
         for e in u.introduced_by:
             blamed_units[e["unit"]] += e["lines"]
-    warnings = []
+    with phase("workspace"):
+        warnings = snapshot.workspace_warnings(repo, ref, head=head)
     if shallow:
         warnings.append("shallow clone: blame stops at the clone's boundary; run `git fetch --unshallow` "
                         "and collect again, or treat every introduced_by as inferred")
@@ -788,7 +798,10 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
     if any(u.boundary for u in units):
         warnings.append("the shallow boundary commit is listed but not judged: its diff is the whole tree")
     return {
-        "repo": repo, "ref": ref, "ref_sha": git(repo, "rev-parse", ref).strip(), "since": since,
+        "snapshot": snapshot.metadata(repo, {"since": since, "limit": limit, "max_blame": max_blame,
+                    "min_lines": min_lines, "history": history, "unit": unit, "path": path,
+                    "roots": sorted(roots), "excludes": list(excludes)}, repo_path=info.toplevel),
+        "repo": repo, "ref": ref, "ref_requested": requested_ref, "ref_sha": ref, "since": since,
         "unit": unit, "path": path, "shallow": shallow, "truncated": truncated, "warnings": warnings,
         "units": len(worked), "fixes": len(fixes),
         "fix_of_fix": [u.label() for u in fixes if u.fix_of_fix],
@@ -904,7 +917,11 @@ def unit_json(u: Unit) -> dict:
 def markdown(r: dict) -> str:
     scope = ", ".join(x for x in [f"since {r['since']}" if r["since"] else "", f"unit {r['unit']}" if r["unit"] else "",
                                   f"path {r['path']}" if r["path"] else ""] if x)
-    L = [f"# Evidence: {r['repo']} ({r['ref']} = {r['ref_sha'][:12]}{', ' + scope if scope else ''})", ""]
+    L = [f"# Evidence: {r['repo']} ({r.get('ref_requested', r['ref'])} = {r['ref_sha'][:12]}{', ' + scope if scope else ''})", ""]
+    if r.get("snapshot"):
+        plugin = r["snapshot"]["plugin"]
+        L += [f"Inspector {plugin['version']} · fingerprint {plugin['fingerprint'][:12]}",
+              f"Plugin files: `{plugin['path']}`", ""]
     L += [f"> **Warning**: {w}" for w in r["warnings"]] + ([""] if r["warnings"] else [])
     L += [f"- Units in the work window: {r['units']}; likely fixes: {r['fixes']}",
           f"- Fix-of-fix (a fix changed lines an earlier fix wrote) `↺`: {', '.join(r['fix_of_fix']) or 'none'}",
@@ -983,7 +1000,7 @@ def dossier(repo: str, u: dict, owner_sha: dict[str, str], diff_lines: int = 60,
         top = (c.get("introduced_by") or [{}])[0].get("unit")
         if top and top in owner_sha:
             L += [f"Culprit {top}, on the same files:", "```diff",
-                  capped(git(repo, "diff", "-U2", "--no-color", f"{owner_sha[top]}^1", owner_sha[top], "--", *code), diff_lines // 2), "```", ""]
+                  capped(git(repo, "show", "--format=", "--first-parent", "-U2", "--no-color", owner_sha[top], "--", *code), diff_lines // 2), "```", ""]
     text = "\n".join(L) + "\n"
     if len(text) > max_chars:
         text = text[:max_chars] + f"\n... cut at {max_chars} characters: read the rest with git show <sha> -- <path>\n"
@@ -1010,13 +1027,20 @@ def default_out(repo: str) -> str:
 def write(path: str, text: str) -> None:
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=d, delete=False) as f:
+            tmp = f.name
+            f.write(text)
+        os.replace(tmp, path)
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--repo", default=".")
+    ap.add_argument("--repo", help="repository; defaults to cwd, or the saved repository with --show")
     ap.add_argument("--ref", default="HEAD")
     ap.add_argument("--since", help="a ref (tag, sha) or a date YYYY-MM-DD: the work window starts after it")
     ap.add_argument("--max", type=int, default=200, help="most first-parent units in the work window")
@@ -1046,13 +1070,22 @@ def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+    repo_override = a.repo
+    a.repo = a.repo or "."
     if a.show:
         saved = a.json or (os.path.join(a.out, "evidence.json") if a.out else None)
         if not saved or not os.path.exists(saved):
             print("evidence.py: --show needs a saved run: --out <folder> or --json <file>", file=sys.stderr)
             return 2
-        with open(saved, encoding="utf-8") as f:
-            r = json.load(f)
+        try:
+            with open(saved, encoding="utf-8") as f:
+                r = json.load(f)
+            saved_repo, warnings = snapshot.validate(r, repo=repo_override)
+            for warning in warnings:
+                print(f"Warning: {warning}", file=sys.stderr)
+        except (OSError, ValueError) as e:
+            print(f"evidence.py: {e}", file=sys.stderr)
+            return 1
         want = a.show.lstrip("#")
         if a.show.startswith("#") or (want.isdigit() and len(want) < 7):
             hit = [u for u in r["timeline"] if u["pr"] is not None and str(u["pr"]) == want]
@@ -1064,7 +1097,7 @@ def main(argv=None) -> int:
             return 1
         owner_sha = r.get("unit_shas") or {u["unit"]: u["sha"] for u in r["timeline"]}
         try:
-            sys.stdout.write(dossier(r.get("repo_path", a.repo), hit[0], owner_sha, path=r.get("path")))
+            sys.stdout.write(dossier(saved_repo, hit[0], owner_sha, path=r.get("path")))
         except RuntimeError as e:
             print(f"evidence.py: {e}", file=sys.stderr)
             return 1
@@ -1075,7 +1108,7 @@ def main(argv=None) -> int:
                         a.unit, a.path, MONOREPO_ROOTS | set(a.component_root), a.workers,
                         a.cache_dir, not a.no_cache,
                         effective_excludes(a.path, a.component_root, a.exclude, not a.no_default_excludes))
-    except RuntimeError as e:
+    except (RuntimeError, ValueError, OSError) as e:
         print(f"evidence.py: {e}", file=sys.stderr)
         return 1
     r["repo_path"] = os.path.abspath(a.repo)
@@ -1124,8 +1157,14 @@ def finish(a, r: dict, owner_sha: dict) -> int:
     # the dossiers are independent git reads: build them side by side, write them in order
     built = pmap(build, r["cases"], a.workers if a.workers is not None else min(8, os.cpu_count() or 1)) if case_dir else []
     for i, label in enumerate(r["cases"], 1):
-        cmd = (f"python3 {me} --repo {r['repo_path']} --unit '{label}'" + (f" --path {a.path}" if a.path else "")
-               + " --dossier")
+        args = ["python3", me, "--repo", r["repo_path"], "--ref", r["ref_sha"],
+                "--unit", label, "--history", str(a.history), "--max", str(a.max),
+                "--max-blame-lines", str(a.max_blame_lines), "--min-lines", str(a.min_lines)]
+        if a.path:
+            args += ["--path", a.path]
+        for root in a.component_root:
+            args += ["--component-root", root]
+        cmd = shlex.join(args + ["--dossier"])
         where = f"`{cmd}`"
         if case_dir:
             fp = os.path.join(case_dir, "cases", f"{i:02d}-{label.lstrip('#')}.md")

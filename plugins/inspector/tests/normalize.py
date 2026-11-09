@@ -31,12 +31,22 @@ def normalize_json(r: dict, extra: list[str] | None = None) -> dict:
     out = json.loads(text)
     out["repo_path"] = "<REPO>"
     out["repo"] = "<REPO>"
+    # snapshot provenance (0.3.1): the plugin's own location, content fingerprint and version describe the
+    # installed copy, not the results, so they are blanked. Schema, repository, and every collection option
+    # stay compared.
+    plugin = (out.get("snapshot") or {}).get("plugin")
+    if isinstance(plugin, dict):
+        plugin.update(path="<PLUGIN>", fingerprint="<FINGERPRINT>", version="<VERSION>")
     return out
 
 
 def normalize_md(text: str, volatile: list[str]) -> str:
     text = _swap(text, volatile, "<VOLATILE>")
-    text = re.sub(r"python3 \S+evidence\.py", "python3 <SCRIPT>", text)
+    text = re.sub(r"python3 '?[^\s']*evidence\.py'?", "python3 <SCRIPT>", text)
+    # shell quoting of a path is platform dependent (a Windows path is quoted, a POSIX temp path is not)
+    text = text.replace("'<VOLATILE>'", "<VOLATILE>")
+    text = re.sub(r"^Inspector \S+ · fingerprint [0-9a-f]+$", "Inspector <VERSION> · fingerprint <FINGERPRINT>", text, flags=re.M)
+    text = re.sub(r"^Plugin files: `.*`$", "Plugin files: `<PLUGIN>`", text, flags=re.M)
     text = re.sub(r"(<VOLATILE>)[\\/]cases[\\/]", r"\1/cases/", text)
     return text.replace("\\", "/")
 
