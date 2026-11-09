@@ -47,3 +47,7 @@ A lead at level `reproduced` or `read` carries `probe`: the exact input and outp
 ## reconcile
 
 `reconcile` (optional, one line): the check against the source of truth for a lead whose mechanism is a pipeline's data being wrong, missing or stale. Printed as `reconcile: ...` under the impact. How to write the check: references/reconcile.md.
+
+## documented, observed_in_production
+
+`documented` (optional, short string): where the behaviour is documented or test-pinned (a doc line, a test name); empty or absent if not. `observed_in_production` (optional): `yes` | `no` | `unknown`, plus `observed_source` (where it was seen). When `documented` is set, the category stays what it is, but the lead's text says so, its severity is not set from code alone (a documented, test-pinned behaviour can still do harm in production), and it carries a `reconcile` (or `probe`) naming the production evidence that would show harm (a freshness query, a reconciliation, a job history). handoff.py prints `documented: ...` under the impact and `[production: yes|no|unknown]` next to the level (missing is `unknown`); at equal level `yes` sorts first, then the reach order. It warns on stderr when `documented` is set with neither `reconcile` nor `observed_in_production: yes`.
