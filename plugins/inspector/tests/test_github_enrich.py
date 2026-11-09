@@ -34,20 +34,29 @@ class FakeGh:
 
     def __init__(self, prs=None, fail=None):
         self.prs, self.fail, self.calls, self.lock = prs if prs is not None else PRS, fail, [], threading.Lock()
+        self.graphql = []
 
     def __call__(self, args):
         with self.lock:
             self.calls.append(list(args))
         if self.fail:
             raise evidence.GhUnavailable(self.fail)
+        if args[:2] == ["api", "graphql"]:      # this mock does not speak GraphQL: the per-PR path takes over
+            with self.lock:
+                self.calls.pop()
+                self.graphql.append(list(args))
+            raise evidence.GhUnavailable("graphql not mocked")
         assert isinstance(args, list) and args[:2] == ["pr", "view"] and "-R" in args
         return json.dumps(self.prs.get(int(args[2]), {"title": "", "body": "", "mergedAt": "2026-01-01T00:00:00Z",
                                                       "labels": [], "closingIssuesReferences": []}))
 
 
+enrich = lambda *a, **k: evidence.gh_enrich(*a, batch=False, **k)  # noqa: E731  the per-PR path
+
+
 def test_one_call_per_pr_with_labels_closes_and_body():
     gh = FakeGh()
-    res = evidence.gh_enrich("o/r", [4, 1, 6], gh, None, workers=4)
+    res = enrich("o/r", [4, 1, 6], gh, None, workers=4)
     assert len(gh.calls) == res.calls == 3
     assert res.data[4] == {"labels": ["Bug"]}
     assert res.data[1] == {"labels": ["enhancement"],
@@ -64,38 +73,38 @@ def test_an_issue_without_labels_costs_one_extra_call_only_for_that_issue():
         if args[:2] == ["issue", "view"]:
             return json.dumps({"title": "t", "state": "OPEN", "labels": [{"name": "Bug"}]})
         return json.dumps(prs[1])
-    res = evidence.gh_enrich("o/r", [1], gh, None, workers=1)
+    res = enrich("o/r", [1], gh, None, workers=1)
     assert res.data[1]["closes"] == [{"number": 12, "title": "t", "state": "OPEN", "labels": ["Bug"]}]
     assert res.calls == 2
 
 
 def test_merged_pr_is_cached_and_a_failure_is_not(tmp_path):
     gh = FakeGh()
-    evidence.gh_enrich("o/r", [4, 1], gh, evidence.BlameCache(str(tmp_path)), workers=2)
+    enrich("o/r", [4, 1], gh, evidence.BlameCache(str(tmp_path)), workers=2)
     assert len(gh.calls) == 2
     again = FakeGh()
-    res = evidence.gh_enrich("o/r", [4, 1], again, evidence.BlameCache(str(tmp_path)), workers=2)
+    res = enrich("o/r", [4, 1], again, evidence.BlameCache(str(tmp_path)), workers=2)
     assert again.calls == [] and res.cached == 2 and res.calls == 0
     assert res.data[4] == {"labels": ["Bug"]} and res.bodies[4]
     other = FakeGh()
-    evidence.gh_enrich("o2/r", [4], other, evidence.BlameCache(str(tmp_path)), workers=1)
+    enrich("o2/r", [4], other, evidence.BlameCache(str(tmp_path)), workers=1)
     assert len(other.calls) == 1, "the slug is part of the key"
     bad = tmp_path / "bad"
-    res = evidence.gh_enrich("o/r", [4], FakeGh(fail="rate limited"), evidence.BlameCache(str(bad)), workers=1)
+    res = enrich("o/r", [4], FakeGh(fail="rate limited"), evidence.BlameCache(str(bad)), workers=1)
     assert res.data == {} and "rate limited" in res.error and not list(bad.rglob("*.json"))
 
 
 def test_an_unmerged_pr_is_not_cached(tmp_path):
     prs = {4: {**PRS[4], "mergedAt": None}}
-    evidence.gh_enrich("o/r", [4], FakeGh(prs), evidence.BlameCache(str(tmp_path)), workers=1)
+    enrich("o/r", [4], FakeGh(prs), evidence.BlameCache(str(tmp_path)), workers=1)
     assert not list(tmp_path.rglob("*.json"))
 
 
 def test_cache_version_is_part_of_the_key(tmp_path, monkeypatch):
-    evidence.gh_enrich("o/r", [4], FakeGh(), evidence.BlameCache(str(tmp_path)), workers=1)
+    enrich("o/r", [4], FakeGh(), evidence.BlameCache(str(tmp_path)), workers=1)
     monkeypatch.setattr(evidence, "GH_CACHE_VERSION", "v-next")
     gh = FakeGh()
-    evidence.gh_enrich("o/r", [4], gh, evidence.BlameCache(str(tmp_path)), workers=1)
+    enrich("o/r", [4], gh, evidence.BlameCache(str(tmp_path)), workers=1)
     assert len(gh.calls) == 1
 
 
@@ -105,7 +114,7 @@ def test_first_failure_stops_the_remaining_calls():
     def gh(args):
         state["n"] += 1
         raise evidence.GhUnavailable("gh failed (not logged in?)")
-    res = evidence.gh_enrich("o/r", [1, 4, 6], gh, None, workers=1)
+    res = enrich("o/r", [1, 4, 6], gh, None, workers=1)
     assert state["n"] == 1 and res.data == {} and "not logged in" in res.error
 
 
