@@ -50,7 +50,7 @@ commit.
 | none, an earlier case file | the units after the sha it was investigated through | `--since <sha>` |
 | `#N` or a sha | that one unit: its culprits, and siblings of its bug in today's code | `--unit '#N'` or `--unit <sha>` |
 | `since <ref or YYYY-MM-DD>` | the units after it | `--since <ref or date>` |
-| a path (`plugins/x`, `src/auth`) | the units that touch it | `--path <path>` |
+| a path (`plugins/x`, `src/auth`) | the units that touch it | `--path <path>` (repeat for several: the union) |
 
 An earlier case file is a `docs/inspector/*-case.md` (the newest) whose last line reads
 `Investigated through <sha>`; also look where the user said the last one went. With no argument
@@ -88,7 +88,7 @@ python3 "<skill_root>/scripts/evidence.py" --repo . [--out "<scratch>"] [--budge
 ```
 
 It prints the summary. The summary opens with **Cases to work, in order**: the triage of step 3,
-already done, and for each case the command that prints its **dossier** (`--unit '#N' --dossier`).
+already done, and for each case the command that prints its **dossier** (`--unit '#N' --dossier`; a fix over 400 changed lines also lists its files, and `--file <path>` prints one).
 When it can, it also saves `evidence.json`, `evidence.md` and each dossier in `cases/` (in
 `--out`, else `.git/inspector/<time>/`). Some sandboxes let no command write anywhere: then it
 says "nothing saved", and the commands are all you need. Never spend calls hunting for a
@@ -111,7 +111,7 @@ What it gives, per unit:
   root, else the top folder; pass `--component-root <folder>` for another);
 - its version bumps;
 - whether it looks like a fix, and **why** (the title or most commit subjects say fix in strong
-  words, or it is a patch release and nothing else);
+  words; a patch version bump is recorded but is not a fix signal);
 - tags: `tests-only`, `docs-only`, `instructions-only`, `adds-only`, `multi-component`;
 - for a fix, **introduced_by**, per unit and per commit: the earlier units that last wrote the
   lines the fix's own commits deleted or changed;
@@ -126,6 +126,19 @@ The summary lists:
 
 Blame results map to the last 500 units (`--history`), so a culprit just before the work window
 is still known.
+
+**Saved evidence is a snapshot, not a current-code cache.** The collector records its plugin
+version, content fingerprint, repository, SHA and collection settings. `--show` and cross-check
+validate new snapshots. A changed plugin or unsupported schema requires collection again.
+A moved checkout can be supplied with `--repo <new-path>` if it contains the snapshot commit.
+Legacy evidence has no provenance: collect again before relying on it. Treat warnings about a
+different HEAD or local edits as a requirement to choose one source: read and probe the saved
+commit in a temporary worktree, or collect at the current HEAD. Never combine saved line numbers
+with current working-tree code. Local uncommitted changes are not investigated by this collector.
+To compare the plugin copy in use with another on disk, run
+`python3 "<skill_root>/scripts/doctor.py" --repo <repo> --compare-plugin <other-plugin-root>`.
+This compares files only; verify which plugin the Claude session loaded separately.
+While editing the plugin itself, `INSPECTOR_ALLOW_PLUGIN_CHANGE=1` turns the changed-plugin rejection into a warning.
 
 It is a lead sheet, not a verdict:
 
@@ -223,13 +236,21 @@ From an investigator: read its case file, then cross-check its leads against the
 below (pass its cases as cards if it listed them, or skip the cross-check) and check its reproduced
 and read leads at their places before you report them. From case readers: each replies with its
 card, as JSON. Then cross-check the readers against the collector,
-the cards on stdin (with the same scope flags the collector ran with):
+the cards on stdin. Reuse the saved evidence whenever available; this preserves the exact
+ref and scope and avoids collecting the history again:
 
 ```bash
-python3 "<skill_root>/scripts/crosscheck.py" --repo . [--path P | --since R] --cards - <<'CARDS'
+python3 "<skill_root>/scripts/crosscheck.py" --evidence "<out>/evidence.json" --cards - <<'CARDS'
 [ <card 1>, <card 2>, ... ]
 CARDS
 ```
+
+Only when evidence could not be saved, use `--repo <repo> --ref <collected-sha>`
+and the original `--unit`, `--path`, `--since`, `--max`, `--history`, custom `--component-root` values and blame limits.
+
+If cross-check or handoff exits nonzero, correct the input or output-path problem before
+continuing. Do not replace malformed or unreadable cards with an empty list. `[]` is valid only
+when the investigation actually returned no cards or leads. "Both unknown" is not corroboration.
 
 For each card it says whether the reader's culprit agrees with blame's. It says whether each
 sibling the reader reports sits on a copy the collector found ("both") or not ("reader only").
@@ -312,6 +333,13 @@ Decide each lead:
 - **read**: you traced the mechanism and can name the input that breaks it, without running it;
 - **suspect**: the pattern fits; you can't name the failing input;
 - **clear**: you looked and it's handled. One line each, under "Checked and clear".
+
+**Labels.** `category`: `security` only with an untrusted input crossing a trust boundary AND an
+observed or traced consequence (data exposure, a guard bypassed, injection). Otherwise `broken-flow`
+(a documented promise doesn't hold), `cost` or `other`; a fail-open or deny-list weakness whose
+reach depends on the host is `broken-flow`, with the host dependency stated. A claim whose truth
+depends on host or runtime behaviour not observed in this session: impact level `unverified` and
+the flag `needs-host-check` (the mechanism may still be `read`; the impact is not).
 
 **The gate.** Each lead names what it breaks, in the table's Breaks column: a promise from the
 brief (quote it), or the fixed bug it is a sibling of (the case). A finding that names neither is

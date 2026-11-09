@@ -32,7 +32,10 @@ Python, if you run it at all, with `PYTHONDONTWRITEBYTECODE=1`.
    by line from the failing point: what runs after it, what it skips, in today's code. When it
    depends on how the host behaves (what the engine does when a hook throws, a framework's
    retry), cite where that is written (its types, its docs) or give the impact the level
-   `unverified`. Never state an impact you didn't trace.
+   `unverified` and flag the lead `"needs_host_check": true`. Never state an impact you didn't trace.
+   `category`: `security` only with an untrusted input crossing a trust boundary AND an observed or
+   traced consequence; otherwise `broken-flow` (a documented promise doesn't hold), `cost` or `other`.
+   A fail-open or deny-list weakness whose reach depends on the host is `broken-flow`, host dependency stated.
 6. Prove what you can cheaply. A probe that runs a copy of a function, or the project's own test
    for one file, counts as `reproduced` when you saw it fail. At most 3 probes. No installs.
 
@@ -60,6 +63,7 @@ Reply with this JSON, nothing else:
     "verdict": "yes | no | unknown",
     "siblings": [
       {"where": "path:line", "what": "the same bug, here", "breaks": "P3 or 'sibling of <case>'", "level": "reproduced | read | suspect",
+       "category": "security | broken-flow | cost | other", "needs_host_check": false,
        "impact": {"what": "what a user or the next code sees", "level": "reproduced | read | unverified", "source": "path:line you traced to, or the doc or type that says so"},
        "change": "the fix it needs", "test": "the test that proves it"}
     ],

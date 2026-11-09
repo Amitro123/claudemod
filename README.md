@@ -407,6 +407,78 @@ Tests: `python -m pytest plugins/inspector/tests`. They build small repositories
 
 CI runs them.
 
+### Inspector: efficient investigations
+
+Collect once, then read the generated `cases/` dossiers and reuse the saved `evidence.json`
+with `crosscheck.py --evidence <out>/evidence.json --cards <cards-dir>`. Recollection is a
+fallback for environments that cannot save files. Collection resolves the requested ref to
+one commit; generated fallback commands retain that commit, history and blame limits.
+Cross-check fallback also accepts `--ref`, `--unit`, `--max`, `--history`,
+`--max-blame-lines` and `--min-lines`.
+
+- **Scripts:** history traversal, change classification, blame candidates, exact-copy search,
+  triage, dossier generation, cross-checking and faithful handoff rendering.
+- **Model:** interpret the project's promises, trace a failing input through the code, distinguish
+  a last writer from a causal change, assess whether the fix is complete, and design a probe.
+- **GitHub:** enrich only selected cases with PR bodies, review comments, linked issues and
+  relevant failing CI logs. Local Git remains the source for diffs and blame. An MCP connection
+  provides access; it does not itself reduce tokens. Bound and cache the retrieved material.
+
+Cross-checking compares PR numbers exactly and tracks every copy location independently.
+Agreement with blame is corroboration, not a reproduction. The collector still uses heuristic
+fix detection and bounded blame; added-only fixes and semantic duplicates need model review.
+A case-file checkpoint does not mean every older case was investigated: carry deferred cases
+forward explicitly. Full Claude runs and token/cost improvements require separate live evals.
+
+### Inspector: local copies and saved evidence
+
+Inspector 0.3.1 records a schema version, plugin content fingerprint, plugin path, repository,
+commit SHA and collection options in every new evidence snapshot. `--show` and cross-check
+reject a snapshot made by changed plugin files or an unsupported schema. They warn when HEAD
+has moved or staged, unstaged or untracked files are present. The collector analyzes committed
+files only. Legacy evidence stays readable with an explicit unverified warning; collect again
+before relying on it. Evidence and summary files are replaced atomically to avoid partial JSON.
+Historical snapshots remain usable: read their SHA in a separate worktree rather than mixing
+old locations with current code. For a moved clone, pass `--repo <new-path>` explicitly.
+
+A local clone and an installed plugin may be different copies. According to the
+[Claude Code loading reference](https://code.claude.com/docs/en/plugins/loading), a plugin
+installed from a remote marketplace normally loads from its versioned cache. `--plugin-dir`
+and relative-path plugins from a locally added marketplace load in place; source edits take
+effect after reload or a new session. Updates on disk do not prove the running session loaded
+them. Use `claude plugin list --json` and `claude plugin details inspector` to inspect the install,
+and verify the session after `/reload-plugins` or a new launch. Do not delete caches by default.
+
+Run the read-only doctor from the candidate source:
+
+```bash
+python plugins/inspector/skills/inspect/scripts/doctor.py --repo /path/to/project
+python plugins/inspector/skills/inspect/scripts/doctor.py --repo /path/to/project --compare-plugin /path/to/installed/inspector
+```
+
+It compares content even if the two copies claim the same version, prints paths and fingerprints,
+and returns nonzero on a mismatch or error. It does not discover or certify an active Claude
+session's loaded copy. To test the candidate directly, use an absolute plugin directory:
+
+```bash
+claude --plugin-dir /absolute/path/to/claudemod/plugins/inspector
+```
+
+The 0.3.1 version bump is prepared in this patch; it is not a published release. This mechanism
+checks saved evidence freshness, not the LLM provider's prompt cache.
+
+### Inspector: failure reporting
+
+The offline runner executes both plugin validation and pytest, and fails if either fails
+(including a missing Claude CLI). Cross-check and handoff reject invalid card JSON, malformed
+card containers and missing card directories before writing output. Use `[]` for an intentional
+empty stdin result. Failed writes return a nonzero status and handoff files are replaced atomically.
+
+Cross-check keeps decisions scoped to each unit, fix commit, copied expression and location.
+A commit with no blamed lines does not inherit another commit's blame; an ambiguous or missing
+commit is reported rather than guessed. Two unknown culprits are counted separately from
+actual agreement. These checks establish consistency of evidence, not proof of causality.
+
 ## Developing
 
 Each mod's `tsconfig.json` extends `.claude-plugin/types/tsconfig.json`. Claude Code writes that folder (the API types for your build) the first time it loads the mod, so a fresh clone doesn't have it, and it's git-ignored. To type-check a mod:

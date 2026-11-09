@@ -24,17 +24,20 @@ import evidence  # noqa: E402
 ROOT = Path(__file__).resolve().parents[3]
 PR72 = "92974e4"  # Merge pull request #72: the labels describe the history up to here
 
-FIXES = "#6 #18 #23 #25 #27 #36 #38 #48 #50 #53 #54 #60 #66 #70 #71 #72".split()
+FIXES = "#6 #23 #27 #36 #38 #48 #50 #53 #54 #60 #66 #70 #71 #72".split()
+# Hand-labeled fixes whose only machine evidence is a patch version bump: not a fix signal since the
+# precision fix (PRs 113 and 123 of the model-router run were bump-only non-fixes). A known recall loss.
+BUMP_ONLY_FIXES = "#18 #25".split()
 NOT_FIXES = "#1 #2 #3 #4 #5 #17 #20 #21 #26 #29 #34 #37 #42 #44 #45 #58 #61 #65 #67 #68".split()
 # fix commit -> the unit that wrote the lines it changed (read from both diffs)
 CULPRITS = {
-    "e5c6966": "#23",  # idle SVG redraw 4/s: #23 slowed idle redraws to 1/s
     "eb790a7": "#48",  # re-plan and concurrent adds mixed in a merge: #48's mergeGoal
     "86fc34b": "#48",  # export `where` outside its code span: #48 quoted CLAUDE.md items only
     "d9970cc": "#51",  # exit 127 of a started check read as "not installed": #51
-    "748d209": "#55",  # plan approval lost by mods' order: #55's hand-off
     "c917a09": "#48",  # every export quotes: #48 quoted one target
 }
+# commits of the bump-only units above: no longer worked, so no blame (idle SVG redraw -> #23; plan approval -> #55)
+BUMP_ONLY_COMMITS = {"e5c6966", "748d209"}
 NO_CULPRIT = {"a883bcd"}  # adds a redaction pattern, deletes nothing: blame has nothing to trace
 
 
@@ -47,19 +50,24 @@ def _has_history() -> bool:
     return shallow == "false" and known
 
 
-pytestmark = pytest.mark.skipif(not _has_history(), reason="needs the full claudemod history up to #72")
+pytestmark = [pytest.mark.skipif(not _has_history(), reason="needs the full claudemod history up to #72"),
+              pytest.mark.slow]       # one collector run over ~100 units; deselect with -m "not slow"
 
 
 @pytest.fixture(scope="module")
-def ev() -> dict:
-    return evidence.investigate(str(ROOT), ref=PR72, min_lines=3)
+def ev(tmp_path_factory) -> dict:
+    # one run shared by every test here; the blame cache goes to a temp folder, not into this checkout's .git
+    return evidence.investigate(str(ROOT), ref=PR72, min_lines=3,
+                                cache_dir=str(tmp_path_factory.mktemp("blame-cache")))
 
 
 def test_fix_verdicts(ev: dict) -> None:
     by = {u["unit"]: u for u in ev["timeline"]}
     missed = [u for u in FIXES if not by[u]["is_fix"]]
     flagged = [u for u in NOT_FIXES if by[u]["is_fix"]]
+    bump_only = [u for u in BUMP_ONLY_FIXES if by[u]["is_fix"]]
     assert not missed and not flagged, f"fixes missed: {missed}; non-fixes flagged: {flagged}"
+    assert not bump_only, f"a patch bump alone made these fixes: {bump_only}"
 
 
 def test_fix_share_stays_honest(ev: dict) -> None:
@@ -72,5 +80,5 @@ def test_culprits(ev: dict) -> None:
     got = {s: [e["unit"] for e in commits[s].get("introduced_by", [])] for s in CULPRITS}
     wrong = {s: g for s, g in got.items() if CULPRITS[s] not in g}
     assert not wrong, f"culprit not traced: {wrong}"
-    for s in NO_CULPRIT:
+    for s in NO_CULPRIT | BUMP_ONLY_COMMITS:
         assert not commits[s].get("introduced_by"), s

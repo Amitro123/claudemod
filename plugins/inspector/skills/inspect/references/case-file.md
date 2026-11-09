@@ -43,7 +43,10 @@ titles only go last, one line each.
 | # | Level | Where | What breaks | Impact (its own level) | Breaks (promise or sibling of) | Class | Seam | The change it needs | Test that proves it |
 |---|---|---|---|---|---|---|---|---|---|
 
-Level: reproduced | read | suspect. Ranked as SKILL.md step 5 says: a broken promise a user hits,
+Level: reproduced | read | suspect; add `[needs-host-check]` when the impact depends on host
+behaviour nobody observed (its impact level is then `unverified`). Category `security` only with an
+untrusted input crossing a trust boundary and a traced consequence, else `broken-flow`, `cost` or
+`other`. Ranked as SKILL.md step 5 says: a broken promise a user hits,
 then a seam with a fix-of-fix history, then the rest; reproduced first within each. A row with no
 promise and no sibling in Breaks belongs under Recommendations, not here.
 
