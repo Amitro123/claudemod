@@ -89,3 +89,74 @@ def test_security_with_an_unverified_impact_warns_but_does_not_fail(monkeypatch,
     assert code == 0
     assert "a/b.ts:3" in err and "security" in err and "unverified" in err
     assert "a/d.ts:5" not in err
+
+
+def _rows(out):
+    return {l.split("`")[1]: l for l in out.splitlines() if l.startswith("| ") and "`" in l}
+
+
+def test_change_status_unverified_for_host_checked_leads_by_default(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, [HOST])
+    rows = _rows(out)
+    assert "| allow-list [change unverified] |" in rows["a/b.ts:3"]
+    assert "[change unverified]" in rows["a/c.ts:4"]
+    assert "[change unverified]" not in rows["a/d.ts:5"]
+
+
+def test_explicit_change_status_wins(monkeypatch, capsys) -> None:
+    card = {"case": "#9", "complete": {"siblings": [
+        {**HOST["complete"]["siblings"][0], "change_status": "verified"},
+        {**HOST["complete"]["siblings"][2], "change_status": "unverified"}]}}
+    _, out, _ = run(monkeypatch, capsys, [card])
+    rows = _rows(out)
+    assert "[change unverified]" not in rows["a/b.ts:3"]
+    assert "[change unverified]" in rows["a/d.ts:5"]
+
+
+def test_garbage_change_status_never_raises(monkeypatch, capsys) -> None:
+    lead = {"where": "a.py:1", "what": "x", "level": "read", "change": "c", "change_status": ["?"], "reach": 5}
+    code, out, _ = run(monkeypatch, capsys, [lead])
+    assert code == 0 and "a.py:1" in out
+
+
+def test_reach_is_shown_in_the_level_cell_and_breaks_ties(monkeypatch, capsys) -> None:
+    def lead(w, reach=None, lvl="read"):
+        d = {"where": w, "what": "x", "level": lvl, "breaks": "P1", "change": "c", "test": "t"}
+        if reach is not None:
+            d["reach"] = reach
+        return d
+    leads = [lead("o.py:1", "opt-in: flag defaults off"), lead("m.py:1"), lead("d.py:1", "default-on"),
+             lead("u.py:1", "unknown"), lead("s.py:1", "opt-in", "suspect")]
+    _, out, _ = run(monkeypatch, capsys, leads)
+    rows = _rows(out)
+    assert rows["o.py:1"].endswith("| opt-in: flag defaults off |")
+    assert rows["d.py:1"].endswith("| default-on |")
+    assert rows["m.py:1"].endswith("| unknown |") and rows["u.py:1"].endswith("| unknown |")
+    assert rows["o.py:1"].startswith("| read |"), "the level cell is unchanged"
+    order = [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l]
+    assert order == ["d.py:1", "m.py:1", "u.py:1", "o.py:1", "s.py:1"], "default-on before opt-in; unknown keeps input order"
+
+
+def test_reach_next_to_needs_host_check(monkeypatch, capsys) -> None:
+    lead = {**HOST["complete"]["siblings"][0], "reach": "opt-in"}
+    _, out, _ = run(monkeypatch, capsys, [{"case": "x", "complete": {"siblings": [lead]}}])
+    row = _rows(out)["a/b.ts:3"]
+    assert row.startswith("| read [needs-host-check] |") and row.endswith("| opt-in |")
+
+
+RULE_FILES = ["skills/inspect/SKILL.md", "agents/case-reader.md", "agents/investigator.md",
+              "skills/inspect/references/case-file.md"]
+PLUGIN = Path(__file__).parent.parent
+
+
+def test_the_new_rule_text_is_in_all_four_files() -> None:
+    for f in RULE_FILES:
+        t = " ".join((PLUGIN / f).read_text(encoding="utf-8").split())
+        assert "name the input, the boundary and the sink" in t.lower(), f
+        assert "change_status" in t, f
+        assert "`reach`" in t, f
+
+
+def test_skill_md_stays_within_its_size_budget() -> None:
+    words = len((PLUGIN / "skills/inspect/SKILL.md").read_text(encoding="utf-8").split())
+    assert words <= 4450, words

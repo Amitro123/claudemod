@@ -48,6 +48,20 @@ def needs_host_check(s: dict) -> bool:
     return bool(s.get("needs_host_check")) or "needs-host-check" in [str(f).strip().lower() for f in flags]
 
 
+def change_unverified(s: dict) -> bool:
+    """An explicit `change_status` wins; without one, a needs-host-check lead's change is unverified."""
+    st = s.get("change_status")
+    if isinstance(st, str) and st.strip().lower() in ("verified", "unverified"):
+        return st.strip().lower() == "unverified"
+    return needs_host_check(s)
+
+
+def reach_of(s: dict) -> str:
+    """`default-on` | `opt-in` | `unknown`, plus any short text the reader gave; missing is `unknown`."""
+    r = cell(s.get("reach")) if isinstance(s.get("reach"), (str, int, float)) else ""
+    return r or "unknown"
+
+
 def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[str, str], title: str,
           warnings: list[str] | None = None) -> tuple[str, list[str]]:
     errors, rows = [], []
@@ -73,16 +87,18 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         shown = f"{lvl} [needs-host-check]" if needs_host_check(s) else lvl
         impact_cell = f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]"
         note = f" **Note added after the readers, unverified:** {cell(notes[where])}" if where in notes else ""
-        rows.append((RANK.get(lvl, 0), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
-                                         f"{cell(s.get('breaks'))} | {cell(s.get('change'))} | {cell(s.get('test'))} | {cell(s.get('case'))} |"))
-    rows.sort(key=lambda r: -r[0])
+        change = cell(s.get("change")) + (" [change unverified]" if change_unverified(s) else "")
+        reach = reach_of(s)
+        rows.append((RANK.get(lvl, 0), {"default-on": 0, "opt-in": 2}.get(reach.lower().split(":")[0].strip(), 1), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
+                                         f"{cell(s.get('breaks'))} | {change} | {cell(s.get('test'))} | {cell(s.get('case'))} | {reach} |"))
+    rows.sort(key=lambda r: (-r[0], r[1]))
     L = [f"# {title}", "",
          "Copied word for word from the inspector's case readers: each lead's level, and its impact's own",
          "level, as they gave them. A level here was only ever lowered, never raised. Everything came from",
          "a model reading repository history and code: verify each claim before you change code.", "",
-         "| Level | Where | What breaks | Impact [its level: source] | Breaks | The change | The test | From case |",
-         "|---|---|---|---|---|---|---|---|"]
-    L += [r for _, r in rows] or ["| - | - | no leads | - | - | - | - | - |"]
+         "| Level | Where | What breaks | Impact [its level: source] | Breaks | The change | The test | From case | Reach |",
+         "|---|---|---|---|---|---|---|---|---|"]
+    L += [r for _, _, r in rows] or ["| - | - | no leads | - | - | - | - | - | - |"]
     return "\n".join(L) + "\n", errors
 
 
