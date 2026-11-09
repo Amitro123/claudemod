@@ -75,3 +75,31 @@ def test_removal_unit_gets_a_verdict_and_no_culprits(removal_repo):
     assert "verdict" not in by["#2"] and by["#2"]["introduced_by"]       # a normal fix keeps its culprit
 
 
+# ---- 3. copies left behind ignore imports, comments and descriptions ---------------------------
+
+LINE = "out = render(user_text, escape=False)"
+
+
+def test_left_behind_ignores_imports_comments_and_descriptions(tmp_path):
+    r = new_repo(tmp_path / "r")
+    commit(r, {"a.py": f"def a(user_text):\n    {LINE}\n    return out\n",
+               "b.py": f"def b(user_text):\n    {LINE}\n    return out\n",
+               "c.py": f"# {LINE}\n",
+               "d.js": f"// {LINE}\nconst x = require('{LINE}')\n",
+               "e.py": f"from {LINE} import z\n",
+               "SKILL.md": f'---\ndescription: use when {LINE} appears\nwhen_to_use: "{LINE}"\n---\n'}, "Add files")
+    merge_pr(r, 1, "fix", [({"a.py": "def a(user_text):\n    out = render(user_text, escape=True)\n    return out\n"},
+                            "fix: a escapes user text")], "fix: a escapes user text")
+    ev = evidence.investigate(str(r))
+    assert [(x["unit"], x["at"]) for x in ev["left_behind"]] == [("#1", ["b.py:2"])]
+    ignored = sorted(at for x in ev["ignored_matches"] for at in x["at"])
+    assert ignored == ["SKILL.md:2", "SKILL.md:3", "c.py:1", "d.js:1", "d.js:2", "e.py:1"]
+    assert all(x["unit"] == "#1" and x["line"] == LINE for x in ev["ignored_matches"])
+
+
+def test_no_ignored_matches_key_when_nothing_was_ignored(tmp_path):
+    r = new_repo(tmp_path / "r")
+    commit(r, {"a.py": f"def a(user_text):\n    {LINE}\n    return out\n"}, "Add a")
+    merge_pr(r, 1, "fix", [({"a.py": "def a(user_text):\n    out = render(user_text, escape=True)\n    return out\n"},
+                            "fix: a escapes")], "fix: a escapes")
+    assert "ignored_matches" not in evidence.investigate(str(r))

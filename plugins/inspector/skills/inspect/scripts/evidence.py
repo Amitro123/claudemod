@@ -618,9 +618,18 @@ def removed_lines(patch: str) -> list[str]:
     return removed[:40]
 
 
-def grep_hits(repo: str, ref: str, patterns: list[str], excludes: list[str] = ()) -> dict[str, list[str]]:
+# Matches on these lines are not copies of a fixed expression: they mention it. They are listed apart
+# (`ignored_matches`), never counted: an import/require/from line, a comment, a description/frontmatter string.
+IGNORED_MATCH = re.compile(
+    r"^\s*(import\b|from\b|export\b.*\bfrom\b|#\s*include\b|(#|//|/\*|\*|--|<!--)"
+    r"|[\"']?(description|when_to_use|argument-hint)[\"']?\s*[:=])|\brequire\s*\(", re.I)
+
+
+def grep_hits(repo: str, ref: str, patterns: list[str], excludes: list[str] = (),
+              ignored: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
     """pattern -> up to every `path:line` at `ref` (tests left out) that contains it: one `git grep -f`
-    for all patterns of the run, where it used to be one `git grep` per line."""
+    for all patterns of the run, where it used to be one `git grep` per line. Matches on import,
+    comment and description lines go to `ignored` (same shape) when given, and are dropped otherwise."""
     patterns = list(dict.fromkeys(patterns))
     if not patterns:
         return {}
@@ -638,10 +647,19 @@ def grep_hits(repo: str, ref: str, patterns: list[str], excludes: list[str] = ()
         if len(parts) < 3 or TEST_PATH.search(parts[0]):
             continue
         at = ":".join(parts[:2])
+        skip = bool(IGNORED_MATCH.search(parts[2]))
         for t in patterns:
             if t in parts[2]:
-                res[t].append(at)
+                if not skip:
+                    res[t].append(at)
+                elif ignored is not None:
+                    ignored.setdefault(t, []).append(at)
     return res
+
+
+def ignored_matches(removed: list[str], ignored: dict[str, list[str]]) -> list[dict]:
+    """The matches left_behind did not count (imports, comments, descriptions), for the lines of one fix."""
+    return [{"line": t[:160], "at": ignored[t]} for t in removed if ignored.get(t)]
 
 
 def left_behind(repo: str, commit: str, ref: str, cap: int = 8, removed: list[str] | None = None,
@@ -755,7 +773,8 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
     with phase("blame"):
         results = pmap(analyze, jobs, workers)
     with phase("copies"):
-        hits = grep_hits(repo, ref, [t for _, rem in results for t in rem], excludes)
+        ignored: dict[str, list[str]] = {}
+        hits = grep_hits(repo, ref, [t for _, rem in results for t in rem], excludes, ignored)
     by_job = {id(c): res for (_, c), res in zip(jobs, results)}
     for u in worked:
         if not u.is_fix or u.verdict == "removal":     # no blame for removals: nobody broke what was deleted
@@ -779,6 +798,7 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
                 e["files"].add(fpath)
             c["introduced_by"] = [{"unit": k, "lines": n} for k, n in c_intro.most_common(5)]
             c["left_behind"] = left_behind(repo, c["sha"], ref, removed=removed, hits=hits)
+            c["ignored_matches"] = ignored_matches(removed, ignored)
         u.introduced_by = sorted(({**e, "files": sorted(e["files"])} for e in per_unit.values()),
                                  key=lambda e: -e["lines"])
         u.fix_of_fix = any(e["is_fix"] and e["lines"] >= min_lines for e in u.introduced_by)
@@ -817,6 +837,8 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
         "most_blamed_units": blamed_units.most_common(10),
         "left_behind": [{"unit": u.label(), "commit": c["sha"][:12], **x} for u in fixes for c in u.commits
                         for x in c.get("left_behind", [])],
+        **({"ignored_matches": im} if (im := [{"unit": u.label(), "commit": c["sha"][:12], **x} for u in fixes
+                                              for c in u.commits for x in c.get("ignored_matches", [])]) else {}),
         "timeline": [unit_json(u) for u in worked],
         "unit_shas": {u.label(): u.sha for u in units},
     }
@@ -912,7 +934,8 @@ def unit_json(u: Unit) -> dict:
         "files": u.files, "version_bumps": u.version_bumps,
         "commits": [{"sha": c["sha"][:12], "subject": c["subject"], "is_fix": c.get("is_fix", False),
                      **({"introduced_by": c["introduced_by"]} if c.get("introduced_by") else {}),
-                     **({"left_behind": c["left_behind"]} if c.get("left_behind") else {})}
+                     **({"left_behind": c["left_behind"]} if c.get("left_behind") else {}),
+                     **({"ignored_matches": c["ignored_matches"]} if c.get("ignored_matches") else {})}
                     for c in u.commits],
         "introduced_by": u.introduced_by, "fix_of_fix": u.fix_of_fix,
         **({"verdict": u.verdict} if u.verdict else {}),
