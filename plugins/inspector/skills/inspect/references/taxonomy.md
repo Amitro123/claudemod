@@ -23,5 +23,8 @@ example wording; match the meaning, not the words.
 | **performance** | redraws, polling, reads or calls far more often than needed | intervals, caches, debounce, "a slower poll" | other timers and loops in the same component and its siblings |
 | **test gap** | the bug had a test that passed with the wrong code, or none | a fix that changes only tests, or adds the first test for a promise | promises from the brief that no test checks |
 | **docs drift** | the README or docs promise something the code doesn't do (or no longer does) | README-only or docs-only fixes; "the README now says" | each promise in the brief against the code that keeps it |
+| **batch-refusal** | one bad record makes a job refuse or discard the whole batch | an assertion or raise before the write that covers all records; e.g. a job asserts display names are unique and aborts the whole load when two records share one | every job that validates before writing: does a single failure block the rest? |
+| **silent-job-failure** | a scheduled job fails with no alert and no freshness indicator | a fix that adds an alert, a "last updated" field or a failure notice; e.g. a nightly load failed for days and nobody was told | every scheduled job: what tells a person it did not run or failed? |
+| **optional-join-drops-rows** | a reader inner-joins or filters on a table that may lack the row | a join changed to a left join, or a filter on an optional table removed; e.g. a dashboard inner-joins the inventory table to a feed table, so rows missing from the feed vanish | every query or dashboard joining a table fed by a job that can fail or lag |
 
 A case can be **unknown**: the fix is clear, the cause isn't. Say so; don't force a class.
