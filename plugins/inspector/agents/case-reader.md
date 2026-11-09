@@ -33,8 +33,7 @@ Python, if you run it at all, with `PYTHONDONTWRITEBYTECODE=1`.
    depends on how the host behaves (what the engine does when a hook throws, a framework's
    retry), cite where that is written (its types, its docs) or give the impact the level
    `unverified` and flag the lead `"needs_host_check": true`. Never state an impact you didn't trace.
-   `category`: `security` needs a documented or code-traced path from an input an outsider or another system controls to a sensitive sink (a secret persisted or sent on, a guard bypassed, injection); it is `traced` even when the real-world trigger was not observed. Name the input, the boundary and the sink, one line each, as `security_input`, `security_boundary`, `security_sink` (a path:line where possible; all three required for security); a lead that cannot is not security. The boundary must be one the actor could not already cross (the path gives them access, data, or influence over a sensitive sink they did not have); a path that only repeats access the actor already holds is `broken-flow`, not security. `needs-host-check` flags that the trigger or the sink's behaviour in the real environment was not observed, and says what would confirm it; it never changes the category. Otherwise `broken-flow`, `cost` or `other`.
-   `change_status` `verified` | `unverified`: `unverified` when the change depends on host or tool semantics nobody observed (a variable format that doubles quotes the query already adds); the change line then says what to verify first. `reach` `default-on` | `opt-in` | `unknown`, plus a short text (`trigger: none, flag defaults off`).
+   Label rules (security gate with `security_actor`, needs-host-check, `change_status`, `reach`/`reach_when`, traced claims, `not_verified`): references/labels.md. `security` needs `security_input`, `security_boundary`, `security_sink`, `security_actor`; give `change_status`, `reach` (+ `reach_when`) and, for untraced sub-claims, `not_verified`.
 6. Prove what you can cheaply. A probe that runs a copy of a function, or the project's own test
    for one file, counts as `reproduced` when you saw it fail. At most 3 probes. No installs.
 
@@ -62,7 +61,7 @@ Reply with this JSON, nothing else:
     "verdict": "yes | no | unknown",
     "siblings": [
       {"where": "path:line", "what": "the same bug, here", "breaks": "P3 or 'sibling of <case>'", "level": "reproduced | read | suspect",
-       "category": "security | broken-flow | cost | other", "security_input": "path:line, required when category is security", "security_boundary": "path:line, same", "security_sink": "path:line, same", "needs_host_check": false, "change_status": "verified | unverified", "reach": "default-on | opt-in | unknown: short text",
+       "category": "security | broken-flow | hardening | cost | other", "security_input": "path:line, required when category is security", "security_boundary": "path:line, same", "security_sink": "path:line, same", "security_actor": "named outsider, same", "needs_host_check": false, "change_status": "verified | unverified", "reach": "default-on | conditional | opt-in | unknown", "reach_when": "short text, optional", "not_verified": ["untraced sub-claim"],
        "impact": {"what": "what a user or the next code sees", "level": "reproduced | read | unverified", "source": "path:line you traced to, or the doc or type that says so"},
        "change": "the fix it needs", "test": "the test that proves it"}
     ],

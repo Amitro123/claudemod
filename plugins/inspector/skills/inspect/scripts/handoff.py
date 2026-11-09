@@ -19,7 +19,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crosscheck import read_cards  # noqa: E402
 
-SEC_FIELDS = ("security_input", "security_boundary", "security_sink")
+SEC_FIELDS = ("security_input", "security_boundary", "security_sink", "security_actor")
+REACH_ORDER = {"default-on": 0, "conditional": 1, "unknown": 2, "opt-in": 3}
 RANK = {"reproduced": 3, "read": 2, "suspect": 1, "unverified": 0}
 
 
@@ -58,9 +59,21 @@ def change_unverified(s: dict) -> bool:
 
 
 def reach_of(s: dict) -> str:
-    """`default-on` | `opt-in` | `unknown`, plus any short text the reader gave; missing is `unknown`."""
+    """`default-on` | `conditional` | `opt-in` | `unknown`; `reach_when` is appended (`conditional: format drift`).
+    A reach that already carries its text (`opt-in: flag`) is kept as given; missing is `unknown`."""
     r = cell(s.get("reach")) if isinstance(s.get("reach"), (str, int, float)) else ""
+    when = cell(s.get("reach_when")) if isinstance(s.get("reach_when"), (str, int, float)) else ""
+    if r and when and ":" not in r:
+        r = f"{r}: {when}"
     return r or "unknown"
+
+
+def not_verified_of(s: dict) -> str:
+    """Sub-claims nobody traced, as `not verified: a; b`. Printed only; never a level."""
+    nv = s.get("not_verified")
+    items = [nv] if isinstance(nv, str) else nv if isinstance(nv, list) else []
+    items = [cell(i) for i in items if isinstance(i, (str, int, float)) and cell(i)]
+    return f" not verified: {'; '.join(items)}" if items else ""
 
 
 def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[str, str], title: str,
@@ -86,16 +99,17 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         if str(s.get("category") or "").strip().lower() == "security":
             missing = [k for k, v in triple if not v]
             if missing:
-                warnings.append(f"{where}: category security but {', '.join(missing)} missing or empty; "
-                                "name the input, the boundary and the sink (path:line), or it is not security")
+                warnings.append(f"{where}: category security but {', '.join(missing)} missing or empty; name the input, "
+                                "the boundary and the sink (path:line) and the actor (a party other than the "
+                                "owner or maintainers who controls the input), or it is not security")
         if any(v for _, v in triple):
-            impact += " (in: {} | boundary: {} | sink: {})".format(*[v or "-" for _, v in triple])
+            impact += " (in: {} | boundary: {} | sink: {} | actor: {})".format(*[v or "-" for _, v in triple])
         shown = f"{lvl} [needs-host-check]" if needs_host_check(s) else lvl
-        impact_cell = f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]"
+        impact_cell = f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}"
         note = f" **Note added after the readers, unverified:** {cell(notes[where])}" if where in notes else ""
         change = cell(s.get("change")) + (" [change unverified]" if change_unverified(s) else "")
         reach = reach_of(s)
-        rows.append((RANK.get(lvl, 0), {"default-on": 0, "opt-in": 2}.get(reach.lower().split(":")[0].strip(), 1), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
+        rows.append((RANK.get(lvl, 0), REACH_ORDER.get(reach.lower().split(":")[0].strip(), 2), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
                                          f"{cell(s.get('breaks'))} | {change} | {cell(s.get('test'))} | {cell(s.get('case'))} | {reach} |"))
     rows.sort(key=lambda r: (-r[0], r[1]))
     L = [f"# {title}", "",
