@@ -88,7 +88,7 @@ python3 "<skill_root>/scripts/evidence.py" --repo . [--out "<scratch>"] [--budge
 ```
 
 It prints the summary. The summary opens with **Cases to work, in order**: the triage of step 3,
-already done, and for each case the command that prints its **dossier** (`--unit '#N' --dossier`).
+already done, and for each case the command that prints its **dossier** (`--unit '#N' --dossier`; a fix over 400 changed lines also lists its files, and `--file <path>` prints one).
 When it can, it also saves `evidence.json`, `evidence.md` and each dossier in `cases/` (in
 `--out`, else `.git/inspector/<time>/`). Some sandboxes let no command write anywhere: then it
 says "nothing saved", and the commands are all you need. Never spend calls hunting for a

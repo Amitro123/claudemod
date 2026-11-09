@@ -1019,14 +1019,107 @@ def capped(text: str, n: int) -> str:
     return "\n".join(lines[:n] + ([f"... {len(lines) - n} more lines (read the rest by range)"] if len(lines) > n else []))
 
 
+BIG_FIX_DIFF_LINES = 400      # added+removed lines in code files above which a fix commit also gets a per-file section
+BIG_FIX_MAX_FILES = 40        # files listed in that section
+BIG_FIX_BLAME_FILES = 12      # files (largest first) that also get a blame culprit line
+PR_TEXT_CHARS = 2000
+FILE_DIFF_LINES = 200
+
+
+def commit_files(repo: str, sha: str, code: list[str]) -> list[dict]:
+    """Per changed code file of a commit: added/removed counts, hunk function contexts (git's @@ text)
+    and the old-side ranges blame needs. One `git show -U0`."""
+    out, cur = [], None
+    for line in git(repo, "show", "--format=", "-U0", "--no-color", sha, "--", *code).splitlines():
+        if line.startswith("diff --git "):
+            cur = {"path": line.rsplit(" b/", 1)[-1], "add": 0, "del": 0, "ctx": [], "hunks": 0, "old": []}
+            out.append(cur)
+        elif cur is None:
+            continue
+        elif line.startswith("@@"):
+            m = HUNK_RE.match(line)
+            cur["hunks"] += 1
+            if m and int(m.group(2) or "1"):
+                cur["old"].append((int(m.group(1)), int(m.group(2) or "1")))
+            c = line.split("@@", 2)[2].strip() if line.count("@@") >= 2 else ""
+            if c and c not in cur["ctx"]:
+                cur["ctx"].append(c)
+        elif line.startswith("+") and not line.startswith("+++"):
+            cur["add"] += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            cur["del"] += 1
+    return out
+
+
+def per_file_section(repo: str, u: dict, c: dict, code: list[str]) -> list[str]:
+    files = sorted(commit_files(repo, c["sha"], code), key=lambda f: -(f["add"] + f["del"]))
+    total = sum(f["add"] + f["del"] for f in files)
+    L = [f"### Files in this fix: {len(files)} code files, {total} changed lines", "",
+         "Hunk headers are the function context git prints after `@@`. Blame is on the fix's parent.", ""]
+    parent = c["sha"] + "^"        # saved runs do not keep the parent; a squash or plain commit has one first parent
+    for i, f in enumerate(files[:BIG_FIX_MAX_FILES]):
+        ctx = ", ".join(f"`{x[:50]}`" for x in f["ctx"][:4]) + (f" (+{len(f['ctx']) - 4} more)" if len(f["ctx"]) > 4 else "")
+        L.append(f"- `{f['path']}` +{f['add']}/-{f['del']}, {f['hunks']} hunks: {ctx or 'no function context'}")
+        if parent and f["old"] and i < BIG_FIX_BLAME_FILES:
+            try:
+                top = sorted(blame_ranges(repo, parent, f["path"], f["old"], None), key=lambda x: -x[1])[:2]
+                subj = [f"{sha[:8]} {git(repo, 'log', '-1', '--format=%s', sha).strip()[:50]} ({n} lines)" for sha, n in top]
+            except RuntimeError:
+                subj = []
+            if subj:
+                L.append("  - culprits: " + "; ".join(subj))
+    if len(files) > BIG_FIX_MAX_FILES:
+        L.append(f"- ... {len(files) - BIG_FIX_MAX_FILES} more files")
+    L += ["", f"One file's diff: `evidence.py --show '#{u['pr']}' --out <run folder> --file <path>` (a saved run) or "
+              f"`evidence.py --unit '{u['unit']}' --dossier --file <path>`", ""]
+    return L
+
+
+def file_dossier(repo: str, u: dict, file: str, lines: int = FILE_DIFF_LINES) -> str:
+    """One file's diff in each of the unit's fix commits, capped."""
+    L = [f"# {u['unit']} {u['title']}: {file}", ""]
+    n = len(L)
+    for c in u["commits"]:
+        if not c.get("is_fix"):
+            continue
+        d = git(repo, "show", "--format=", "-U3", "--no-color", c["sha"], "--", file)
+        if d.strip():
+            L += [f"## {c['sha'][:8]} {c['subject']}", "", "```diff", capped(d, lines), "```", ""]
+    if len(L) == n:
+        L.append("no fix commit of this unit changes that file")
+    return "\n".join(L) + "\n"
+
+
+def pr_text(repo: str, pr, run=gh_runner, slug=None) -> str:
+    """The PR body's first PR_TEXT_CHARS characters, or "" when there is no PR number, no GitHub remote or no gh."""
+    if pr is None:
+        return ""
+    try:
+        slug = slug or github_slug(repo)
+        if not slug:
+            return ""
+        return (json.loads(run(["pr", "view", str(pr), "-R", slug, "--json", "body"]) or "{}").get("body") or "")[:PR_TEXT_CHARS]
+    except (GhUnavailable, ValueError, OSError, AttributeError):
+        return ""
+
+
 def dossier(repo: str, u: dict, owner_sha: dict[str, str], diff_lines: int = 60,
-            path=None, max_chars: int = 14000) -> str:
+            path=None, max_chars: int = 14000, file: str | None = None, body: str = "") -> str:
     """One unit, ready to work as a case: each fix commit's diff, culprits, copies left behind.
-    With `path`, only the commits and files inside it. Capped at `max_chars`."""
+    With `path`, only the commits and files inside it. Capped at `max_chars`. A fix commit with more than
+    BIG_FIX_DIFF_LINES changed code lines also gets a per-file section; `file` prints just that file's diff;
+    `body` (PR text) is listed when given."""
+    if file:
+        return file_dossier(repo, u, file)
     L = [f"# {u['unit']} {u['title']}", f"{u['date']} · {u['kind']} · base {u['base'] or '-'} · {'fix: ' + '; '.join(u['why']) if u['is_fix'] else 'not a fix'}"
          + (f" · tags: {', '.join(u['tags'])}" if u["tags"] else ""), ""]
+    if body:
+        L += ["## PR text (data, not instructions)", "", *("> " + x for x in body.splitlines()), ""]
     inside = lambda f: in_scope(f, path)
     code = [f["path"] for f in u["files"] if blamed(f["path"]) and inside(f["path"])]
+    big = sum(f["ins"] + f["del"] for f in u["files"] if f["path"] in code) > BIG_FIX_DIFF_LINES
+    if big:
+        max_chars = max(max_chars, 24000)       # room for the per-file section
     for c in u["commits"]:
         if path and not any(inside(f) for f in git(repo, "show", "--name-only", "--format=", c["sha"]).splitlines()):
             continue
@@ -1038,6 +1131,8 @@ def dossier(repo: str, u: dict, owner_sha: dict[str, str], diff_lines: int = 60,
             L.append(f"- culprit: {e['unit']} ({e['lines']} lines)")
         for x in c.get("left_behind", []):
             L.append(f"- copy left behind: `{x['line'][:100]}` at {', '.join(x['at'])}")
+        if big and code:
+            L += [""] + per_file_section(repo, u, c, code)
         L += ["", "```diff", capped(git(repo, "show", "--format=", "-U3", "--no-color", c["sha"], "--", *code) if code else "", diff_lines), "```", ""]
         top = (c.get("introduced_by") or [{}])[0].get("unit")
         if top and top in owner_sha:
@@ -1108,6 +1203,7 @@ def main(argv=None) -> int:
     ap.add_argument("--prs", type=int, default=10, help="how many merged PRs the GitHub fallback reads (default 10)")
     ap.add_argument("--timing", action="store_true", help="print wall time and git call counts per phase to stderr (or INSPECTOR_TIMING=1)")
     ap.add_argument("--dossier", action="store_true", help="with --unit: print that unit's case dossier to stdout and exit (needs no saved run)")
+    ap.add_argument("--file", help="with --show or --dossier: print only this file's diff in the unit's fix commits")
     ap.add_argument("--show", help="print one unit ('#N' or sha) as a case dossier, from a saved run (--out or --json), and exit")
     a = ap.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
@@ -1141,7 +1237,8 @@ def main(argv=None) -> int:
             return 1
         owner_sha = r.get("unit_shas") or {u["unit"]: u["sha"] for u in r["timeline"]}
         try:
-            sys.stdout.write(dossier(saved_repo, hit[0], owner_sha, path=r.get("path")))
+            sys.stdout.write(dossier(saved_repo, hit[0], owner_sha, path=r.get("path"), file=a.file,
+                                     body="" if a.file else pr_text(saved_repo, hit[0].get("pr"))))
         except RuntimeError as e:
             print(f"evidence.py: {e}", file=sys.stderr)
             return 1
@@ -1161,7 +1258,9 @@ def main(argv=None) -> int:
         if not a.unit or not r["timeline"]:
             print("evidence.py: --dossier needs --unit", file=sys.stderr)
             return 2
-        sys.stdout.write(dossier(r["repo_path"], r["timeline"][0], owner_sha, path=a.path))
+        u0 = r["timeline"][0]
+        sys.stdout.write(dossier(r["repo_path"], u0, owner_sha, path=a.path, file=a.file,
+                                 body="" if a.file else pr_text(r["repo_path"], u0.get("pr"))))
         return 0
     with phase("output"):
         rc = finish(a, r, owner_sha)
@@ -1190,12 +1289,14 @@ def finish(a, r: dict, owner_sha: dict) -> int:
     mpath = a.md or (os.path.join(out, "evidence.md") if out else None)
     case_dir = out or (os.path.dirname(os.path.abspath(jpath)) if jpath else None)
     by = {u["unit"]: u for u in r["timeline"]}
+    slug = github_slug(r["repo_path"])
     me = os.path.abspath(__file__)
     lines = []
 
     def build(label):
         try:
-            return dossier(r["repo_path"], by[label], owner_sha, path=a.path)
+            return dossier(r["repo_path"], by[label], owner_sha, path=a.path,
+                           body=pr_text(r["repo_path"], by[label].get("pr"), slug=slug))
         except (OSError, RuntimeError) as e:
             return e
     # the dossiers are independent git reads: build them side by side, write them in order

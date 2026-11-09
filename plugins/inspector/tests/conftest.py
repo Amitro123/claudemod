@@ -7,7 +7,7 @@ Slow set: everything that builds a repository or runs the collector, one reposit
 import pytest
 
 # modules whose tests build repositories / run the collector, minus a few pure-logic tests inside them
-SLOW_MODULES = {"test_evidence", "test_collector_equality"}
+SLOW_MODULES = {"test_evidence", "test_collector_equality", "test_dossier_big"}
 PURE = {"test_subject_verdict", "test_default_excludes_are_overridden_by_path_and_component_root"}
 
 
