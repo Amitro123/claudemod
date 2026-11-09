@@ -318,7 +318,7 @@ Each pattern names its cases. A pattern of one case is a case, not a pattern.
 Sweep **today's code** (the ref the collector read) for siblings, for each pattern and each case
 whose "Complete?" found a gap:
 
-A lead about data that is missing or stale: trace the producer first (references/producers.md).
+A lead about data that is missing or stale: trace the producer first (references/producers.md). A repository with a data pipeline gets a reconciliation check in the case file (references/reconcile.md).
 
 - the summary's **copies left behind**: check each one in the worked units and decide it;
 - the expression or call the fix replaced, searched in every file type, generated copies too;

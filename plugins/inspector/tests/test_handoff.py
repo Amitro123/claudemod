@@ -302,3 +302,19 @@ def test_producer_trace_checklist_exists_and_is_pointed_to() -> None:
     assert 0 < len(t.splitlines()) <= 40
     for f in ("skills/inspect/SKILL.md", "agents/investigator.md", "agents/case-reader.md"):
         assert "references/producers.md" in _text(f), f
+
+
+def test_reconcile_is_printed_only_when_given(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p", reconcile="30-day spend: table sum vs the vendor billing page"))
+    assert "reconcile: 30-day spend: table sum vs the vendor billing page" in out
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p"))
+    assert "reconcile" not in out
+
+
+def test_reconcile_checklist_exists_and_is_pointed_to() -> None:
+    t = (PLUGIN / "skills/inspect/references/reconcile.md").read_text(encoding="utf-8")
+    assert 0 < len(t.splitlines()) <= 35
+    for f in ("skills/inspect/SKILL.md", "agents/investigator.md", "agents/case-reader.md",
+              "skills/inspect/references/case-file.md"):
+        assert "references/reconcile.md" in _text(f) or "reconcile.md" in _text(f), f
+        assert "Checks against the source of truth" in _text(f) or "reconcile.md" in _text(f), f

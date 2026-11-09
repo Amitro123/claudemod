@@ -112,6 +112,9 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
                             "level / move the claim to not_verified")
         impact_cell = (f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}"
                        + (f" probe: {probe}" if probe else ""))
+        rec = cell(s.get("reconcile")) if isinstance(s.get("reconcile"), (str, int, float)) else ""
+        if rec:
+            impact_cell += f" reconcile: {rec}"
         note = f" **Note added after the readers, unverified:** {cell(notes[where])}" if where in notes else ""
         change = cell(s.get("change")) + (" [change unverified]" if change_unverified(s) else "")
         down = cell(s.get("downstream")) if isinstance(s.get("downstream"), (str, int, float)) else ""

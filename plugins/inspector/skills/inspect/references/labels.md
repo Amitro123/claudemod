@@ -42,3 +42,7 @@ A lead at level `reproduced` or `read` carries `probe`: the exact input and outp
 `test_kind` names what the proposed `test` is: `behavioral` (fails on the unfixed code by exercising behaviour), `text-pin` (asserts that text or config is present), `manual` (needs a live environment; say which). Prefer behavioral; a text-pin test is acceptable only next to a behavioral one or when no behaviour can be exercised. handoff.py prints `[test: kind]` and marks `text-pin` as `[weak: pins text only]`; a missing kind prints `[test: unknown]`.
 
 `downstream` (optional, one line): what else the proposed change changes, or what could still fail after it (for example: renewing expired exceptions still fails the gate on new vulnerabilities). Printed as `downstream: ...` under the change.
+
+## reconcile
+
+`reconcile` (optional, one line): the check against the source of truth for a lead whose mechanism is a pipeline's data being wrong, missing or stale. Printed as `reconcile: ...` under the impact. How to write the check: references/reconcile.md.

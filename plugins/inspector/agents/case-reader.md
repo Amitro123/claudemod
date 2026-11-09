@@ -77,3 +77,5 @@ finding with neither goes in `checked_clear` with your note, or nowhere. Keep st
 Paths are relative to the repository, with today's line numbers.
 
 For a lead about data that is missing or stale, trace the producer first: references/producers.md.
+
+For a pipeline's data, propose a check against the source of truth (a human runs it): references/reconcile.md; optional lead field `reconcile`.
