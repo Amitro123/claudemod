@@ -51,6 +51,10 @@ promise and no sibling in Breaks belongs under Recommendations, not here.
 
 After the table, put the same open leads in a fenced ```json block (the objects the investigator's hand-back carries), not only a table.
 
+### Checks against the source of truth (optional)
+
+Only when the repository has a data pipeline (a job that ingests from an external system into a table that dashboards read). One reconciliation check per pipeline, written for a human or a later session with access: references/reconcile.md.
+
 ### Checked and clear
 
 One line each: what was checked, and how it is handled.

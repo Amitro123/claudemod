@@ -318,6 +318,8 @@ Each pattern names its cases. A pattern of one case is a case, not a pattern.
 Sweep **today's code** (the ref the collector read) for siblings, for each pattern and each case
 whose "Complete?" found a gap:
 
+A lead about data that is missing or stale: trace the producer first (references/producers.md). A repository with a data pipeline gets a reconciliation check in the case file (references/reconcile.md).
+
 - the summary's **copies left behind**: check each one in the worked units and decide it;
 - the expression or call the fix replaced, searched in every file type, generated copies too;
 - the other readers of a format or file that a contract fix changed;
@@ -334,7 +336,7 @@ Decide each lead:
 - **suspect**: the pattern fits; you can't name the failing input;
 - **clear**: you looked and it's handled. One line each, under "Checked and clear".
 
-**Labels.** `category`: `security`, `broken-flow`, `hardening`, `cost`, `other`. `security` only with a traced path from an input an outsider controls (a named `security_actor`, not the owner or maintainers) across a boundary that actor was kept out of, to a sensitive sink. Also `needs-host-check`, `change_status`, `reach`, `reach_when`, `not_verified`: rules in references/labels.md.
+**Labels.** `category`: `security`, `broken-flow`, `hardening`, `cost`, `other`. `security` only with a traced path from an input an outsider controls (a named `security_actor`, not the owner or maintainers) across a boundary that actor was kept out of, to a sensitive sink. Also `needs-host-check`, `change_status`, `reach`, `reach_when`, `not_verified`, `probe`, `test_kind`, `downstream`: rules in references/labels.md.
 
 **The gate.** Each lead names what it breaks, in the table's Breaks column: a promise from the
 brief (quote it), or the fixed bug it is a sibling of (the case). A finding that names neither is

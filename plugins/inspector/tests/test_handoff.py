@@ -90,7 +90,7 @@ FIELDS = ("security_input", "security_boundary", "security_sink", "security_acto
 
 
 def _sec(**kw):
-    lead = {**HOST["complete"]["siblings"][0], **kw}
+    lead = {**HOST["complete"]["siblings"][0], "probe": "a/b.ts:3 read", **kw}
     return [{"case": "#9", "complete": {"siblings": [lead]}}]
 
 
@@ -247,6 +247,45 @@ def test_the_other_files_point_to_labels_md_and_carry_no_copy() -> None:
         assert "`security_actor`" in _text(f) and "`reach_when`" in _text(f) and "`not_verified`" in _text(f), f
 
 
+def _lead(**kw):
+    base = {"where": "a.py:1", "what": "w", "breaks": "P2", "level": "reproduced", "change": "c", "test": "t",
+            "impact": {"what": "i", "level": "read", "source": "a.py:2"}}
+    base.update(kw)
+    return [base]
+
+
+def test_probe_is_printed_and_no_warning(monkeypatch, capsys) -> None:
+    code, out, err = run(monkeypatch, capsys, _lead(probe="tool --help: no -R flag"))
+    assert code == 0 and "probe: tool --help: no -R flag" in out and "probe" not in err
+
+
+def test_missing_probe_warns_for_reproduced_and_read_not_suspect(monkeypatch, capsys) -> None:
+    code, _, err = run(monkeypatch, capsys, _lead())
+    assert code == 0 and "a.py:1" in err and "probe" in err
+    code, _, err = run(monkeypatch, capsys, _lead(level="read", probe=""))
+    assert code == 0 and "a.py:1" in err and "probe" in err
+    code, _, err = run(monkeypatch, capsys, _lead(level="suspect"))
+    assert code == 0 and "probe" not in err
+
+
+def test_test_kind_is_printed_and_text_pin_is_weak(monkeypatch, capsys) -> None:
+    _, out, err = run(monkeypatch, capsys, _lead(probe="p", test_kind="behavioral"))
+    assert "[test: behavioral]" in out and "weak" not in out
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p", test_kind="text-pin"))
+    assert "[test: text-pin] [weak: pins text only]" in out
+    _, out, err = run(monkeypatch, capsys, _lead(probe="p"))
+    assert "[test: unknown]" in out and "test_kind" not in err
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p", test_kind="manual"))
+    assert "[test: manual]" in out
+
+
+def test_downstream_is_printed_only_when_given(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p", downstream="new vulns still fail the gate"))
+    assert "downstream: new vulns still fail the gate" in out
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p"))
+    assert "downstream" not in out
+
+
 def test_skill_md_stays_within_its_size_budget() -> None:
     words = len((PLUGIN / "skills/inspect/SKILL.md").read_text(encoding="utf-8").split())
     assert words <= 4450, words
@@ -256,3 +295,26 @@ def test_the_investigator_case_file_carries_the_leads_as_a_json_block() -> None:
     for f in ["agents/investigator.md", "skills/inspect/references/case-file.md"]:
         t = " ".join((PLUGIN / f).read_text(encoding="utf-8").split())
         assert "fenced ```json block" in t and "not only a table" in t, f
+
+
+def test_producer_trace_checklist_exists_and_is_pointed_to() -> None:
+    t = (PLUGIN / "skills/inspect/references/producers.md").read_text(encoding="utf-8")
+    assert 0 < len(t.splitlines()) <= 40
+    for f in ("skills/inspect/SKILL.md", "agents/investigator.md", "agents/case-reader.md"):
+        assert "references/producers.md" in _text(f), f
+
+
+def test_reconcile_is_printed_only_when_given(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p", reconcile="30-day spend: table sum vs the vendor billing page"))
+    assert "reconcile: 30-day spend: table sum vs the vendor billing page" in out
+    _, out, _ = run(monkeypatch, capsys, _lead(probe="p"))
+    assert "reconcile" not in out
+
+
+def test_reconcile_checklist_exists_and_is_pointed_to() -> None:
+    t = (PLUGIN / "skills/inspect/references/reconcile.md").read_text(encoding="utf-8")
+    assert 0 < len(t.splitlines()) <= 35
+    for f in ("skills/inspect/SKILL.md", "agents/investigator.md", "agents/case-reader.md",
+              "skills/inspect/references/case-file.md"):
+        assert "references/reconcile.md" in _text(f) or "reconcile.md" in _text(f), f
+        assert "Checks against the source of truth" in _text(f) or "reconcile.md" in _text(f), f

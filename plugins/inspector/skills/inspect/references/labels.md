@@ -32,3 +32,17 @@ A claim whose truth depends on host or runtime behaviour not observed in this se
 ## Traced claims only
 
 Every factual sub-claim in a lead's `what` (for example "also after reload", "fails for format X") must have been traced or run. An untraced sub-claim is dropped from `what` or moved to `not_verified` (optional list of short strings). `not_verified` is printed under the impact and never counts as a level.
+
+## probe
+
+A lead at level `reproduced` or `read` carries `probe`: the exact input and output, or the command run, or the path:line read, in one line. For a headline claim about an external tool or format (a CLI flag, an escape format, a template), the probe is the command that checked it (for example the tool's `--help`). A headline claim with no probe goes to `not_verified`. handoff.py prints `probe: ...` under the impact and warns on stderr when a `reproduced` or `read` lead has none.
+
+## test_kind, downstream
+
+`test_kind` names what the proposed `test` is: `behavioral` (fails on the unfixed code by exercising behaviour), `text-pin` (asserts that text or config is present), `manual` (needs a live environment; say which). Prefer behavioral; a text-pin test is acceptable only next to a behavioral one or when no behaviour can be exercised. handoff.py prints `[test: kind]` and marks `text-pin` as `[weak: pins text only]`; a missing kind prints `[test: unknown]`.
+
+`downstream` (optional, one line): what else the proposed change changes, or what could still fail after it (for example: renewing expired exceptions still fails the gate on new vulnerabilities). Printed as `downstream: ...` under the change.
+
+## reconcile
+
+`reconcile` (optional, one line): the check against the source of truth for a lead whose mechanism is a pipeline's data being wrong, missing or stale. Printed as `reconcile: ...` under the impact. How to write the check: references/reconcile.md.

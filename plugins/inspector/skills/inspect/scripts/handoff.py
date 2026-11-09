@@ -105,12 +105,27 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         if any(v for _, v in triple):
             impact += " (in: {} | boundary: {} | sink: {} | actor: {})".format(*[v or "-" for _, v in triple])
         shown = f"{lvl} [needs-host-check]" if needs_host_check(s) else lvl
-        impact_cell = f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}"
+        probe = cell(s.get("probe")) if isinstance(s.get("probe"), (str, int, float)) else ""
+        if lvl in ("reproduced", "read") and not probe:
+            warnings.append(f"{where}: level {lvl} but no probe; give the exact input and output, the command run, "
+                            "or the path:line read (for a claim about an external tool, its --help), or lower the "
+                            "level / move the claim to not_verified")
+        impact_cell = (f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}"
+                       + (f" probe: {probe}" if probe else ""))
+        rec = cell(s.get("reconcile")) if isinstance(s.get("reconcile"), (str, int, float)) else ""
+        if rec:
+            impact_cell += f" reconcile: {rec}"
         note = f" **Note added after the readers, unverified:** {cell(notes[where])}" if where in notes else ""
         change = cell(s.get("change")) + (" [change unverified]" if change_unverified(s) else "")
+        down = cell(s.get("downstream")) if isinstance(s.get("downstream"), (str, int, float)) else ""
+        if down:
+            change += f" downstream: {down}"
+        kind = cell(s.get("test_kind")).lower() if isinstance(s.get("test_kind"), str) else ""
+        kind = kind if kind in ("behavioral", "text-pin", "manual") else "unknown"
+        test = f"{cell(s.get('test'))} [test: {kind}]" + (" [weak: pins text only]" if kind == "text-pin" else "")
         reach = reach_of(s)
         rows.append((RANK.get(lvl, 0), REACH_ORDER.get(reach.lower().split(":")[0].strip(), 2), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
-                                         f"{cell(s.get('breaks'))} | {change} | {cell(s.get('test'))} | {cell(s.get('case'))} | {reach} |"))
+                                         f"{cell(s.get('breaks'))} | {change} | {test} | {cell(s.get('case'))} | {reach} |"))
     rows.sort(key=lambda r: (-r[0], r[1]))
     L = [f"# {title}", "",
          "Copied word for word from the inspector's case readers: each lead's level, and its impact's own",
