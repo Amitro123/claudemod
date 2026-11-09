@@ -38,3 +38,24 @@ regenerated and diffed against the old one: only `ref`, `ref_requested`, `snapsh
 fallback command (now SHA-pinned) differ; units, fixes, culprits, copies, hotspots and case dossiers are identical.
 A real-repo run matches the perf-branch baseline (`perf-after2`) and a same-minute run of `a89e2dd` on every
 field except those.
+
+## Precision fixes (branch `fix/inspector-precision`)
+
+Four flaws seen in the model-router run (`keshet-claude-skills`, `--path mods/model-router`):
+
+1. **A patch version bump is no fix signal.** It stays in `version_bumps` as a fact, but a unit is a fix only on
+   words (title, or most commit subjects). PRs 113 and 123 were bump-only. Cost: hand-labeled fixes with nothing
+   but a bump (#18, #25 of this repo) are no longer detected; the golden labels say so (`BUMP_ONLY_FIXES`).
+2. **Removal units.** Code deletions >= `REMOVAL_RATIO` (4x) the additions and >= `REMOVAL_MIN_DELETED` (20 lines)
+   give `verdict: "removal"` (tag `removal`) and no blame: `introduced_by` is empty, no fix-of-fix, no copies.
+3. **Copies left behind** no longer count matches on import/require/from lines, comment lines, or
+   `description:` / `when_to_use:` strings. They are listed under `ignored_matches` (top level and per commit;
+   present only when non-empty) so nothing is dropped silently.
+4. **`--path` is repeatable** (`--path a/ --path b/` = union). One `--path` is recorded as before (a string); several
+   as a list, in `snapshot.options.path`, `path` and the markdown header. Validation compares the set, not the order.
+   `crosscheck.py --path` repeats the same way.
+
+Re-run on the same window (`--ref origin/main` e86fa2c, `--max 25 --history 80`, cold cache, 17.8 s): fixes 4 -> 2
+(#105, #100 stay); #113 -> removal, no culprits (was 10 units blamed); #123 no longer a fix; fix-of-fix #105 only;
+left-behind 5 -> 2 (two went with #123, one import line moved to `ignored_matches`); no unit appeared.
+

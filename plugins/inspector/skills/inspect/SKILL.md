@@ -50,7 +50,7 @@ commit.
 | none, an earlier case file | the units after the sha it was investigated through | `--since <sha>` |
 | `#N` or a sha | that one unit: its culprits, and siblings of its bug in today's code | `--unit '#N'` or `--unit <sha>` |
 | `since <ref or YYYY-MM-DD>` | the units after it | `--since <ref or date>` |
-| a path (`plugins/x`, `src/auth`) | the units that touch it | `--path <path>` |
+| a path (`plugins/x`, `src/auth`) | the units that touch it | `--path <path>` (repeat for several: the union) |
 
 An earlier case file is a `docs/inspector/*-case.md` (the newest) whose last line reads
 `Investigated through <sha>`; also look where the user said the last one went. With no argument
