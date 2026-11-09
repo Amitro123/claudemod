@@ -908,10 +908,53 @@ def _gh_cache_key(slug: str, pr: int) -> str:
     return hashlib.sha256(json.dumps(["gh", GH_CACHE_VERSION, slug, pr]).encode()).hexdigest()
 
 
-def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1) -> GhEnrichment:
-    """Labels and closing issues for `prs`. A failure stops the remaining calls; what was read is kept, a
-    failure is never cached, and nothing from gh is ever executed or put on a command line (a list of args)."""
+GH_SLUG = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+GH_BATCH = 25                                               # PRs per `gh api graphql` call
+_GQL_PR = ("{ title body mergedAt labels(first:20){totalCount nodes{name}} "
+           "closingIssuesReferences(first:10){totalCount nodes{number title state labels(first:20){totalCount nodes{name}}}} }")
+
+
+def _gql_query(prs: list[int]) -> str:
+    """One query for many PRs (aliases pr<N>). The numbers are cast to int: nothing else is put in the text."""
+    body = " ".join(f"pr{int(n)}: pullRequest(number:{int(n)}) {_GQL_PR}" for n in prs)
+    return "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){ " + body + " }}"
+
+
+def _gql_det(node) -> dict | None:
+    """A GraphQL pullRequest node in the shape `gh pr view --json` gives, or None when it is missing a field or
+    a list was cut short by the page size (that PR then takes the per-PR path)."""
+    if not isinstance(node, dict) or not all(k in node for k in ("title", "body", "mergedAt", "labels", "closingIssuesReferences")):
+        return None
+
+    def items(conn):
+        if not isinstance(conn, dict) or not isinstance(conn.get("nodes"), list):
+            return None
+        if isinstance(conn.get("totalCount"), int) and conn["totalCount"] > len(conn["nodes"]):
+            return None
+        return [n for n in conn["nodes"] if isinstance(n, dict)]
+    labels, refs = items(node["labels"]), items(node["closingIssuesReferences"])
+    if labels is None or refs is None:
+        return None
+    closing = []
+    for r in refs:
+        il = items(r.get("labels"))
+        if il is None:
+            return None
+        closing.append({"number": r.get("number"), "title": r.get("title"), "state": r.get("state"), "labels": il})
+    return {"title": node["title"], "body": node["body"], "mergedAt": node["mergedAt"],
+            "labels": labels, "closingIssuesReferences": closing}
+
+
+def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1, batch: bool = True) -> GhEnrichment:
+    """Labels and closing issues for `prs`. Uncached PRs are read in batches of GH_BATCH by one `gh api graphql`
+    call each (`batch=False`, or a failed/incomplete batch: one `gh pr view` per PR). A failure stops the
+    remaining calls; what was read is kept, a failure is never cached, and nothing from gh is ever executed or
+    put on a command line (a list of args)."""
     out, lock, stop = GhEnrichment(), threading.Lock(), threading.Event()
+    if not GH_SLUG.match(slug or ""):
+        out.error = "not a GitHub owner/repo slug"
+        return out
+    prefetched: dict[int, dict] = {}
 
     def call(args: list[str]) -> dict:
         with lock:
@@ -932,7 +975,7 @@ def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1) -> GhEnri
             return pr, None, ""
         complete = True
         try:
-            det = call(["pr", "view", str(pr), "-R", slug, "--json", GH_PR_FIELDS])
+            det = prefetched.get(pr) or call(["pr", "view", str(pr), "-R", slug, "--json", GH_PR_FIELDS])
         except (GhUnavailable, ValueError) as e:             # ValueError: invalid JSON
             with lock:
                 out.error = out.error or str(e)
@@ -961,7 +1004,23 @@ def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1) -> GhEnri
             cache.put(key, {"gh": gh, "body": body})
         return pr, gh, body
 
-    for pr, gh, body in pmap(one, sorted(set(prs)), workers):
+    todo = sorted({int(n) for n in prs})
+    if batch:
+        owner, name = slug.split("/")
+        missing = [n for n in todo if not (cache and cache.get(_gh_cache_key(slug, n)))]
+        chunks = [missing[i:i + GH_BATCH] for i in range(0, len(missing), GH_BATCH)]
+
+        def fetch(chunk: list[int]) -> dict[int, dict]:
+            try:
+                data = call(["api", "graphql", "-f", f"owner={owner}", "-f", f"name={name}", "-f", "query=" + _gql_query(chunk)])
+                repo = ((data.get("data") or {}).get("repository")) or {}
+                return {n: d for n in chunk if (d := _gql_det(repo.get(f"pr{n}"))) is not None}
+            except (GhUnavailable, ValueError, AttributeError, TypeError):
+                return {}                                    # the per-PR path decides what a failure means
+        for got in pmap(fetch, chunks, workers):
+            prefetched.update(got)
+
+    for pr, gh, body in pmap(one, todo, workers):
         if gh is not None:
             out.bodies[pr] = body
             if gh:
