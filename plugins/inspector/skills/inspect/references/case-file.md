@@ -44,11 +44,12 @@ titles only go last, one line each.
 |---|---|---|---|---|---|---|---|---|---|
 
 Level: reproduced | read | suspect; add `[needs-host-check]` when the impact depends on host
-behaviour nobody observed (its impact level is then `unverified`). Category `security` only with an
-untrusted input crossing a trust boundary and a traced consequence, else `broken-flow`, `cost` or
-`other`. Ranked as SKILL.md step 5 says: a broken promise a user hits,
+behaviour nobody observed (its impact level is then `unverified`). Category `security` needs a documented or code-traced path from an input an outsider or another system controls to a sensitive sink (a secret persisted or sent on, a guard bypassed, injection); it is `traced` even when the real-world trigger was not observed. Name the input, the boundary and the sink, one line each, as `security_input`, `security_boundary`, `security_sink` (a path:line where possible; all three required for security); a lead that cannot is not security. The boundary must be one the actor could not already cross (the path gives them access, data, or influence over a sensitive sink they did not have); a path that only repeats access the actor already holds is `broken-flow`, not security. `needs-host-check` flags that the trigger or the sink's behaviour in the real environment was not observed, and says what would confirm it; it never changes the category. Otherwise `broken-flow`, `cost` or `other`.
+Each lead also carries `change_status` `verified` | `unverified`: `unverified` when the change depends on host or tool semantics nobody observed (a variable format that doubles quotes the query already adds); the change line then says what to verify first. `reach` `default-on` | `opt-in` | `unknown`, plus a short text (`trigger: none, flag defaults off`). Ranked as SKILL.md step 5 says: a broken promise a user hits,
 then a seam with a fix-of-fix history, then the rest; reproduced first within each. A row with no
 promise and no sibling in Breaks belongs under Recommendations, not here.
+
+After the table, put the same open leads in a fenced ```json block (the objects the investigator's hand-back carries), not only a table.
 
 ### Checked and clear
 

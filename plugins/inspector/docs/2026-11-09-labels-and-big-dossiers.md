@@ -43,6 +43,12 @@ When origin is a GitHub remote and `gh` works, the collector reads every PR of t
 - **`--no-github`** skips the phase entirely, including PR text in dossiers; tests that need offline results pass it or mock `gh_runner`.
 - **Limits**: only merged PRs that have a number (a squash or merge-commit repo); a rebase-merge repo has no PR units, so nothing is enriched. Labels reflect the PR's state when first read.
 
+## Label rules, second pass (security, change_status, reach)
+
+An end-to-end evaluation (investigator on a real repo, an independent skeptic, then a person using another tool) found two leads with a documented untrusted-input path (a free-text request field copied into a persisted attribute; an HTTP client re-sending Authorization across redirects while its siblings refuse them) wrongly labelled `broken-flow` because of needs-host-check, and a proposed Grafana variable format that would have doubled the quotes. Rules now: (1) `security` needs a documented or traced input-to-sink path, named as input, boundary and sink; needs-host-check says what would confirm the trigger and never changes the category; (2) `change_status` (`verified` | `unverified`), shown by handoff.py as `[change unverified]`, defaulting to unverified for needs-host-check leads; (3) `reach` (`default-on` | `opt-in` | `unknown` + text) in a new last "Reach" column, with default-on sorted before unknown before opt-in at equal level. Not yet tried on a real investigation. Tests: test_handoff.py.
+
+Replay on 13 real leads fixed three defects: handoff.py no longer warns for security plus an `unverified` impact (security stays `traced`); instead security leads carry `security_input`, `security_boundary`, `security_sink`, shown in the impact cell as `in: ... | boundary: ... | sink: ...`, and a missing or empty field warns on stderr (exit code unchanged). The rule now requires a boundary the actor could not already cross (otherwise `broken-flow`), `needs-host-check` is defined as "the trigger or the sink's behaviour in the real environment was not observed", and the investigator's case file must carry the leads as a fenced json block.
+
 ### Latency: batched GraphQL (measured 2026-11-09, Windows)
 
 - A bare `gh pr view` took 4.1 to 5.0 s on that day's machine; `gh --version` 2.2 s and a trivial `gh api graphql` (`viewer{login}`) 4.7 s. So most of a call is gh's own start-up plus network, not our code. Our `pmap` does run the calls concurrently: 9 `gh pr view` at 8 in parallel took 13.4 s, one at a time about 5.6 s each.
