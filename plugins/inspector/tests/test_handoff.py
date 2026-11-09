@@ -36,7 +36,7 @@ def test_words_and_levels_go_out_as_given(monkeypatch, capsys) -> None:
     code, out, _ = run(monkeypatch, capsys, [CARD])
     assert code == 0
     row = next(l for l in out.splitlines() if W in l)
-    assert row.startswith("| suspect [production: unknown] |")
+    assert row.startswith("| suspect [production: unknown] [verdict: unverified] |")
     assert "the pane open is skipped [unverified]" in row and "commands" not in row
     lines = [l for l in out.splitlines() if l.startswith("| reproduced") or l.startswith("| suspect")]
     assert lines[0].startswith("| reproduced"), "the strongest lead first"
@@ -47,7 +47,7 @@ def test_a_level_can_be_lowered_never_raised(monkeypatch, capsys) -> None:
     code, _, err = run(monkeypatch, capsys, [CARD], "--lower", f"{W}=read")
     assert code == 2 and "may not raise suspect to read" in err
     code, out, _ = run(monkeypatch, capsys, [CARD], "--lower", "plugins/followups/hooks/register.tsx:400=read")
-    assert code == 0 and "| read [production: unknown] | `plugins/followups/hooks/register.tsx:400`" in out
+    assert code == 0 and "| read [production: unknown] [verdict: unverified] | `plugins/followups/hooks/register.tsx:400`" in out
 
 
 def test_notes_are_marked_and_drops_drop(monkeypatch, capsys) -> None:
@@ -61,7 +61,7 @@ def test_notes_are_marked_and_drops_drop(monkeypatch, capsys) -> None:
 def test_an_investigators_leads_and_a_missing_impact(monkeypatch, capsys) -> None:
     leads = [{"where": "a.py:3", "what": "x", "level": "read", "breaks": "P2", "change": "y", "test": "z"}]
     code, out, _ = run(monkeypatch, capsys, leads)
-    assert code == 0 and "| read [production: unknown] | `a.py:3` | x | not stated [unverified] |" in out
+    assert code == 0 and "| read [production: unknown] [verdict: unverified] | `a.py:3` | x | not stated [unverified] |" in out
 
 
 HOST = {"case": "#9", "complete": {"siblings": [
@@ -79,9 +79,9 @@ def test_needs_host_check_is_shown_next_to_the_level_and_never_raises_it(monkeyp
     code, out, err = run(monkeypatch, capsys, [HOST])
     assert code == 0
     rows = {l.split("`")[1]: l for l in out.splitlines() if l.startswith("| ") and "`" in l}
-    assert rows["a/b.ts:3"].startswith("| read [needs-host-check] [production: unknown] |")
-    assert rows["a/c.ts:4"].startswith("| suspect [needs-host-check] [production: unknown] |")
-    assert rows["a/d.ts:5"].startswith("| read [production: unknown] |")
+    assert rows["a/b.ts:3"].startswith("| read [needs-host-check] [production: unknown] [verdict: unverified] |")
+    assert rows["a/c.ts:4"].startswith("| suspect [needs-host-check] [production: unknown] [verdict: unverified] |")
+    assert rows["a/d.ts:5"].startswith("| read [production: unknown] [verdict: unverified] |")
 
 
 TRIPLE = {"security_input": "req.body.url (a/b.ts:2)", "security_boundary": "no allow-list (a/b.ts:3)",
@@ -188,7 +188,7 @@ def test_reach_is_shown_in_the_level_cell_and_breaks_ties(monkeypatch, capsys) -
     assert rows["c.py:1"].endswith("| conditional: format drift |")
     assert rows["d.py:1"].endswith("| default-on |")
     assert rows["m.py:1"].endswith("| unknown |") and rows["u.py:1"].endswith("| unknown |")
-    assert rows["o.py:1"].startswith("| read [production: unknown] |"), "the level cell is unchanged"
+    assert rows["o.py:1"].startswith("| read [production: unknown] [verdict: unverified] |"), "the level cell is unchanged"
     order = [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l]
     assert order == ["d.py:1", "c.py:1", "m.py:1", "u.py:1", "o.py:1", "s.py:1"],         "default-on, conditional, unknown, opt-in; ties keep input order"
 
@@ -207,7 +207,7 @@ def test_not_verified_prints_under_the_impact_and_is_no_level(monkeypatch, capsy
     _, out, _ = run(monkeypatch, capsys, [lead])
     row = _rows(out)["a.py:1"]
     assert "bad [read: a.py:2] not verified: also after reload; format Y fails |" in row
-    assert row.startswith("| read [production: unknown] |")
+    assert row.startswith("| read [production: unknown] [verdict: unverified] |")
     _, out, _ = run(monkeypatch, capsys, [{**lead, "not_verified": "oops"}, {**lead, "where": "b.py:1", "not_verified": 5}])
     assert "not verified: oops" in _rows(out)["a.py:1"] and "not verified" not in _rows(out)["b.py:1"]
 
@@ -216,7 +216,7 @@ def test_reach_next_to_needs_host_check(monkeypatch, capsys) -> None:
     lead = {**HOST["complete"]["siblings"][0], "reach": "opt-in"}
     _, out, _ = run(monkeypatch, capsys, [{"case": "x", "complete": {"siblings": [lead]}}])
     row = _rows(out)["a/b.ts:3"]
-    assert row.startswith("| read [needs-host-check] [production: unknown] |") and row.endswith("| opt-in |")
+    assert row.startswith("| read [needs-host-check] [production: unknown] [verdict: unverified] |") and row.endswith("| opt-in |")
 
 
 LABELS = "skills/inspect/references/labels.md"
@@ -360,16 +360,16 @@ def test_production_tag_defaults_to_unknown_and_sorts_yes_first_at_equal_level(m
              lead("u.py:1", "unknown", "conditional")]
     _, out, _ = run(monkeypatch, capsys, leads)
     rows = _rows(out)
-    assert rows["d.py:1"].startswith("| read [production: unknown] |")
-    assert rows["n.py:1"].startswith("| read [production: no] |")
-    assert rows["y.py:1"].startswith("| read [production: yes: job history] |")
+    assert rows["d.py:1"].startswith("| read [production: unknown] [verdict: unverified] |")
+    assert rows["n.py:1"].startswith("| read [production: no] [verdict: unverified] |")
+    assert rows["y.py:1"].startswith("| read [production: yes: job history] [verdict: unverified] |")
     assert [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l] == [
         "y.py:1", "d.py:1", "n.py:1", "u.py:1", "s.py:1"], "yes first, then reach; a lower level stays below"
 
 
 def test_production_tag_sits_after_needs_host_check(monkeypatch, capsys) -> None:
     _, out, _ = run(monkeypatch, capsys, _sec(**TRIPLE, observed_in_production="yes"))
-    assert _rows(out)["a/b.ts:3"].startswith("| read [needs-host-check] [production: yes] |")
+    assert _rows(out)["a/b.ts:3"].startswith("| read [needs-host-check] [production: yes] [verdict: unverified] |")
 
 
 def test_documented_is_printed_under_the_impact_only_when_given(monkeypatch, capsys) -> None:
@@ -398,3 +398,40 @@ def test_the_agents_point_to_the_counter_and_documented_fields() -> None:
         t = _text(f)
         assert "`security_counter`" in t and "`documented`" in t and "`observed_in_production`" in t, f
         assert "references/labels.md" in t, f
+
+
+def test_verdict_false_claims_and_relabel_are_printed_and_sorted(monkeypatch, capsys) -> None:
+    def lead(w, verdict=None, **kw):
+        d = {"where": w, "what": "x", "level": "read", "probe": "p", "reach": "default-on", "category": "broken-flow"}
+        return {**d, **({"verdict": verdict} if verdict else {}), **kw}
+    leads = [lead("u.py:1"), lead("n.py:1", "NOT REAL"), lead("v.py:1", "UNVERIFIABLE"), lead("l.py:1", "REAL-LOW"),
+             lead("r.py:1", "REAL", false_claims=["it crashes", "it loses data"], original_category="security",
+                  original_reach="opt-in")]
+    _, out, _ = run(monkeypatch, capsys, leads)
+    rows = _rows(out)
+    assert "[verdict: unverified]" in rows["u.py:1"] and "[verdict: NOT REAL]" in rows["n.py:1"]
+    assert "false claims: it crashes; it loses data" in rows["r.py:1"]
+    assert "relabelled: category security -> broken-flow" in rows["r.py:1"] and "relabelled: reach opt-in -> default-on" in rows["r.py:1"]
+    assert "relabelled" not in rows["l.py:1"] and "false claims" not in rows["l.py:1"]
+    assert [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l] == [
+        "r.py:1", "l.py:1", "v.py:1", "u.py:1", "n.py:1"]
+    assert "Verified: 1 real, 1 real-low, 1 unverifiable, 1 not real, 1 unverified" in out
+
+
+def test_no_verified_header_without_any_verdict(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, [CARD])
+    assert "Verified:" not in out
+
+
+def test_merge_verdicts_output_renders_through_handoff(tmp_path, monkeypatch, capsys) -> None:
+    import merge_verdicts
+    leads = [{"where": "a.py:1", "what": "w1", "level": "read", "probe": "p", "category": "security", "reach": "opt-in"},
+             {"where": "b.py:2", "what": "w2", "level": "read", "probe": "p"}]
+    verdicts = [{"where": "a.py:1", "verdict": "REAL-LOW", "false_claims": ["attacker controls the input"],
+                 "corrected": {"category": "broken-flow", "reach": "conditional"}, "unverifiable": ["host behaviour"]}]
+    merged, _ = merge_verdicts.merge(leads, verdicts)
+    code, out, _ = run(monkeypatch, capsys, merged)
+    row = _rows(out)["a.py:1"]
+    assert code == 0 and "[verdict: REAL-LOW]" in row and "false claims: attacker controls the input" in row
+    assert "relabelled: category security -> broken-flow" in row and "not verified: host behaviour" in row
+    assert "[verdict: unverified]" in _rows(out)["b.py:2"]
