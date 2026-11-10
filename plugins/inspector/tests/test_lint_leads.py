@@ -46,6 +46,8 @@ CASES = [
     ("L8", with_(CLEAN, what=FORCE, level="suspect", probe=""),
      with_(CLEAN, what=FORCE, probe="tool --help lists --force")),
     ("L8", with_(CLEAN, what="the CLI option is ignored", level="suspect", probe=""), CLEAN),
+    ("L9", with_(CLEAN, change="run `Events | where Level == 'error'`", change_status="verified"),
+     with_(CLEAN, change="run `Events | where Level == 'error'`", change_status="unverified")),
 ]
 
 
@@ -106,3 +108,27 @@ def test_file_and_case_card_input(tmp_path, capsys) -> None:
     assert L.main([str(p)]) == 0
     assert "L4" in capsys.readouterr().out
     assert L.main([str(tmp_path / "missing.json")]) == 2
+
+
+QUERY_CHANGE = "replace the filter with `T | where Ts > ago(1h) | summarize count() by Name`"
+
+
+def test_l9_fires_on_each_query_shape_when_verified() -> None:
+    for change in (QUERY_CHANGE, "SELECT id FROM orders WHERE open = 1", "ask Kusto for the failing rows",
+                   "az monitor log-analytics query --workspace w --analytics-query q"):
+        assert "L9" in rules(with_(CLEAN, change=change, change_status="verified")), change
+
+
+def test_l9_quiet_when_executed_read_only_or_not_verified_or_no_query() -> None:
+    ok_probe = "ran the query read-only: 3 rows"
+    assert "L9" not in rules(with_(CLEAN, change=QUERY_CHANGE, change_status="verified", probe=ok_probe))
+    assert "L9" not in rules(with_(CLEAN, change=QUERY_CHANGE, change_status="unverified"))
+    assert "L9" not in rules(with_(CLEAN, change=QUERY_CHANGE))  # no explicit change_status
+    assert "L9" not in rules(with_(CLEAN, change="select the item from the list", change_status="verified"))
+    assert "L9" not in rules(with_(CLEAN, change="guard the loop bound", change_status="verified"))
+
+
+def test_l9_probe_that_only_reads_the_code_still_warns() -> None:
+    bad = with_(CLEAN, change=QUERY_CHANGE, change_status="verified", probe="src/a.py:1 read")
+    assert [s for r, s, _ in L.lint(bad) if r == "L9"] == ["warn"]
+    assert "not executed" in [m for r, _, m in L.lint(bad) if r == "L9"][0]

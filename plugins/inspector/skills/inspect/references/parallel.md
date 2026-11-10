@@ -30,7 +30,7 @@ small context, so six cases take about 6-9 minutes instead of 11-23 in one inves
    --expect <ids of the readers you started, e.g. 1,2,3,4,5,6> --out <tmp>/leads.json --log <tmp>/dedupe.md`.
    It exits 2 naming any expected card that is missing or unparsable (ask that reader to write it;
    never merge from memory; `--repair-escapes` opts in to doubling stray backslashes in a card, logged, original kept as `.orig`), keeps every lead word for word, merges only exact duplicates
-   (same locations, same text), keeps similar nearby leads with `possible_duplicate_of` and lists them under "Possible duplicates (kept)" in the log, and prints the lint findings. Also run
+   (same locations, same text), keeps similar nearby leads, and leads whose line ranges overlap, with `possible_duplicate_of` and lists them under "Possible duplicates (kept)" in the log with the reason (`lines overlap` or `similar wording`), and prints the lint findings. Also run
    `scripts/crosscheck.py --evidence <tmp>/evidence.json --cards <tmp>/cards` (SKILL.md step 3).
 4. **Verify early.** As soon as a chunk of at most 8 leads exists, start a `verifier` for it
    (references/verify.md). Start one for the readers' leads while the sweepers still run.

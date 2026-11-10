@@ -190,7 +190,7 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         rows.append((RANK.get(lvl, 0), 0 if prod == "yes" else 1, REACH_ORDER.get(reach.lower().split(":")[0].strip(), 2),
                      VERDICTS.index(verdict), verdict, f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
                                          f"{cell(s.get('breaks'))} | {change} | {test} | {cell(s.get('case'))} | {reach} |"))
-    rows.sort(key=lambda r: (-r[0], r[1], r[2], r[3]))
+    rows.sort(key=lambda r: (r[1], -r[0], r[2], r[3]))  # seen in production first, then level, reach, verdict
     seen.update(r[4] for r in rows)
     head = []
     if any(v != "unverified" for v in seen):

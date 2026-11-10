@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `merge_cards.py`: leads in the same file whose line ranges intersect are flagged `possible_duplicate_of` each way even when the wording differs, and listed under "Possible duplicates (kept)" with the reason (`lines overlap` or `similar wording`); nothing is merged or dropped for it.
+- `lint_leads.py` L9: a `verified` change that contains a query or command to run against data (`| where`, `| summarize`, `SELECT ... FROM`, Kusto, `az monitor log-analytics query`) with no probe naming a read-only run warns.
+- `handoff.py`: a lead with `observed_in_production: yes` now sorts above a higher-level lead whose production state is unknown or `no` (then level, reach, verdict).
 - Outside-in sweep: rendered output (HTML, e-mail, markdown, dashboard, chat message) is a sink class in questions 1 and 2 with an edge-payload probe, and a closing "Edge payloads" section: `reproduced` only if an edge payload was run, else `suspect`.
 - Outside-in sweep: `references/outside-in.md` (eight questions: trust boundaries, context injection, secrets in logs, enforcement versus text, command construction, destructive writes, loss paths, packaging) and an `Outside-in mode` in the sweeper; the parallel recipe runs three sweepers (code, docs, outside-in).
 - Fixed: case-reader and sweeper must write strict JSON (doubled backslashes) and validate the file; `merge_cards.py --repair-escapes` (opt-in) repairs invalid escapes in a card, logs it and keeps `<name>.orig`; default still refuses.

@@ -17,6 +17,7 @@ of the script and each rule is a function, so each can be tested alone (`tests/t
 | L6 | warn | level reproduced, impact level unverified, no needs-host-check |
 | L7 | warn | 'documented', 'by design', 'intended' or 'pinned' in `what`/`breaks`, no `documented` field, no `reconcile` |
 | L8 | warn | headline claim about a tool or flag (flag, `--x`, option, CLI) and no `probe`, or a probe that never names the flag |
+| L9 | warn | `change` holds a query or command to run against data (`\| where`, `\| summarize`, `SELECT ... FROM`, Kusto, `az monitor log-analytics query`), `change_status` is `verified`, and the `probe` does not say it was run read-only |
 
 The synthetic examples in `evals/label-lint/` (one lead per rule, `expected.json`) run in the fast lane.
 

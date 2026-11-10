@@ -10,7 +10,10 @@ defect only when the file of `where` is equal, the line ranges overlap or lie wi
 Jaccard similarity of the words (length >= 4) of `what` is at least 0.5. The stronger level is kept
 (reproduced > read > suspect > inferred; tie: more filled fields, then first) and gets
 `also_found_by` and `merged_from`. A `where` that cannot be parsed is never merged. Same-file pairs
-within 10 lines below 0.5 stay separate and are listed as possible duplicates in the log.
+within 10 lines below 0.5 stay separate and are listed as possible duplicates in the log, as are
+same-file pairs whose line ranges intersect (`path:15` is 15-15) even when the wording differs; both
+leads get `possible_duplicate_of` (the other's `where`) and the log gives the reason (`lines overlap`
+or `similar wording`). Nothing is merged or dropped for that.
 `--repair-escapes` (opt-in; default is to refuse): a card or sweeper file that fails with an invalid
 backslash escape (a regex class like backslash-s written with one backslash) gets every stray backslash doubled, is re-parsed,
 kept as `<name>.orig` and named in the log. Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 2 invalid input.
@@ -32,6 +35,7 @@ NEAR = 10
 THRESHOLD = 0.5
 RANK = ("reproduced", "read", "suspect", "inferred")
 WHERE_RE = re.compile(r"^(?P<f>[^\s,]+?):(?P<r>L?\d+(?:\s*-\s*L?\d+)?(?:\s*,\s*L?\d+(?:\s*-\s*L?\d+)?)*)$")
+OVERLAP, SIMILAR = "lines overlap", "similar wording"
 WORD_RE = re.compile(r"[a-z0-9_]+")
 
 
@@ -163,7 +167,7 @@ def load_sweeps(paths: list[str], repair: bool = False, repaired: list[str] | No
 
 
 def dedupe(raw: list[dict]):
-    """Return (final leads, merges, possible duplicates); merges/possible are (i, j, score) over raw."""
+    """Return (final leads, merges, possible duplicates); merges are (i, j, score), possible are (i, j, score, reason) over raw."""
     parsed = [parse_where(lead.get("where")) for lead in raw]
     toks = [words(lead.get("what")) for lead in raw]
     parent = list(range(len(raw)))
@@ -179,19 +183,20 @@ def dedupe(raw: list[dict]):
         for j in range(i + 1, len(raw)):
             if not parsed[i] or not parsed[j] or parsed[i][0] != parsed[j][0]:
                 continue
-            if gap(parsed[i][1], parsed[j][1]) > NEAR:
+            g = gap(parsed[i][1], parsed[j][1])
+            if g > NEAR:
                 continue
             sc = jaccard(toks[i], toks[j])
             if sc >= THRESHOLD:
                 merges.append((i, j, sc))
                 parent[find(j)] = find(i)
-            else:
-                possible.append((i, j, sc))
+            else:  # kept apart; overlapping lines are flagged whatever the wording
+                possible.append((i, j, sc, OVERLAP if g <= 0 else SIMILAR))
     groups: dict[int, list[int]] = {}
     for i in range(len(raw)):
         groups.setdefault(find(i), []).append(i)
-    final = []
-    for idxs in groups.values():
+    final, out_of = [], {}
+    for root, idxs in groups.items():
         win = best([raw[i] for i in idxs])
         wi = next(i for i in idxs if raw[i] is win)
         out = dict(win)
@@ -204,7 +209,15 @@ def dedupe(raw: list[dict]):
                     seen.append(fb)
             out["also_found_by"] = seen
             out["merged_from"] = [str(raw[i].get("where")) for i in others]
+        out_of[root] = out
         final.append((min(idxs), out))
+    for i, j, _, _ in possible:  # flag each way; never merges or drops anything
+        a, b = out_of[find(i)], out_of[find(j)]
+        if a is not b:
+            for x, y in ((a, b), (b, a)):
+                refs = x.setdefault("possible_duplicate_of", [])
+                if str(y.get("where")) not in refs:
+                    refs.append(str(y.get("where")))
     final.sort(key=lambda t: t[0])
     return [o for _, o in final], merges, possible
 
@@ -239,8 +252,8 @@ def main(argv=None) -> int:
 
     lines = ["# Dedupe log", "", "## Merges"]
     lines += [f"- {ref(i)} + {ref(j)} (similarity {sc:.2f})" for i, j, sc in merges] or ["- none"]
-    lines += ["", "## Possible duplicates (not merged; a person decides)"]
-    lines += [f"- {ref(i)} / {ref(j)} (similarity {sc:.2f})" for i, j, sc in possible] or ["- none"]
+    lines += ["", "## Possible duplicates (kept)"]
+    lines += [f"- {ref(i)} / {ref(j)} ({why}; similarity {sc:.2f}; not merged, a person decides)" for i, j, sc, why in possible] or ["- none"]
     if repaired:
         lines += ["", "## Repaired invalid escapes (original kept as <name>.orig)"] + [f"- {r}" for r in repaired]
     unparsed = [ref(i) for i, lead in enumerate(raw) if parse_where(lead.get("where")) is None]

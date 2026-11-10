@@ -198,3 +198,47 @@ def test_repair_escapes_fixes_bad_unicode(tmp_path, capsys) -> None:
 def test_repair_escapes_does_not_hide_other_errors(tmp_path, capsys) -> None:
     code, d, out, _, cap = _run_repair(tmp_path, capsys, {"1": "{not json"}, ["--repair-escapes"])
     assert code == 2 and "1.json" in cap.err and not (d / "1.json.orig").exists()
+
+
+def _two(tmp_path, capsys, w1, w2):
+    sibs = [lead(w1, TEXT_A), lead(w2, TEXT_B)]
+    return run(tmp_path, capsys, {"1": card(1, sibs[0]), "2": card(2, sibs[1])}, "1,2")
+
+
+def _dup_section(log: str) -> str:
+    return log.split("## Possible duplicates")[1].split("\n## ")[0]
+
+
+def test_overlapping_ranges_flagged_each_way_with_reason(tmp_path, capsys) -> None:
+    _, leads, log, _ = _two(tmp_path, capsys, "a.py:12-20", "a.py:15")
+    assert len(leads) == 2
+    by = {x["where"]: x for x in leads}
+    assert by["a.py:12-20"]["possible_duplicate_of"] == ["a.py:15"]
+    assert by["a.py:15"]["possible_duplicate_of"] == ["a.py:12-20"]
+    sec = _dup_section(log)
+    assert "(kept)" in log and "lines overlap" in sec and "similar wording" not in sec
+
+
+def test_adjacent_ranges_not_flagged_as_overlap(tmp_path, capsys) -> None:
+    _, leads, log, _ = _two(tmp_path, capsys, "a.py:10-12", "a.py:13")
+    assert len(leads) == 2 and "lines overlap" not in log
+    assert "similar wording" in _dup_section(log)  # near, so still listed, but for the other reason
+
+
+def test_overlap_in_different_files_not_flagged(tmp_path, capsys) -> None:
+    _, leads, log, _ = _two(tmp_path, capsys, "a.py:12-20", "b.py:15")
+    assert all("possible_duplicate_of" not in x for x in leads) and "- none" in _dup_section(log)
+
+
+def test_overlap_drops_and_merges_nothing(tmp_path, capsys) -> None:
+    sibs = [lead("a.py:12-20", TEXT_A, probe="p1"), lead("a.py:15", TEXT_B, probe="p2"), lead("a.py:14-16", TEXT_A2)]
+    _, leads, log, _ = run(tmp_path, capsys, {"1": card(1, *sibs[:2]), "2": card(2, sibs[2])}, "1,2")
+    # the third is a wording duplicate of the first (merged as before); the second stays, flagged
+    assert [x["what"] for x in leads if x["where"] == "a.py:15"] == [TEXT_B]
+    assert {x["where"] for x in leads} >= {"a.py:15"} and len(leads) == 2
+    assert "possible_duplicate_of" in next(x for x in leads if x["where"] == "a.py:15")
+
+
+def test_exact_duplicates_still_merge_without_flag(tmp_path, capsys) -> None:
+    _, leads, _, _ = run(tmp_path, capsys, {"1": card(1, lead("a.py:5")), "2": card(2, lead("a.py:5"))}, "1,2")
+    assert len(leads) == 1 and "possible_duplicate_of" not in leads[0]
