@@ -25,6 +25,7 @@ default <git dir>/inspector/cache), --exclude PATH / --no-default-excludes, --ti
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
@@ -704,11 +705,13 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
                 unit: str | None = None, path: str | list[str] | None = None,
                 roots: set[str] | None = None, workers: int | None = None,
                 cache_dir: str | None = None, use_cache: bool = True,
-                excludes: list[str] | None = None, github: bool = False, gh_run=None) -> dict:
+                excludes: list[str] | None = None, github: bool = False, gh_run=None,
+                refresh_github: bool = False, gh_now=None) -> dict:
     """`github`: read each PR of the work window through gh (labels, closing issues; gh_enrich) before blame;
     off by default for library callers. `gh_run`: the gh runner (tests pass a mock). `workers`: git calls in flight (default min(8, cpus)). `cache_dir`/`use_cache`: the blame cache
     (default <git dir>/inspector/cache). `excludes`: pathspecs left out of blame diffs and the copies
-    search (default: effective_excludes(path, roots))."""
+    search (default: effective_excludes(path, roots)). `refresh_github`: skip reading the gh cache (still written);
+    `gh_now`: clock for the gh cache's age check (tests)."""
     roots = roots or MONOREPO_ROOTS
     path = snapshot.scope_path(path)       # None, "a/" (one, as before) or ["a/", "b/"] (repeated --path: a union)
     workers = max(1, workers if workers is not None else min(8, os.cpu_count() or 1))
@@ -774,7 +777,8 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
     worked = [u for u in units if u.sha in work_shas]
     gh_bodies, gh_warnings = None, []
     if github:
-        gh_bodies = github_phase(repo, worked, workers, cache_folder, gh_run or gh_runner, gh_warnings)
+        gh_bodies = github_phase(repo, worked, workers, cache_folder, gh_run or gh_runner, gh_warnings,
+                                refresh=refresh_github, now=gh_now)
     jobs = [(u, c) for u in worked if u.is_fix and u.verdict != "removal" for c in u.commits if c.get("is_fix")]
 
     def analyze(job):
@@ -892,7 +896,9 @@ GH_ISSUE_FIX_LABELS = ("bug",)                              # a closing issue ca
 GH_PR_FIELDS = "title,body,labels,closingIssuesReferences,reviewDecision,mergedAt"
 GH_TEXT_CHARS = 120                                         # issue titles kept in the saved evidence
 # Part of every gh cache key. RULE: bump it whenever what an entry stores, or the fields asked of gh, change.
-GH_CACHE_VERSION = "v1"
+# v2: entries carry `fetchedAt`; one without it is a miss.
+GH_CACHE_VERSION = "v2"
+GH_CACHE_TTL_DAYS = 7                                       # a cached PR older than this is read again (labels change)
 
 
 @dataclass
@@ -906,6 +912,19 @@ class GhEnrichment:
 
 def _names(items) -> list[str]:
     return [str(x.get("name")) for x in items or [] if isinstance(x, dict) and x.get("name")]
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _gh_fresh(hit, now: datetime) -> bool:
+    """A usable gh cache entry: has a parseable `fetchedAt` that is not in the future and is under GH_CACHE_TTL_DAYS old."""
+    try:
+        at = datetime.strptime(hit["fetchedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return isinstance(hit.get("gh"), dict) and timedelta(0) <= now - at < timedelta(days=GH_CACHE_TTL_DAYS)
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _gh_cache_key(slug: str, pr: int) -> str:
@@ -950,11 +969,14 @@ def _gql_det(node) -> dict | None:
             "labels": labels, "closingIssuesReferences": closing}
 
 
-def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1, batch: bool = True) -> GhEnrichment:
+def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1, batch: bool = True,
+              refresh: bool = False, now=None) -> GhEnrichment:
     """Labels and closing issues for `prs`. Uncached PRs are read in batches of GH_BATCH by one `gh api graphql`
     call each (`batch=False`, or a failed/incomplete batch: one `gh pr view` per PR). A failure stops the
     remaining calls; what was read is kept, a failure is never cached, and nothing from gh is ever executed or
-    put on a command line (a list of args)."""
+    put on a command line (a list of args). A cache entry older than GH_CACHE_TTL_DAYS (or without `fetchedAt`) is a
+    miss; `refresh` skips the read but writes the result, and a failed fetch leaves the old entry alone. `now`: clock."""
+    clock = now or _utcnow
     out, lock, stop = GhEnrichment(), threading.Lock(), threading.Event()
     if not GH_SLUG.match(slug or ""):
         out.error = "not a GitHub owner/repo slug"
@@ -971,8 +993,8 @@ def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1, batch: bo
 
     def one(pr: int):
         key = _gh_cache_key(slug, pr)
-        hit = cache.get(key) if cache else None
-        if hit:
+        hit = cache.get(key) if cache and not refresh else None
+        if hit and _gh_fresh(hit, clock()):
             with lock:
                 out.cached += 1
             return pr, hit["gh"], hit.get("body", "")
@@ -1006,13 +1028,14 @@ def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1, batch: bo
         gh = {**({"labels": labels} if labels else {}), **({"closes": closes} if closes else {})}
         body = str(det.get("body") or "")[:PR_TEXT_CHARS]
         if cache and complete and det.get("mergedAt"):        # a merged PR's data does not change
-            cache.put(key, {"gh": gh, "body": body})
+            cache.put(key, {"gh": gh, "body": body, "fetchedAt": clock().strftime("%Y-%m-%dT%H:%M:%SZ")})
         return pr, gh, body
 
     todo = sorted({int(n) for n in prs})
     if batch:
         owner, name = slug.split("/")
-        missing = [n for n in todo if not (cache and cache.get(_gh_cache_key(slug, n)))]
+        missing = [n for n in todo if refresh or not cache
+                   or not ((h := cache.get(_gh_cache_key(slug, n))) and _gh_fresh(h, clock()))]
         chunks = [missing[i:i + GH_BATCH] for i in range(0, len(missing), GH_BATCH)]
 
         def fetch(chunk: list[int]) -> dict[int, dict]:
@@ -1055,7 +1078,8 @@ def gh_note(gh: dict) -> str:
     return "; ".join(parts)
 
 
-def github_phase(repo: str, worked: list[Unit], workers: int, cache_dir: str | None, run, warnings: list[str]):
+def github_phase(repo: str, worked: list[Unit], workers: int, cache_dir: str | None, run, warnings: list[str],
+                 refresh: bool = False, now=None):
     """Read the PRs of the work window, record labels/closes on their units and promote fix signals to the
     unit's fix verdict (a promoted unit's non-housekeeping commits are its fixes, as for a fix title).
     Returns the PR bodies (None when the phase did not run: no GitHub remote or no PR in the window)."""
@@ -1064,7 +1088,8 @@ def github_phase(repo: str, worked: list[Unit], workers: int, cache_dir: str | N
     if not slug:
         return None
     with phase("github"):
-        res = gh_enrich(slug, prs, run, BlameCache(cache_dir) if cache_dir else None, workers)
+        res = gh_enrich(slug, prs, run, BlameCache(cache_dir) if cache_dir else None, workers,
+                        refresh=refresh, now=now)
     if Timing.enabled:
         Timing.extra["github"] = f"{res.calls} gh calls for {len(prs)} PRs ({res.cached} from cache)"
     if res.error:
@@ -1416,7 +1441,11 @@ def main(argv=None) -> int:
     ap.add_argument("--max-blame-lines", type=int, default=400, help="per fix commit")
     ap.add_argument("--workers", type=int, help="git calls in flight (default min(8, cpu count); 1 = one at a time)")
     ap.add_argument("--cache-dir", help="where blame results are cached (default <git dir>/inspector/cache: the only thing written inside .git)")
-    ap.add_argument("--no-cache", action="store_true", help="do not read or write the blame cache")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="do not read or write either cache (blame and GitHub PR data); a shallow clone never uses the blame cache")
+    ap.add_argument("--refresh-github", action="store_true",
+                    help="read PR labels/linked issues from GitHub again instead of the cache (the result is cached; a failed read keeps the old entry). "
+                         "Cached PR data is also re-read after 7 days (GH_CACHE_TTL_DAYS)")
     ap.add_argument("--exclude", action="append", default=[],
                     help="a path prefix left out of blame diffs and the copies search (repeatable; adds to " + ", ".join(DEFAULT_EXCLUDES) + ")")
     ap.add_argument("--no-default-excludes", action="store_true", help="do not leave " + ", ".join(DEFAULT_EXCLUDES) + " out of blame and the copies search")
@@ -1476,7 +1505,7 @@ def main(argv=None) -> int:
                         a.unit, a.path, MONOREPO_ROOTS | set(a.component_root), a.workers,
                         a.cache_dir, not a.no_cache,
                         effective_excludes(a.path, a.component_root, a.exclude, not a.no_default_excludes),
-                        github=not a.no_github)
+                        github=not a.no_github, refresh_github=a.refresh_github)
     except (RuntimeError, ValueError, OSError) as e:
         print(f"evidence.py: {e}", file=sys.stderr)
         return 1
