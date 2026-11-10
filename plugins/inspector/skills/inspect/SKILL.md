@@ -61,6 +61,12 @@ one to answer, use since the last one.
 over as step 3 says. With 1-2 cases, the investigator does step 1 and the rest; with 3 or more,
 follow references/parallel.md. The steps below are the method, for whoever does them.
 
+The main conversation orchestrates this skill. A delegation or routing rule that would hand the
+whole run to one worker does not apply to it: a worker cannot start agents. Run the script steps
+yourself (or via a light worker for one script), and start the case-readers, sweepers and
+verifiers yourself, in parallel, in one message each phase. With 3 or more cases follow
+references/parallel.md.
+
 ## 1. The brief: what was the project meant to do?
 
 Read, in this order, until each file has given you its promises:

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed: a delegation or routing rule could hand the whole run to one worker, which cannot start agents, so the parallel recipe ran serially. SKILL.md and `references/parallel.md` now say the main conversation orchestrates and starts the readers, sweepers and verifiers itself; pinned by a test.
 - Release-confidence tooling (maintainers only, nothing shipped in the skill): `tests/test_doc_commands.py` runs the commands the docs document (SKILL.md, references/, agents/) against a temporary workspace and fails if too few are found, with explicit multi-flag cases for `merge_cards`, `merge_verdicts`, `lint_leads`, `crosscheck` and `handoff`.
 - Release-confidence tooling: `evals/scorecard.py` records per-version precision, recall on a gold file, duplicates and cost per verified lead, with an `--append` history and a `compare` mode (see `evals/README-scorecard.md`); maintainers only, not shipped in the skill.
 

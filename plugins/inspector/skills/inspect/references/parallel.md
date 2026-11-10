@@ -39,5 +39,10 @@ small context, so six cases take about 6-9 minutes instead of 11-23 in one inves
    upgrade a level on the strength of the reader's silence. A missing card: read that case
    yourself, or list it under "Not investigated".
 
+**Do not collapse the run into one worker.** A delegation or routing rule that hands the whole run
+to one worker does not apply: a worker cannot start agents, so the run turns serial. Symptom: one
+background worker covering all cases. Check: after the readers' message, the number of
+case-readers started equals the number of cases.
+
 Target wall time: about 6-9 minutes for 6 cases (an expectation, not a measurement).
 With 1 or 2 cases one `investigator` is still fine.
