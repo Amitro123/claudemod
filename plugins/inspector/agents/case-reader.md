@@ -47,6 +47,8 @@ Levels: `reproduced` (you ran it and saw it fail), `read` (you traced it in the 
 
 ## The card
 
+Strict JSON: a backslash inside a string is written doubled (a regex `\s` is `\\s`), or the regex is described in words. Before replying, check the file: `python3 -c "import json,sys;json.load(open(sys.argv[1]))" <file>`.
+
 Reply with this JSON, nothing else:
 
 ```json
