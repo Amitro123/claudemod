@@ -20,6 +20,11 @@ Described in `skills/inspect/references/verify.md`. After the case file exists:
 5. `handoff.py` runs on the merged array. `NOT REAL` leads are not handed off; `UNVERIFIABLE`
    leads are handed off marked as such.
 
+`handoff.py` prints what the merge adds: `[verdict: X]` after the production marker (`unverified`
+when absent), `false claims:` and `relabelled: category|reach old -> new` under the impact, a
+`Verified: ...` header line when any lead has a verdict, and sorts REAL, REAL-LOW, UNVERIFIABLE,
+unverified after the existing keys at equal level. `NOT REAL` leads are printed, not dropped.
+
 ## Verdicts
 
 `REAL`, `REAL-LOW`, `NOT REAL`, `UNVERIFIABLE`. The verifier also corrects the labels (category,

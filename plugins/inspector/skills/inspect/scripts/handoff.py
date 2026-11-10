@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from crosscheck import read_cards  # noqa: E402
@@ -76,6 +77,29 @@ def not_verified_of(s: dict) -> str:
     return f" not verified: {'; '.join(items)}" if items else ""
 
 
+VERDICTS = ("REAL", "REAL-LOW", "UNVERIFIABLE", "unverified", "NOT REAL")
+
+
+def verdict_of(s: dict) -> str:
+    """The verifier's verdict as merge_verdicts wrote it; no verdict is `unverified`."""
+    v = cell(s.get("verdict")).upper().replace("_", "-")
+    v = "NOT REAL" if v in ("NOT REAL", "NOT-REAL") else v
+    return v if v in VERDICTS and v != "UNVERIFIED" else "unverified"
+
+
+def verification_of(s: dict) -> str:
+    """`false claims: a; b` and `relabelled: category a -> b` for the impact cell, from merge_verdicts' fields."""
+    fc = s.get("false_claims")
+    items = [fc] if isinstance(fc, str) else fc if isinstance(fc, list) else []
+    items = [cell(i) for i in items if isinstance(i, (str, int, float)) and cell(i)]
+    out = f" false claims: {'; '.join(items)}" if items else ""
+    for k in ("category", "reach"):
+        old, new = s.get(f"original_{k}"), s.get(k)
+        if isinstance(old, (str, int, float)) and cell(old) != cell(new):
+            out += f" relabelled: {k} {cell(old)} -> {cell(new) or 'unknown'}"
+    return out
+
+
 def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[str, str], title: str,
           warnings: list[str] | None = None) -> tuple[str, list[str]]:
     errors, rows = [], []
@@ -126,12 +150,14 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
             warnings.append(f"{where}: documented ({documented}) but no reconcile and no observed_in_production yes; "
                             "name the production evidence that would show harm (a freshness query, a reconciliation, "
                             "a job history); severity cannot be set from code alone")
+        verdict = verdict_of(s)
+        shown += f" [verdict: {verdict}]"
         probe = cell(s.get("probe")) if isinstance(s.get("probe"), (str, int, float)) else ""
         if lvl in ("reproduced", "read") and not probe:
             warnings.append(f"{where}: level {lvl} but no probe; give the exact input and output, the command run, "
                             "or the path:line read (for a claim about an external tool, its --help), or lower the "
                             "level / move the claim to not_verified")
-        impact_cell = (f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}"
+        impact_cell = (f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}{verification_of(s)}"
                        + (f" probe: {probe}" if probe else ""))
         rec = cell(s.get("reconcile")) if isinstance(s.get("reconcile"), (str, int, float)) else ""
         if rec:
@@ -147,16 +173,22 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         kind = kind if kind in ("behavioral", "text-pin", "manual") else "unknown"
         test = f"{cell(s.get('test'))} [test: {kind}]" + (" [weak: pins text only]" if kind == "text-pin" else "")
         reach = reach_of(s)
-        rows.append((RANK.get(lvl, 0), 0 if prod == "yes" else 1, REACH_ORDER.get(reach.lower().split(":")[0].strip(), 2), f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
+        rows.append((RANK.get(lvl, 0), 0 if prod == "yes" else 1, REACH_ORDER.get(reach.lower().split(":")[0].strip(), 2),
+                     VERDICTS.index(verdict) if verdict != "NOT REAL" else 4, verdict, f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
                                          f"{cell(s.get('breaks'))} | {change} | {test} | {cell(s.get('case'))} | {reach} |"))
-    rows.sort(key=lambda r: (-r[0], r[1], r[2]))
+    rows.sort(key=lambda r: (-r[0], r[1], r[2], r[3]))
+    seen = Counter(r[4] for r in rows)
+    head = []
+    if any(v != "unverified" for v in seen):
+        head = [f"Verified: {seen['REAL']} real, {seen['REAL-LOW']} real-low, {seen['UNVERIFIABLE']} unverifiable, "
+                f"{seen['NOT REAL']} not real, {seen['unverified']} unverified", ""]
     L = [f"# {title}", "",
          "Copied word for word from the inspector's case readers: each lead's level, and its impact's own",
          "level, as they gave them. A level here was only ever lowered, never raised. Everything came from",
-         "a model reading repository history and code: verify each claim before you change code.", "",
+         "a model reading repository history and code: verify each claim before you change code.", "", *head,
          "| Level | Where | What breaks | Impact [its level: source] | Breaks | The change | The test | From case | Reach |",
          "|---|---|---|---|---|---|---|---|---|"]
-    L += [r for _, _, _, r in rows] or ["| - | - | no leads | - | - | - | - | - | - |"]
+    L += [r for *_, r in rows] or ["| - | - | no leads | - | - | - | - | - | - |"]
     return "\n".join(L) + "\n", errors
 
 
