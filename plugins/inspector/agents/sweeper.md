@@ -21,7 +21,7 @@ Never end without writing the file and replying.
 
 ## Outside-in mode
 
-When the prompt says OUTSIDE-IN, ignore the brief's promises and the list above; work through the
+When the prompt says OUTSIDE-IN, ignore the brief's promises and the list under "What to sweep"; work through the
 eight questions of `<skill_root>/references/outside-in.md` instead (read it first; the path is in
 your prompt, or find it under the inspect skill), one probe per question where a cheap read-only
 one exists. The budget, the sweep file, the security label rules of references/labels.md and the
@@ -37,6 +37,8 @@ reply format below stay the same. The result is candidates for the verifier, not
 6. Files that play the same role (clients, transports, pipelines, templates): a guard present in one and missing in another is a lead, `sibling of <file>`.
 
 ## Reply
+
+Strict JSON: a backslash inside a string is written doubled (a regex `\s` is `\\s`), or the regex is described in words. Before replying, check the file: `python3 -c "import json,sys;json.load(open(sys.argv[1]))" <file>`.
 
 Write a JSON array, nothing else, to the sweep file path in your prompt, then reply with only that
 path and the lead count (for example `/tmp/x/sweep-1.json 4`); never the array itself. Each lead has the fields of references/labels.md and of a case

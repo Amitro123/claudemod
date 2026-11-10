@@ -42,3 +42,9 @@ def test_no_rule_is_duplicated_across_files() -> None:
                     assert p not in _text(other), (p, other)
             assert p not in skill, (p, "SKILL.md")
             assert _text(key).count(p) == 1, (key, p)
+
+
+def test_strict_json_rule_in_json_writing_agents() -> None:
+    for name in ("case-reader", "sweeper", "investigator"):
+        text = (ROOT / "agents" / f"{name}.md").read_text(encoding="utf-8")
+        assert "Strict JSON" in text and "written doubled" in text, name
