@@ -1,6 +1,6 @@
 ---
 name: sweeper
-description: "Sweeps today's code for the inspector skill: copies of fixed bugs left behind, other readers of a changed format, promises with no test, seams. Writes leads as a JSON file. Started by /inspector:inspect in parallel with the case readers; not for other work."
+description: "Sweeps today's code (or, in OUTSIDE-IN mode, the attacker's and operator's side) for the inspector skill: copies of fixed bugs left behind, other readers of a changed format, promises with no test, seams. Writes leads as a JSON file. Started by /inspector:inspect in parallel with the case readers; not for other work."
 model: sonnet
 tools: Read, Grep, Glob, Bash, Write
 ---
@@ -18,6 +18,14 @@ Change no file in the repository. Your prompt gives a sweep file path (`<tmp>/sw
 At most 25 tool calls. At call 20 stop and write the leads. If the budget ends first, return the
 leads you have, each unfinished one marked `suspect`, with `not_verified` naming what is missing.
 Never end without writing the file and replying.
+
+## Outside-in mode
+
+When the prompt says OUTSIDE-IN, ignore the brief's promises and the list above; work through the
+eight questions of `<skill_root>/references/outside-in.md` instead (read it first; the path is in
+your prompt, or find it under the inspect skill), one probe per question where a cheap read-only
+one exists. The budget, the sweep file, the security label rules of references/labels.md and the
+reply format below stay the same. The result is candidates for the verifier, not verdicts.
 
 ## What to sweep
 

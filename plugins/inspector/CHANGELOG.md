@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Outside-in sweep: `references/outside-in.md` (eight questions: trust boundaries, context injection, secrets in logs, enforcement versus text, command construction, destructive writes, loss paths, packaging) and an `Outside-in mode` in the sweeper; the parallel recipe runs three sweepers (code, docs, outside-in).
 - Sweeper writes its JSON leads to `<tmp>/sweep-<k>.json` itself (tool `Write` added) and replies with the path and lead count; the merge step reads those files. Case-reader likewise writes its card to the path in its prompt (tool `Write` added) and replies with the card; no path means reply only.
 - INS-02: `leadsio.py` is the one reader and validator for lint, handoff and crosscheck; `--cards merged.json` (a file) now works, errors name file and item path and exit 2 before any output is written.
 - INS-06: `lint_leads.py` rejects malformed `complete` / `complete.siblings` with exit 2, also without `--strict`.
