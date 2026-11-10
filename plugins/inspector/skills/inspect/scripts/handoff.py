@@ -59,11 +59,23 @@ def reach_of(s: dict) -> str:
     return r or "unknown"
 
 
+def texts(v: object) -> list[str]:
+    items = [v] if isinstance(v, str) else v if isinstance(v, list) else []
+    return [cell(i) for i in items if isinstance(i, (str, int, float)) and cell(i)]
+
+
+def would_settle_of(s: dict) -> str:
+    """`would settle: a; b` for an UNVERIFIABLE lead: the verifier's own unverifiable parts."""
+    items = texts(s.get("verifier_unverifiable"))
+    return f" would settle: {'; '.join(items)}" if items and verdict_of(s) == "UNVERIFIABLE" else ""
+
+
 def not_verified_of(s: dict) -> str:
-    """Sub-claims nobody traced, as `not verified: a; b`. Printed only; never a level."""
-    nv = s.get("not_verified")
-    items = [nv] if isinstance(nv, str) else nv if isinstance(nv, list) else []
-    items = [cell(i) for i in items if isinstance(i, (str, int, float)) and cell(i)]
+    """Sub-claims nobody traced, as `not verified: a; b`. Printed only; never a level.
+    For an UNVERIFIABLE lead the verifier's parts are printed as `would settle:` instead."""
+    items = texts(s.get("not_verified"))
+    if verdict_of(s) == "UNVERIFIABLE":
+        items = [i for i in items if i not in texts(s.get("verifier_unverifiable"))]
     return f" not verified: {'; '.join(items)}" if items else ""
 
 
@@ -79,24 +91,36 @@ def verdict_of(s: dict) -> str:
 
 def verification_of(s: dict) -> str:
     """`false claims: a; b` and `relabelled: category a -> b` for the impact cell, from merge_verdicts' fields."""
-    fc = s.get("false_claims")
-    items = [fc] if isinstance(fc, str) else fc if isinstance(fc, list) else []
-    items = [cell(i) for i in items if isinstance(i, (str, int, float)) and cell(i)]
+    items = texts(s.get("false_claims"))
     out = f" false claims: {'; '.join(items)}" if items else ""
     for k in ("category", "reach"):
         old, new = s.get(f"original_{k}"), s.get(k)
         if isinstance(old, (str, int, float)) and cell(old) != cell(new):
             out += f" relabelled: {k} {cell(old)} -> {cell(new) or 'unknown'}"
-    return out
+    ev = cell(s.get("verifier_evidence")) if isinstance(s.get("verifier_evidence"), (str, int, float)) else ""
+    return out + (f" verifier: {ev}" if ev else "")
+
+
+def rejected_entry(s: dict, where: str) -> str:
+    ev = cell(s.get("verifier_evidence")) if isinstance(s.get("verifier_evidence"), (str, int, float)) else ""
+    fc = "; ".join(texts(s.get("false_claims")))
+    return (f"- `{where}` [verdict: NOT REAL] verifier: {ev or 'no evidence given'}"
+            + (f" false claims: {fc}" if fc else "") + f" original claim: {cell(s.get('what'))}"
+            + (f" (case {cell(s.get('case'))})" if cell(s.get("case")) else ""))
 
 
 def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[str, str], title: str,
           warnings: list[str] | None = None) -> tuple[str, list[str]]:
-    errors, rows = [], []
+    errors, rows, rejected = [], [], []
+    seen: Counter = Counter()
     warnings = warnings if warnings is not None else []
     for s in leads:
         where = cell(s.get("where"))
         if where in drop:
+            continue
+        if verdict_of(s) == "NOT REAL":
+            seen["NOT REAL"] += 1
+            rejected.append(rejected_entry(s, where))
             continue
         lvl = level_word(s.get("level"))
         if where in lower:
@@ -147,7 +171,7 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
             warnings.append(f"{where}: level {lvl} but no probe; give the exact input and output, the command run, "
                             "or the path:line read (for a claim about an external tool, its --help), or lower the "
                             "level / move the claim to not_verified")
-        impact_cell = (f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}{verification_of(s)}"
+        impact_cell = (f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}{would_settle_of(s)}{verification_of(s)}"
                        + (f" probe: {probe}" if probe else ""))
         rec = cell(s.get("reconcile")) if isinstance(s.get("reconcile"), (str, int, float)) else ""
         if rec:
@@ -164,10 +188,10 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         test = f"{cell(s.get('test'))} [test: {kind}]" + (" [weak: pins text only]" if kind == "text-pin" else "")
         reach = reach_of(s)
         rows.append((RANK.get(lvl, 0), 0 if prod == "yes" else 1, REACH_ORDER.get(reach.lower().split(":")[0].strip(), 2),
-                     VERDICTS.index(verdict) if verdict != "NOT REAL" else 4, verdict, f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
+                     VERDICTS.index(verdict), verdict, f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
                                          f"{cell(s.get('breaks'))} | {change} | {test} | {cell(s.get('case'))} | {reach} |"))
     rows.sort(key=lambda r: (-r[0], r[1], r[2], r[3]))
-    seen = Counter(r[4] for r in rows)
+    seen.update(r[4] for r in rows)
     head = []
     if any(v != "unverified" for v in seen):
         head = [f"Verified: {seen['REAL']} real, {seen['REAL-LOW']} real-low, {seen['UNVERIFIABLE']} unverifiable, "
@@ -179,6 +203,10 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
          "| Level | Where | What breaks | Impact [its level: source] | Breaks | The change | The test | From case | Reach |",
          "|---|---|---|---|---|---|---|---|---|"]
     L += [r for *_, r in rows] or ["| - | - | no leads | - | - | - | - | - | - |"]
+    if rejected:
+        L += ["", "## Rejected by the verifier", "",
+              "Not actionable: the verifier found these claims not real. Kept as an audit trail, not as requirements.",
+              "", *rejected]
     return "\n".join(L) + "\n", errors
 
 

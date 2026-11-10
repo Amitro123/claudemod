@@ -29,8 +29,9 @@ python3 "<skill_root>/scripts/merge_verdicts.py" --leads leads.json \
 5. **Hand off.** Run `python3 "<skill_root>/scripts/handoff.py" --cards merged.json --out open-bugs.md`
    (`--cards` takes a .json file, a folder of *.json, or `-` for stdin; `lint_leads.py` and
    `crosscheck.py` read the same way, and malformed JSON structure exits 2 before any file is written). Leads with verdict `NOT REAL`
-   are not handed off (drop them with `--drop-not-real`, or `--drop` each one). `UNVERIFIABLE`
-   leads are handed off marked as such, with what would settle them. `REAL-LOW` goes with its
+   are listed apart under "Rejected by the verifier", never in the action table (drop them
+   entirely with `--drop-not-real`, or `--drop` each one). `UNVERIFIABLE`
+   leads are handed off marked as such, with `would settle: ...`; the verifier's evidence prints as `verifier: ...`. `REAL-LOW` goes with its
    corrected labels.
 
 ## What it is not

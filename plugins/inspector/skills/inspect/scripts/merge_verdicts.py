@@ -79,6 +79,8 @@ def merge(leads: list[dict], verdicts: list[dict]) -> tuple[list[dict], int]:
         relabelled += changed
         have = as_list(m.get("not_verified"))
         extra = [e for e in as_list(v.get("unverifiable")) if e not in have]
+        if as_list(v.get("unverifiable")):
+            m["verifier_unverifiable"] = as_list(v.get("unverifiable"))
         if extra:
             m["not_verified"] = have + extra
         out.append(m)
