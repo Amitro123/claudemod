@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Merge case cards and sweeper leads into leads.json, deterministically. Stdlib only.
+
+    python merge_cards.py --cards <folder> [--sweep a.json b.json ...] --expect 1,2,3 --out leads.json [--log dedupe.md]
+
+`--expect` lists the card ids: each must exist as `<folder>/<id>.json` and parse, else exit 2 naming
+them before anything is written. Every lead of each card's `complete.siblings` and of each sweeper
+file (an array) is kept field for field, plus `found_by` (card id or `sweeper`). Two leads are one
+defect only when the file of `where` is equal, the line ranges overlap or lie within 10 lines, and the
+Jaccard similarity of the words (length >= 4) of `what` is at least 0.5. The stronger level is kept
+(reproduced > read > suspect > inferred; tie: more filled fields, then first) and gets
+`also_found_by` and `merged_from`. A `where` that cannot be parsed is never merged. Same-file pairs
+within 10 lines below 0.5 stay separate and are listed as possible duplicates in the log.
+Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 2 invalid input.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from collections import Counter
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import leadsio  # noqa: E402
+import lint_leads  # noqa: E402
+
+NEAR = 10
+THRESHOLD = 0.5
+RANK = ("reproduced", "read", "suspect", "inferred")
+WHERE_RE = re.compile(r"^(?P<f>[^\s,]+?):(?P<r>L?\d+(?:\s*-\s*L?\d+)?(?:\s*,\s*L?\d+(?:\s*-\s*L?\d+)?)*)$")
+WORD_RE = re.compile(r"[a-z0-9_]+")
+
+
+def parse_where(w: object):
+    """(file, [(start, end), ...]) or None when the string cannot be read safely."""
+    if not isinstance(w, str):
+        return None
+    m = WHERE_RE.match(w.strip())
+    if not m:
+        return None
+    rs = []
+    for tok in m["r"].split(","):
+        nums = [int(n) for n in re.findall(r"\d+", tok)]
+        rs.append((min(nums), max(nums)))
+    return m["f"].replace("\\", "/"), rs
+
+
+def gap(a, b) -> int:
+    """Smallest distance between two range lists; 0 or negative when they overlap."""
+    return min(max(s1, s2) - min(e1, e2) for s1, e1 in a for s2, e2 in b)
+
+
+def words(s: object) -> set[str]:
+    return {w for w in WORD_RE.findall(str(s or "").lower()) if len(w) >= 4}
+
+
+def jaccard(a: set[str], b: set[str]) -> float:
+    return len(a & b) / len(a | b) if a | b else 0.0
+
+
+def level_rank(lead: dict) -> int:
+    v = str(lead.get("level") or "").strip().lower()
+    for i, k in enumerate(RANK):
+        if v.startswith(k):
+            return i
+    return len(RANK)
+
+
+def filled(lead: dict) -> int:
+    return sum(v not in (None, "", [], {}) for v in lead.values())
+
+
+def best(group: list[dict]) -> dict:
+    return min(group, key=lambda lead: (level_rank(lead), -filled(lead)))  # min is stable: first wins a tie
+
+
+def die(msg: str) -> int:
+    print(f"merge_cards.py: {msg}", file=sys.stderr)
+    return 2
+
+
+def load_cards(folder: str, ids: list[str]) -> list[dict]:
+    leads, bad = [], []
+    for cid in ids:
+        p = os.path.join(folder, f"{cid}.json")
+        if not os.path.isfile(p):
+            bad.append(f"card {cid}: missing ({p})")
+            continue
+        try:
+            items = leadsio.read_items(p)
+        except leadsio.LeadsError as exc:
+            bad.append(f"card {cid}: {exc}")
+            continue
+        for s in leadsio.leads_of(items):
+            leads.append({**s, "found_by": cid})
+    if bad:
+        raise leadsio.LeadsError("; ".join(bad))
+    return leads
+
+
+def load_sweeps(paths: list[str]) -> list[dict]:
+    leads = []
+    for p in paths:
+        try:
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as exc:
+            raise leadsio.LeadsError(f"{p}: invalid JSON or unreadable ({exc})")
+        if not isinstance(data, list):
+            raise leadsio.LeadsError(f"{p}: expected an array of leads")
+        for i, x in enumerate(data):
+            if not isinstance(x, dict):
+                raise leadsio.LeadsError(f"{os.path.basename(p)}[{i}]: expected an object")
+            leads.append({**x, "found_by": "sweeper"})
+    return leads
+
+
+def dedupe(raw: list[dict]):
+    """Return (final leads, merges, possible duplicates); merges/possible are (i, j, score) over raw."""
+    parsed = [parse_where(lead.get("where")) for lead in raw]
+    toks = [words(lead.get("what")) for lead in raw]
+    parent = list(range(len(raw)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    merges, possible = [], []
+    for i in range(len(raw)):
+        for j in range(i + 1, len(raw)):
+            if not parsed[i] or not parsed[j] or parsed[i][0] != parsed[j][0]:
+                continue
+            if gap(parsed[i][1], parsed[j][1]) > NEAR:
+                continue
+            sc = jaccard(toks[i], toks[j])
+            if sc >= THRESHOLD:
+                merges.append((i, j, sc))
+                parent[find(j)] = find(i)
+            else:
+                possible.append((i, j, sc))
+    groups: dict[int, list[int]] = {}
+    for i in range(len(raw)):
+        groups.setdefault(find(i), []).append(i)
+    final = []
+    for idxs in groups.values():
+        win = best([raw[i] for i in idxs])
+        wi = next(i for i in idxs if raw[i] is win)
+        out = dict(win)
+        others = [i for i in idxs if i != wi]
+        if others:
+            seen: list[str] = []
+            for i in others:
+                fb = str(raw[i]["found_by"])
+                if fb != str(win["found_by"]) and fb not in seen:
+                    seen.append(fb)
+            out["also_found_by"] = seen
+            out["merged_from"] = [str(raw[i].get("where")) for i in others]
+        final.append((min(idxs), out))
+    final.sort(key=lambda t: t[0])
+    return [o for _, o in final], merges, possible
+
+
+def tally(leads: list[dict], key: str) -> str:
+    c = Counter(str(lead.get(key) or "-") for lead in leads)
+    return ", ".join(f"{k}: {v}" for k, v in sorted(c.items())) or "none"
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--cards", required=True, help="folder holding <id>.json cards")
+    ap.add_argument("--sweep", nargs="*", default=[], help="sweeper files (each a JSON array of leads)")
+    ap.add_argument("--expect", required=True, help="comma-separated card ids, e.g. 1,2,3")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--log")
+    a = ap.parse_args(argv)
+    ids = [x.strip() for x in a.expect.split(",") if x.strip()]
+    if not ids or len(set(ids)) != len(ids) or any(not re.fullmatch(r"[\w.-]+", x) for x in ids):
+        return die(f"--expect needs distinct ids such as 1,2,3 (got {a.expect!r})")
+    try:
+        raw = load_cards(a.cards, ids) + load_sweeps(a.sweep)
+    except leadsio.LeadsError as exc:
+        return die(f"invalid input: {exc}")
+    final, merges, possible = dedupe(raw)
+
+    def ref(i: int) -> str:
+        return f"{raw[i]['found_by']} {raw[i].get('where')}"
+
+    lines = ["# Dedupe log", "", "## Merges"]
+    lines += [f"- {ref(i)} + {ref(j)} (similarity {sc:.2f})" for i, j, sc in merges] or ["- none"]
+    lines += ["", "## Possible duplicates (not merged; a person decides)"]
+    lines += [f"- {ref(i)} / {ref(j)} (similarity {sc:.2f})" for i, j, sc in possible] or ["- none"]
+    unparsed = [ref(i) for i, lead in enumerate(raw) if parse_where(lead.get("where")) is None]
+    if unparsed:
+        lines += ["", "## Unparsable where (never merged)"] + [f"- {u}" for u in unparsed]
+    counts = [f"raw: {len(raw)}", f"merged: {len(raw) - len(final)}", f"final: {len(final)}",
+              f"per level: {tally(final, 'level')}", f"per category: {tally(final, 'category')}",
+              f"per reach: {tally(final, 'reach')}"]
+    lines += ["", "## Counts"] + [f"- {c}" for c in counts]
+
+    os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+    with open(a.out, "w", encoding="utf-8") as f:
+        json.dump(final, f, ensure_ascii=False, indent=2)
+    if a.log:
+        with open(a.log, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    print("; ".join(counts))
+    if possible:
+        print(f"possible duplicates: {len(possible)} (see log)")
+    for i, s in enumerate(final):
+        where = lint_leads.text(s.get("where")) or f"#{i + 1}"
+        for rule, sev, msg in lint_leads.lint(s):
+            print(f"{where} | {rule} | {sev} | {msg}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
