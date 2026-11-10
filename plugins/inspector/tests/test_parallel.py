@@ -37,3 +37,10 @@ def test_sweeper_writes_its_own_file() -> None:
     assert "sweep-<k>.json" in s and "never the array itself" in s
     p = " ".join(_t("skills/inspect/references/parallel.md").split())
     assert "Sweep file: <tmp>/sweep-<k>.json" in p and "save each reply" not in p
+
+
+def test_case_reader_writes_card_when_given_a_path() -> None:
+    t = " ".join(_t("agents/case-reader.md").split())
+    assert "Write" in t.split("---")[1].split("tools:")[1].splitlines()[0]
+    assert "write the card there first" in t and "reply with the card only" in t
+    assert "write no file at all" not in t
