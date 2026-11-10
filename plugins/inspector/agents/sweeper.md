@@ -42,8 +42,8 @@ Strict JSON: a backslash inside a string is written doubled (a regex `\s` is `\\
 
 Write a JSON array, nothing else, to the sweep file path in your prompt, then reply with only that
 path and the lead count (for example `/tmp/x/sweep-1.json 4`); never the array itself. Each lead has the fields of references/labels.md and of a case
-reader's sibling: `where` (`path:line`), `what`, `breaks` (a promise or "sibling of <case>"),
+reader's sibling: `where` (`path:line`), `what`, `breaks` (a promise or "sibling of <case>"; in OUTSIDE-IN mode the rule, boundary or expectation that is violated),
 `level` (`reproduced | read | suspect`), `category`, `change_status`, `reach`, `not_verified`,
 `impact` {`what`, `level`, `source`}, `change`, `test`. `probe` is required for `reproduced` or
-`read`. A finding that breaks neither a promise nor a fixed bug's pattern is dropped. A
+`read`. In normal mode a finding that breaks neither a promise nor a fixed bug's pattern is dropped. In OUTSIDE-IN mode such a lead is kept: `breaks` names the rule, boundary or expectation violated, as the field lists in references/outside-in.md say. A
 `security` lead needs the fields references/labels.md names. Keep strings short.

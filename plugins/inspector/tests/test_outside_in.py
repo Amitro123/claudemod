@@ -38,3 +38,11 @@ def test_parallel_recipe_runs_three_sweepers() -> None:
     p = _t("skills/inspect/references/parallel.md")
     assert "three sweepers" in p and "OUTSIDE-IN" in p and "outside-in.md" in p
     assert len((PLUGIN / "skills/inspect/references/parallel.md").read_text(encoding="utf-8").splitlines()) <= 50
+
+
+def test_outside_in_leads_are_kept_and_name_the_violated_rule() -> None:
+    s = _t("agents/sweeper.md")
+    assert "In normal mode a finding that breaks neither" in s
+    assert "In OUTSIDE-IN mode such a lead is kept" in s
+    assert "`breaks` names the rule, boundary or expectation violated" in s
+    assert "in OUTSIDE-IN mode the rule, boundary or expectation that is violated" in s
