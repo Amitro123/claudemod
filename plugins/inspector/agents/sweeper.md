@@ -30,6 +30,8 @@ Never end without writing the file and replying.
 
 ## Reply
 
+Strict JSON: a backslash inside a string is written doubled (a regex `\s` is `\\s`), or the regex is described in words. Before replying, check the file: `python3 -c "import json,sys;json.load(open(sys.argv[1]))" <file>`.
+
 Write a JSON array, nothing else, to the sweep file path in your prompt, then reply with only that
 path and the lead count (for example `/tmp/x/sweep-1.json 4`); never the array itself. Each lead has the fields of references/labels.md and of a case
 reader's sibling: `where` (`path:line`), `what`, `breaks` (a promise or "sibling of <case>"),

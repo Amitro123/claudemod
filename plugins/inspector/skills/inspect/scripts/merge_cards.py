@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Merge case cards and sweeper leads into leads.json, deterministically. Stdlib only.
 
-    python merge_cards.py --cards <folder> [--sweep a.json b.json ...] --expect 1,2,3 --out leads.json [--log dedupe.md]
+    python merge_cards.py --cards <folder> [--sweep a.json b.json ...] --expect 1,2,3 --out leads.json [--log dedupe.md] [--repair-escapes]
 
 `--expect` lists the card ids: each must exist as `<folder>/<id>.json` and parse, else exit 2 naming
 them before anything is written. Every lead of each card's `complete.siblings` and of each sweeper
@@ -11,7 +11,9 @@ Jaccard similarity of the words (length >= 4) of `what` is at least 0.5. The str
 (reproduced > read > suspect > inferred; tie: more filled fields, then first) and gets
 `also_found_by` and `merged_from`. A `where` that cannot be parsed is never merged. Same-file pairs
 within 10 lines below 0.5 stay separate and are listed as possible duplicates in the log.
-Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 2 invalid input.
+`--repair-escapes` (opt-in; default is to refuse): a card or sweeper file that fails with an invalid
+backslash escape (a regex class like backslash-s written with one backslash) gets every stray backslash doubled, is re-parsed,
+kept as `<name>.orig` and named in the log. Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 2 invalid input.
 """
 from __future__ import annotations
 
@@ -81,13 +83,49 @@ def die(msg: str) -> int:
     return 2
 
 
-def load_cards(folder: str, ids: list[str]) -> list[dict]:
+_ESC_RE = re.compile(r'\\(["\\/bfnrt]|u[0-9a-fA-F]{4})|\\')
+
+
+def _double_stray(m: "re.Match[str]") -> str:
+    return m.group(0) if m.group(1) else "\\\\"
+
+
+def repair_escapes(path: str, exc: Exception) -> bool:
+    """Double stray backslashes in `path` when `exc` is an invalid-escape error; True when repaired and re-parsed.
+
+    The original bytes are kept as `<path>.orig`; the file is rewritten only after the repaired text parses."""
+    if not isinstance(exc, json.JSONDecodeError) or "escape" not in exc.msg:
+        return False
+    with open(path, "rb") as f:
+        raw = f.read()
+    fixed = _ESC_RE.sub(_double_stray, raw.decode("utf-8"))
+    try:
+        json.loads(fixed)
+    except ValueError:
+        return False
+    with open(path + ".orig", "wb") as f:
+        f.write(raw)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(fixed)
+    return True
+
+
+def load_cards(folder: str, ids: list[str], repair: bool = False, repaired: list[str] | None = None) -> list[dict]:
     leads, bad = [], []
     for cid in ids:
         p = os.path.join(folder, f"{cid}.json")
         if not os.path.isfile(p):
             bad.append(f"card {cid}: missing ({p})")
             continue
+        if repair and repaired is not None:
+            try:
+                with open(p, encoding="utf-8") as f:
+                    json.load(f)
+            except ValueError as exc:
+                if repair_escapes(p, exc):
+                    repaired.append(f"card {cid} ({p})")
+            except OSError:
+                pass
         try:
             items = leadsio.read_items(p)
         except leadsio.LeadsError as exc:
@@ -100,12 +138,19 @@ def load_cards(folder: str, ids: list[str]) -> list[dict]:
     return leads
 
 
-def load_sweeps(paths: list[str]) -> list[dict]:
+def load_sweeps(paths: list[str], repair: bool = False, repaired: list[str] | None = None) -> list[dict]:
     leads = []
     for p in paths:
         try:
-            with open(p, encoding="utf-8") as f:
-                data = json.load(f)
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = json.load(f)
+            except ValueError as exc:
+                if not (repair and repaired is not None and repair_escapes(p, exc)):
+                    raise
+                repaired.append(f"sweep ({p})")
+                with open(p, encoding="utf-8") as f:
+                    data = json.load(f)
         except (OSError, ValueError) as exc:
             raise leadsio.LeadsError(f"{p}: invalid JSON or unreadable ({exc})")
         if not isinstance(data, list):
@@ -176,12 +221,15 @@ def main(argv=None) -> int:
     ap.add_argument("--expect", required=True, help="comma-separated card ids, e.g. 1,2,3")
     ap.add_argument("--out", required=True)
     ap.add_argument("--log")
+    ap.add_argument("--repair-escapes", action="store_true",
+                    help="double stray backslashes in a card that fails with an invalid escape (keeps <name>.orig, logged)")
     a = ap.parse_args(argv)
     ids = [x.strip() for x in a.expect.split(",") if x.strip()]
     if not ids or len(set(ids)) != len(ids) or any(not re.fullmatch(r"[\w.-]+", x) for x in ids):
         return die(f"--expect needs distinct ids such as 1,2,3 (got {a.expect!r})")
+    repaired: list[str] = []
     try:
-        raw = load_cards(a.cards, ids) + load_sweeps(a.sweep)
+        raw = load_cards(a.cards, ids, a.repair_escapes, repaired) + load_sweeps(a.sweep, a.repair_escapes, repaired)
     except leadsio.LeadsError as exc:
         return die(f"invalid input: {exc}")
     final, merges, possible = dedupe(raw)
@@ -193,6 +241,8 @@ def main(argv=None) -> int:
     lines += [f"- {ref(i)} + {ref(j)} (similarity {sc:.2f})" for i, j, sc in merges] or ["- none"]
     lines += ["", "## Possible duplicates (not merged; a person decides)"]
     lines += [f"- {ref(i)} / {ref(j)} (similarity {sc:.2f})" for i, j, sc in possible] or ["- none"]
+    if repaired:
+        lines += ["", "## Repaired invalid escapes (original kept as <name>.orig)"] + [f"- {r}" for r in repaired]
     unparsed = [ref(i) for i, lead in enumerate(raw) if parse_where(lead.get("where")) is None]
     if unparsed:
         lines += ["", "## Unparsable where (never merged)"] + [f"- {u}" for u in unparsed]
@@ -208,6 +258,8 @@ def main(argv=None) -> int:
         with open(a.log, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
     print("; ".join(counts))
+    for r in repaired:
+        print(f"repaired invalid escapes: {r} (original kept as .orig)")
     if possible:
         print(f"possible duplicates: {len(possible)} (see log)")
     for i, s in enumerate(final):

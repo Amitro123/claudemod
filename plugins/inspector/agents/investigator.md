@@ -34,6 +34,8 @@ When the case file is written, reply with at most 300 words:
 - **Files**: the case file's path, and each lead's `path:line`;
 - **Unsure-about**: what you couldn't confirm, and what you skipped.
 
+Strict JSON in that block: a backslash inside a string is written doubled (a regex `\s` is `\\s`), or described in words.
+
 The case file itself must contain the open leads as a fenced ```json block (the same objects the hand-back carries), not only a table. Don't paste the case file. After the 300 words, add one fenced `json` block: the open leads as a
 list of objects, each with the keys of a case reader's sibling (`where`, `what`, `breaks`, `level`,
 `impact` {`what`, `level`, `source`}, `change`, `test`). The main conversation turns it into the

@@ -144,3 +144,57 @@ def test_parse_where_shapes() -> None:
     assert merge_cards.parse_where("a/b.py:154-160,60-62") == ("a/b.py", [(154, 160), (60, 62)])
     assert merge_cards.parse_where("a.py:111") == ("a.py", [(111, 111)])
     assert merge_cards.parse_where("a.py") is None and merge_cards.parse_where(None) is None
+
+
+BS = chr(92)  # one backslash; built here so the test file has no escape ambiguity
+
+
+def _raw_card(n, what_json):
+    return ('{"case": "#%d", "unit": "#%d", "complete": {"siblings": [{"where": "a.py:%d", "what": %s, '
+            '"level": "read", "category": "broken-flow", "reach": "default-on"}], "checked_clear": []}}'
+            % (n, n, n * 100, what_json))
+
+
+BAD_ESC = _raw_card(1, '"regex ' + BS + 's+ and ' + BS + 'd are matched"')
+
+
+def _run_repair(tmp_path, capsys, cards, flag):
+    d, _ = setup(tmp_path, cards)
+    out, log = tmp_path / "leads.json", tmp_path / "dedupe.md"
+    argv = ["--cards", str(d), "--expect", ",".join(cards), "--out", str(out), "--log", str(log)] + flag
+    code = merge_cards.main(argv)
+    return code, d, out, log, capsys.readouterr()
+
+
+def test_invalid_escape_refused_by_default(tmp_path, capsys) -> None:
+    code, d, out, _, cap = _run_repair(tmp_path, capsys, {"1": BAD_ESC}, [])
+    assert code == 2 and "1.json" in cap.err and not out.exists()
+    assert not (d / "1.json.orig").exists()
+
+
+def test_repair_escapes_fixes_logs_and_keeps_orig(tmp_path, capsys) -> None:
+    code, d, out, log, cap = _run_repair(tmp_path, capsys, {"1": BAD_ESC}, ["--repair-escapes"])
+    assert code == 0
+    assert (d / "1.json.orig").read_text(encoding="utf-8") == BAD_ESC
+    what = json.loads(out.read_text(encoding="utf-8"))[0]["what"]
+    assert what == "regex " + BS + "s+ and " + BS + "d are matched"
+    assert "1.json" in log.read_text(encoding="utf-8") and "repaired" in cap.out
+
+
+def test_repair_escapes_leaves_valid_escapes_alone(tmp_path, capsys) -> None:
+    good = _raw_card(1, '"a' + BS + 'nb ' + BS + '" c ' + BS * 2 + ' d ' + BS + 'u00e9"')
+    code, d, out, log, _ = _run_repair(tmp_path, capsys, {"1": good}, ["--repair-escapes"])
+    assert code == 0 and (d / "1.json").read_text(encoding="utf-8") == good
+    assert not (d / "1.json.orig").exists() and "Repaired" not in log.read_text(encoding="utf-8")
+
+
+def test_repair_escapes_fixes_bad_unicode(tmp_path, capsys) -> None:
+    bad = _raw_card(1, '"bad ' + BS + 'u12 here"')
+    code, d, out, _, _ = _run_repair(tmp_path, capsys, {"1": bad}, ["--repair-escapes"])
+    assert code == 0 and (d / "1.json.orig").exists()
+    assert json.loads(out.read_text(encoding="utf-8"))[0]["what"] == "bad " + BS + "u12 here"
+
+
+def test_repair_escapes_does_not_hide_other_errors(tmp_path, capsys) -> None:
+    code, d, out, _, cap = _run_repair(tmp_path, capsys, {"1": "{not json"}, ["--repair-escapes"])
+    assert code == 2 and "1.json" in cap.err and not (d / "1.json.orig").exists()
