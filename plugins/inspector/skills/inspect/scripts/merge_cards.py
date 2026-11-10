@@ -163,6 +163,8 @@ def load_sweeps(paths: list[str], repair: bool = False, repaired: list[str] | No
             if not isinstance(x, dict):
                 raise leadsio.LeadsError(f"{os.path.basename(p)}[{i}]: expected an object")
             leads.append({**x, "found_by": "sweeper"})
+        print(f"sweep file {p}: {len(data)} leads", file=sys.stderr)
+    print(f"sweep files loaded: {len(paths)}", file=sys.stderr)
     return leads
 
 
@@ -230,7 +232,8 @@ def tally(leads: list[dict], key: str) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cards", required=True, help="folder holding <id>.json cards")
-    ap.add_argument("--sweep", nargs="*", default=[], help="sweeper files (each a JSON array of leads)")
+    ap.add_argument("--sweep", nargs="*", action="extend", default=[],
+                    help="sweeper files (each a JSON array of leads); every occurrence of the flag counts")
     ap.add_argument("--expect", required=True, help="comma-separated card ids, e.g. 1,2,3")
     ap.add_argument("--out", required=True)
     ap.add_argument("--log")

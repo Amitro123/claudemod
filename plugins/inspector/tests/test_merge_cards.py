@@ -242,3 +242,46 @@ def test_overlap_drops_and_merges_nothing(tmp_path, capsys) -> None:
 def test_exact_duplicates_still_merge_without_flag(tmp_path, capsys) -> None:
     _, leads, _, _ = run(tmp_path, capsys, {"1": card(1, lead("a.py:5")), "2": card(2, lead("a.py:5"))}, "1,2")
     assert len(leads) == 1 and "possible_duplicate_of" not in leads[0]
+
+
+def _sweep_files(tmp_path):
+    paths = []
+    for k, (w, t) in enumerate([("a.py:10", TEXT_A), ("b.py:20", TEXT_B), ("c.py:30", "cache entry never expires after the source file changes on disk")], 1):
+        p = tmp_path / f"sweep-{k}.json"
+        p.write_text(json.dumps([lead(w, t)]), encoding="utf-8")
+        paths.append(str(p))
+    return paths
+
+
+def _merge(tmp_path, capsys, sweep_args):
+    d, _ = setup(tmp_path, {"1": card(1)})
+    out = tmp_path / "leads.json"
+    code = merge_cards.main(["--cards", str(d), "--expect", "1", "--out", str(out), *sweep_args])
+    err = capsys.readouterr().err
+    return code, (json.loads(out.read_text(encoding="utf-8")) if out.exists() else None), err
+
+
+def test_repeated_sweep_flags_load_every_file(tmp_path, capsys) -> None:
+    p = _sweep_files(tmp_path)
+    code, leads, err = _merge(tmp_path, capsys, ["--sweep", p[0], "--sweep", p[1], "--sweep", p[2]])
+    assert code == 0 and len(leads) == 3
+
+
+def test_mixed_sweep_forms_load_every_file(tmp_path, capsys) -> None:
+    p = _sweep_files(tmp_path)
+    code, leads, err = _merge(tmp_path, capsys, ["--sweep", p[0], p[1], "--sweep", p[2]])
+    assert code == 0 and len(leads) == 3
+
+
+def test_missing_sweep_path_exits_2_even_among_repeats(tmp_path, capsys) -> None:
+    p = _sweep_files(tmp_path)
+    code, leads, err = _merge(tmp_path, capsys, ["--sweep", p[0], "--sweep", str(tmp_path / "nope.json")])
+    assert code == 2 and leads is None and "nope.json" in err
+
+
+def test_per_file_counts_reported_on_stderr(tmp_path, capsys) -> None:
+    p = _sweep_files(tmp_path)
+    code, _, err = _merge(tmp_path, capsys, ["--sweep", p[0], "--sweep", p[1]])
+    assert code == 0
+    assert f"sweep file {p[0]}: 1 leads" in err and f"sweep file {p[1]}: 1 leads" in err
+    assert "sweep files loaded: 2" in err
