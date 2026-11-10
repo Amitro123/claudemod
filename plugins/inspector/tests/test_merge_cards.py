@@ -222,7 +222,7 @@ def test_overlapping_ranges_flagged_each_way_with_reason(tmp_path, capsys) -> No
 def test_adjacent_ranges_not_flagged_as_overlap(tmp_path, capsys) -> None:
     _, leads, log, _ = _two(tmp_path, capsys, "a.py:10-12", "a.py:13")
     assert len(leads) == 2 and "lines overlap" not in log
-    assert "similar wording" in _dup_section(log)  # near, so still listed, but for the other reason
+    assert "within 10 lines" in _dup_section(log) and "similar wording" not in _dup_section(log)  # TEXT_A vs TEXT_B share no words
 
 
 def test_overlap_in_different_files_not_flagged(tmp_path, capsys) -> None:
@@ -338,3 +338,39 @@ def test_parallel_md_promise_matches_behaviour() -> None:
     # the documented promise, as behaviour: same locations and text merge; similar nearby text does not
     assert len(merge_cards.dedupe([dict(TENANT), {**TENANT, "found_by": "2"}])[0]) == 1
     assert len(merge_cards.dedupe([dict(TENANT), dict(LOCALE)])[0]) == 2
+
+
+def test_reason_matches_the_case() -> None:
+    def reasons(w1, t1, w2, t2):
+        return [r[3] for r in merge_cards.dedupe([{"where": w1, "what": t1, "found_by": "1"},
+                                                  {"where": w2, "what": t2, "found_by": "2"}])[2]]
+    assert reasons("a.py:10", TEXT_A, "a.py:18", TEXT_B) == ["within 10 lines"]       # similarity 0.0
+    assert reasons("a.py:10", TEXT_A, "a.py:18", TEXT_A2) == ["similar wording"]
+    assert reasons("a.py:10-20", TEXT_A, "a.py:15", TEXT_B) == ["lines overlap"]
+
+
+def _variant_pair(**loser):
+    a = {"where": "a.py:10", "what": "parser swallows invalid settings", "found_by": "1", "level": "suspect",
+         "impact": {"what": "i1"}, "probe": "p1", "change": "c1"}
+    b = {**a, "found_by": "2", "level": "read", "impact": {"what": "i2"}, "probe": "p2", "test": "t2",
+         "not_verified": ["x"], **loser}
+    del b["change"]
+    return a, b
+
+
+def test_exact_duplicate_merge_unions_missing_fields_and_records_conflicts() -> None:
+    a, b = _variant_pair()
+    final, merges, _ = merge_cards.dedupe([a, b])
+    (out,) = final
+    assert out["level"] == "read" and out["found_by"] == "2" and out["also_found_by"] == ["1"]
+    assert out["change"] == "c1"                      # the winner lacked it: filled from the loser
+    assert out["impact"] == {"what": "i2"} and out["probe"] == "p2"   # winner's value kept
+    assert out["merged_variants"] == [{"found_by": "1", "where": "a.py:10", "level": "suspect",
+                                       "impact": {"what": "i1"}, "probe": "p1"}]
+    assert out["test"] == "t2" and out["not_verified"] == ["x"]
+
+
+def test_identical_exact_duplicates_have_no_variants_and_winner_fields_never_change() -> None:
+    a, b = _variant_pair()
+    final, _, _ = merge_cards.dedupe([a, {**a, "found_by": "2"}])
+    assert "merged_variants" not in final[0] and final[0]["impact"] == {"what": "i1"}

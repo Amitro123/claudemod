@@ -12,7 +12,9 @@ read > suspect > inferred; tie: more filled fields, then first) and gets `also_f
 `merged_from`. A `where` that cannot be parsed is never merged. Every other same-file pair within 10
 lines, and every pair whose line ranges intersect (`path:15` is 15-15), stays as two leads with all their
 fields; both get `possible_duplicate_of` (the other's `where`) and the log lists the pair with the
-reason (`lines overlap` or `similar wording`, plus the word similarity). Nothing else is merged or dropped.
+reason (`lines overlap`, `similar wording` at word similarity 0.5 or more, else `within 10 lines`, plus the
+similarity). When exact duplicates differ in other fields, the winner gains the fields it lacks and a
+conflicting value of the loser is recorded under `merged_variants`; nothing is dropped silently.
 `--repair-escapes` (opt-in; default is to refuse): a card or sweeper file that fails with an invalid
 backslash escape (a regex class like backslash-s written with one backslash) gets every stray backslash doubled, is re-parsed,
 kept as `<name>.orig` and named in the log. Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 2 invalid input.
@@ -33,7 +35,9 @@ import lint_leads  # noqa: E402
 NEAR = 10
 RANK = ("reproduced", "read", "suspect", "inferred")
 WHERE_RE = re.compile(r"^(?P<f>[^\s,]+?):(?P<r>L?\d+(?:\s*-\s*L?\d+)?(?:\s*,\s*L?\d+(?:\s*-\s*L?\d+)?)*)$")
-OVERLAP, SIMILAR = "lines overlap", "similar wording"
+OVERLAP, SIMILAR, NEARBY = "lines overlap", "similar wording", "within 10 lines"
+SIMILAR_AT = 0.5  # word similarity from which a flagged pair is called "similar wording"
+OWN_KEYS = ("found_by", "also_found_by", "merged_from", "merged_variants", "possible_duplicate_of", "case")
 WORD_RE = re.compile(r"[a-z0-9_]+")
 
 
@@ -203,7 +207,8 @@ def dedupe(raw: list[dict]):
                 continue
             g = gap(parsed[i][1], parsed[j][1])
             if g <= NEAR:  # kept apart whatever the wording; a person decides
-                possible.append((i, j, jaccard(toks[i], toks[j]), OVERLAP if g <= 0 else SIMILAR))
+                sc = jaccard(toks[i], toks[j])
+                possible.append((i, j, sc, OVERLAP if g <= 0 else SIMILAR if sc >= SIMILAR_AT else NEARBY))
     groups: dict[int, list[int]] = {}
     for i in range(len(raw)):
         groups.setdefault(find(i), []).append(i)
@@ -221,6 +226,20 @@ def dedupe(raw: list[dict]):
                     seen.append(fb)
             out["also_found_by"] = seen
             out["merged_from"] = [str(raw[i].get("where")) for i in others]
+            variants = []
+            for i in others:  # nothing the loser said is dropped: fill gaps, record conflicts
+                diff = {}
+                for k, v in raw[i].items():
+                    if k in OWN_KEYS or v in (None, "", [], {}):
+                        continue
+                    if out.get(k) in (None, "", [], {}):
+                        out[k] = v
+                    elif out[k] != v:
+                        diff[k] = v
+                if diff:
+                    variants.append({"found_by": str(raw[i]["found_by"]), "where": str(raw[i].get("where")), **diff})
+            if variants:
+                out["merged_variants"] = variants
         out_of[root] = out
         final.append((min(idxs), out))
     for i, j, _, _ in possible:  # flag each way; never merges or drops anything
