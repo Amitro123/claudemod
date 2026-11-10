@@ -14,7 +14,7 @@ DIR = Path(__file__).parent.parent / "evals" / "label-lint"
 
 def test_each_example_fires_exactly_its_rule() -> None:
     expected = json.loads((DIR / "expected.json").read_text(encoding="utf-8"))
-    assert len(expected) == 8
+    assert len(expected) == 9
     for name, rules in expected.items():
         fired = {r for lead in L.load(str(DIR / name)) for r, _, _ in L.lint(lead)}
         assert fired == set(rules), (name, fired)

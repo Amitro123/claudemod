@@ -347,7 +347,7 @@ def test_non_security_with_the_counter_fields_does_not_warn(monkeypatch, capsys)
     assert err == ""
 
 
-def test_production_tag_defaults_to_unknown_and_sorts_yes_first_at_equal_level(monkeypatch, capsys) -> None:
+def test_production_tag_defaults_to_unknown_and_sorts_yes_first_even_above_a_higher_level(monkeypatch, capsys) -> None:
     def lead(w, prod=None, reach=None, lvl="read", **kw):
         d = {"where": w, "what": "x", "level": lvl, "probe": "p"}
         if prod:
@@ -364,7 +364,7 @@ def test_production_tag_defaults_to_unknown_and_sorts_yes_first_at_equal_level(m
     assert rows["n.py:1"].startswith("| read [production: no] [verdict: unverified] |")
     assert rows["y.py:1"].startswith("| read [production: yes: job history] [verdict: unverified] |")
     assert [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l] == [
-        "y.py:1", "d.py:1", "n.py:1", "u.py:1", "s.py:1"], "yes first, then reach; a lower level stays below"
+        "y.py:1", "s.py:1", "d.py:1", "n.py:1", "u.py:1"], "yes first (level, then reach, inside it), then the rest"
 
 
 def test_production_tag_sits_after_needs_host_check(monkeypatch, capsys) -> None:
@@ -499,3 +499,13 @@ def test_drop_not_real_still_removes_the_lead_completely(tmp_path, monkeypatch, 
     merged = [m for m in merged if m["verdict"] != "NOT REAL"]
     _, out, _ = run(monkeypatch, capsys, merged)
     assert "b.py:2" not in out and "Rejected by the verifier" not in out
+
+
+def test_production_yes_outranks_a_higher_level_lead_of_unknown_state(monkeypatch, capsys) -> None:
+    def lead(w, lvl, prod=None):
+        return {"where": w, "what": "x", "level": lvl, "probe": "p", **({"observed_in_production": prod} if prod else {})}
+    leads = [lead("u.py:1", "reproduced"), lead("y.py:1", "suspect", "yes"), lead("r.py:1", "read", "yes"),
+             lead("n.py:1", "reproduced", "no")]
+    _, out, _ = run(monkeypatch, capsys, leads)
+    assert [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l] == [
+        "r.py:1", "y.py:1", "u.py:1", "n.py:1"], "within yes, level still orders; unknown or no never beat yes"

@@ -6,7 +6,7 @@
 Input: a JSON array of leads, or case cards (their `complete.siblings`), from a file, a folder or
 stdin (`-`). Output, one line per finding: `<where> | <rule id> | <warn|info> | <message>`.
 Exit 0 always, except `--strict` (exit 1 when any warn) and invalid input (exit 2).
-Rules L1-L8: references/labels.md says what each label means.
+Rules L1-L9: references/labels.md says what each label means.
 """
 from __future__ import annotations
 
@@ -29,6 +29,11 @@ BEHAVIORAL_RE = re.compile(
 BY_DESIGN_RE = re.compile(r"\b(documented|by design|intended|pinned)\b", re.I)
 EXTERNAL_TOOL_RE = re.compile(r"\bflags?\b|(?<![\w-])--[a-z]|\boptions?\b|\bCLI\b", re.I)
 FLAG_TOKEN_RE = re.compile(r"(?<![\w-])--[a-z][\w-]*")
+QUERY_RE = re.compile(
+    r"\|\s*(?:where|summarize)\b|(?-i:\bSELECT\b.+?\bFROM\b)|\bkusto\b|\baz\s+monitor\s+log-analytics\s+query\b",
+    re.I | re.S)
+READ_ONLY_RE = re.compile(r"read[- ]?only", re.I)
+RAN_RE = re.compile(r"\b(?:ran|run|executed?|executing)\b", re.I)
 VERIFIED_LEVELS = ("reproduced", "read")
 
 Finding = tuple[str, str, str]  # rule id, severity, message
@@ -124,7 +129,16 @@ def rule_l8(s: dict) -> list[Finding]:
     return []
 
 
-RULES = (rule_l1, rule_l2, rule_l3, rule_l4, rule_l5, rule_l6, rule_l7, rule_l8)
+def rule_l9(s: dict) -> list[Finding]:
+    if text(s.get("change_status")).lower() != "verified" or not QUERY_RE.search(text(s.get("change"))):
+        return []
+    probe = text(s.get("probe"))
+    if READ_ONLY_RE.search(probe) and RAN_RE.search(probe):
+        return []
+    return [("L9", "warn", "query inside a verified change was not executed; run it read-only or mark the change unverified")]
+
+
+RULES = (rule_l1, rule_l2, rule_l3, rule_l4, rule_l5, rule_l6, rule_l7, rule_l8, rule_l9)
 
 
 def lint(lead: dict) -> list[Finding]:

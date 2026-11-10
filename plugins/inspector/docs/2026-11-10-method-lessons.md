@@ -14,5 +14,5 @@ Evidence per edit (generic descriptions of what the evaluation showed):
 
 Not done, follow-up (needs scripts that another open change edits):
 - lint_leads.py warning: a `verified` change or `text-pin` test whose text contains a query and no command.
-- handoff.py sort refinement: `observed_in_production: yes` above a higher level lead with production `unknown` (today it sorts first only at equal level), so edit 2 is a method statement until then.
+- handoff.py sort refinement: `observed_in_production: yes` above a higher level lead with production `unknown` (today it sorts first only at equal level), so edit 2 is a method statement until then. (Done: `handoff.py` now sorts production `yes` before level.)
 - Also later: scripts/suppressions.py (dated exceptions in collector output); eval fixtures for edits 1, 3, 4, 5, 6.
