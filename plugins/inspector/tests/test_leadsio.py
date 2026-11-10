@@ -20,10 +20,13 @@ BAD_PAYLOADS = [
     {"complete": {"siblings": "NOT_AN_ARRAY"}},
     {"complete": {"siblings": [None]}},
     {"complete": "x"},
+    {"complete": None},
+    {"complete": {"siblings": None}},
+    [GOOD, {"complete": None}],
     [GOOD, {"complete": {"siblings": "NOT_AN_ARRAY"}}],     # mixed: no partial success
     [GOOD, 17],
 ]
-VALID_PAYLOADS = [[], {}, {"complete": {"siblings": []}}, [GOOD]]
+VALID_PAYLOADS = [[], {}, {"complete": {"siblings": []}}, [GOOD], {"complete": {}}]
 
 
 def feed(kind, tmp_path, monkeypatch, payload):
@@ -91,3 +94,17 @@ def test_handoff_accepts_a_file_path(tmp_path, capsys):
 def test_missing_path_is_an_error(tmp_path):
     with pytest.raises(leadsio.LeadsError):
         leadsio.read_items(str(tmp_path / "nope.json"))
+
+
+@pytest.mark.parametrize("kind", ["file", "folder", "stdin"])
+@pytest.mark.parametrize("payload", [{"complete": None}, {"complete": {"siblings": None}}])
+def test_null_container_exits_2_without_strict(kind, payload, tmp_path, monkeypatch, capsys):
+    src = feed(kind, tmp_path, monkeypatch, payload)
+    assert lint_leads.main([src]) == 2
+    assert "expected" in capsys.readouterr().err
+
+
+def test_null_container_message_names_path(tmp_path, monkeypatch):
+    src = feed("file", tmp_path, monkeypatch, {"complete": {"siblings": None}})
+    with pytest.raises(leadsio.LeadsError, match=r"merged\.json\.complete\.siblings: expected a list"):
+        leadsio.read_items(src)

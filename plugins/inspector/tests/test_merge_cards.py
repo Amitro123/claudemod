@@ -66,31 +66,82 @@ def test_invalid_sweeper_exits_2(tmp_path, capsys) -> None:
     assert code == 2 and not (tmp_path / "o.json").exists()
 
 
-def test_same_defect_keeps_stronger_and_records_finders(tmp_path, capsys) -> None:
+def test_exact_duplicate_keeps_stronger_and_records_finders(tmp_path, capsys) -> None:
     code, leads, log, cap = run(
         tmp_path, capsys,
         {"1": card(1, lead("a.py:154-160,60-62", TEXT_A, "read")), "2": card(2)},
-        "1,2", {"sweep.json": [lead("a.py:158", TEXT_A2, "reproduced", probe="ran it")]})
+        "1,2", {"sweep.json": [lead("a.py:60-62,154-160", "  The parser swallows invalid settings silently "
+                                    "and rewrites the whole settings file ", "reproduced", probe="ran it")]})
     assert code == 0 and len(leads) == 1
     assert leads[0]["level"] == "reproduced" and leads[0]["found_by"] == "sweeper"
     assert leads[0]["also_found_by"] == ["1"] and leads[0]["merged_from"] == ["a.py:154-160,60-62"]
-    assert "raw: 2" in log and "final: 1" in log and "similarity" in log
+    assert "raw: 2" in log and "final: 1" in log and "Merges (exact" in log
     assert "raw: 2" in cap.out
 
 
 def test_tie_prefers_more_filled_fields(tmp_path, capsys) -> None:
     _, leads, _, _ = run(tmp_path, capsys,
                          {"1": card(1, lead("a.py:5", level="read")),
-                          "2": card(2, lead("a.py:7", TEXT_A2, "read", probe="x", reach_when="always"))}, "1,2")
+                          "2": card(2, lead("a.py:5", level="read", probe="x", reach_when="always"))}, "1,2")
     assert len(leads) == 1 and leads[0]["found_by"] == "2" and leads[0]["also_found_by"] == ["1"]
+
+
+def test_similar_wording_nearby_keeps_both_with_possible_duplicate_of(tmp_path, capsys) -> None:
+    code, leads, log, _ = run(tmp_path, capsys,
+                              {"1": card(1, lead("a.py:154-160", TEXT_A, probe="p1", test="t1")),
+                               "2": card(2, lead("a.py:158", TEXT_A2, "reproduced", probe="p2", test="t2"))}, "1,2")
+    assert code == 0 and len(leads) == 2
+    assert [x["probe"] for x in leads] == ["p1", "p2"] and [x["what"] for x in leads] == [TEXT_A, TEXT_A2]
+    assert leads[0]["possible_duplicate_of"] == ["a.py:158"] and leads[1]["possible_duplicate_of"] == ["a.py:154-160"]
+    assert "also_found_by" not in leads[0] and "merged_from" not in leads[1]
+    sec = log.split("## Possible duplicates (kept)")[1].split("##")[0]
+    assert "a.py:154-160" in sec and "a.py:158" in sec and "- none" not in sec
+
+
+def test_tenant_locale_example_keeps_both_claims(tmp_path, capsys) -> None:
+    _, leads, log, _ = run(
+        tmp_path, capsys,
+        {"1": card(1, lead("cache.py:10", "cache key ignores tenant identity", impact="tenant leak", probe="p-t", test="t-t")),
+         "2": card(2, lead("cache.py:12", "cache key ignores locale identity", impact="wrong language", probe="p-l", test="t-l"))},
+        "1,2")
+    assert [x["what"] for x in leads] == ["cache key ignores tenant identity", "cache key ignores locale identity"]
+    assert leads[0]["possible_duplicate_of"] == ["cache.py:12"] and leads[1]["possible_duplicate_of"] == ["cache.py:10"]
+    assert "final: 2" in log
+
+
+def test_verifier_chunk_contains_every_original_field(tmp_path, capsys) -> None:
+    """merge_cards output is what a verifier chunk is cut from: no original claim, impact, probe or test may vanish."""
+    originals = [
+        lead("cache.py:10", "cache key ignores tenant identity", impact="tenant leak", probe="p-t", test="t-t"),
+        lead("cache.py:12", "cache key ignores locale identity", impact="wrong language", probe="p-l", test="t-l"),
+        lead("cache.py:40", TEXT_B, impact="gives up", probe="p-r", test="t-r"),
+    ]
+    _, leads, _, _ = run(tmp_path, capsys, {"1": card(1, originals[0], originals[2]), "2": card(2, originals[1])}, "1,2")
+    chunk = leads[:8]
+    for o in originals:
+        got = next(x for x in chunk if x["where"] == o["where"])
+        for k in ("what", "impact", "probe", "test", "level", "category", "reach"):
+            assert got[k] == o[k]
+
+
+def test_possible_duplicates_survive_verdict_merge_and_handoff(tmp_path, capsys) -> None:
+    import handoff
+    import merge_verdicts
+    _, leads, _, _ = run(tmp_path, capsys,
+                         {"1": card(1, lead("a.py:154-160", TEXT_A)), "2": card(2, lead("a.py:158", TEXT_A2))}, "1,2")
+    merged, _ = merge_verdicts.merge(leads, [{"where": "a.py:158", "verdict": "REAL"}])
+    assert all("possible_duplicate_of" in m for m in merged)
+    text, errors = handoff.build(merged, {}, set(), {}, "T")
+    assert not errors and text.count("possible duplicate of") == 2
+    assert "possible duplicate of `a.py:158`" in text and "possible duplicate of `a.py:154-160`" in text
 
 
 def test_near_lines_different_mechanism_not_merged_but_logged(tmp_path, capsys) -> None:
     code, leads, log, _ = run(tmp_path, capsys,
                               {"1": card(1, lead("a.py:100-104", TEXT_A)), "2": card(2, lead("a.py:110", TEXT_B))}, "1,2")
-    assert code == 0 and len(leads) == 2
-    assert "Possible duplicates" in log and "a.py:100-104" in log and "a.py:110" in log
-    assert "- none" not in log.split("## Possible duplicates")[1].split("##")[0]
+    assert code == 0 and len(leads) == 2 and not any("possible_duplicate_of" in x for x in leads)
+    sec = log.split("## Nearby, different wording (kept)")[1]
+    assert "a.py:100-104" in sec and "a.py:110" in sec
 
 
 def test_far_lines_or_other_file_not_listed(tmp_path, capsys) -> None:

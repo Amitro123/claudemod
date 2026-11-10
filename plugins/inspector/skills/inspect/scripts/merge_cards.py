@@ -5,12 +5,13 @@
 
 `--expect` lists the card ids: each must exist as `<folder>/<id>.json` and parse, else exit 2 naming
 them before anything is written. Every lead of each card's `complete.siblings` and of each sweeper
-file (an array) is kept field for field, plus `found_by` (card id or `sweeper`). Two leads are one
-defect only when the file of `where` is equal, the line ranges overlap or lie within 10 lines, and the
-Jaccard similarity of the words (length >= 4) of `what` is at least 0.5. The stronger level is kept
-(reproduced > read > suspect > inferred; tie: more filled fields, then first) and gets
-`also_found_by` and `merged_from`. A `where` that cannot be parsed is never merged. Same-file pairs
-within 10 lines below 0.5 stay separate and are listed as possible duplicates in the log.
+file (an array) is kept field for field, plus `found_by` (card id or `sweeper`). Only an exact duplicate
+is merged: the same normalized `where` (file and line-range set) and the same normalized `what` text.
+The stronger level is kept (reproduced > read > suspect > inferred; tie: more filled fields, then first)
+and gets `also_found_by` and `merged_from`. Word similarity never deletes a lead: same-file leads within
+10 lines whose words (length >= 4) have Jaccard similarity >= 0.5 are both kept, each with
+`possible_duplicate_of` (the other's `where`), and listed under "Possible duplicates (kept)" in the log.
+A `where` that cannot be parsed is never merged.
 `--repair-escapes` (opt-in; default is to refuse): a card or sweeper file that fails with an invalid
 backslash escape (a regex class like backslash-s written with one backslash) gets every stray backslash doubled, is re-parsed,
 kept as `<name>.orig` and named in the log. Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 2 invalid input.
@@ -162,36 +163,51 @@ def load_sweeps(paths: list[str], repair: bool = False, repaired: list[str] | No
     return leads
 
 
+def norm_text(s: object) -> str:
+    return " ".join(str(s or "").lower().split())
+
+
+def exact_key(lead: dict, parsed) -> tuple | None:
+    """Identity of an exact duplicate: the same file and line-range set in `where`, and the same `what` text
+    (case and whitespace ignored). None when `where` cannot be parsed: such a lead is never merged."""
+    if not parsed:
+        return None
+    return parsed[0], frozenset(parsed[1]), norm_text(lead.get("what"))
+
+
 def dedupe(raw: list[dict]):
-    """Return (final leads, merges, possible duplicates); merges/possible are (i, j, score) over raw."""
+    """Return (final leads, merges, possible); merges/possible are (i, j, score) over raw.
+
+    Only an exact duplicate is merged. Lexical similarity never deletes a lead: a nearby same-file pair
+    with word similarity >= THRESHOLD keeps both leads, each listing the other's `where` in
+    `possible_duplicate_of`. `possible` also holds the nearby pairs below THRESHOLD (listed in the log only)."""
     parsed = [parse_where(lead.get("where")) for lead in raw]
     toks = [words(lead.get("what")) for lead in raw]
-    parent = list(range(len(raw)))
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    merges, possible = [], []
+    keys = [exact_key(lead, parsed[i]) for i, lead in enumerate(raw)]
+    group_of = list(range(len(raw)))
+    first: dict[tuple, int] = {}
+    merges = []
+    for i, k in enumerate(keys):
+        if k is None:
+            continue
+        if k in first:
+            group_of[i] = first[k]
+            merges.append((first[k], i, 1.0))
+        else:
+            first[k] = i
+    possible = []
     for i in range(len(raw)):
         for j in range(i + 1, len(raw)):
-            if not parsed[i] or not parsed[j] or parsed[i][0] != parsed[j][0]:
+            if group_of[i] == group_of[j] or not parsed[i] or not parsed[j] or parsed[i][0] != parsed[j][0]:
                 continue
             if gap(parsed[i][1], parsed[j][1]) > NEAR:
                 continue
-            sc = jaccard(toks[i], toks[j])
-            if sc >= THRESHOLD:
-                merges.append((i, j, sc))
-                parent[find(j)] = find(i)
-            else:
-                possible.append((i, j, sc))
+            possible.append((i, j, jaccard(toks[i], toks[j])))
     groups: dict[int, list[int]] = {}
     for i in range(len(raw)):
-        groups.setdefault(find(i), []).append(i)
-    final = []
-    for idxs in groups.values():
+        groups.setdefault(group_of[i], []).append(i)
+    outs: dict[int, dict] = {}
+    for g, idxs in groups.items():
         win = best([raw[i] for i in idxs])
         wi = next(i for i in idxs if raw[i] is win)
         out = dict(win)
@@ -204,9 +220,16 @@ def dedupe(raw: list[dict]):
                     seen.append(fb)
             out["also_found_by"] = seen
             out["merged_from"] = [str(raw[i].get("where")) for i in others]
-        final.append((min(idxs), out))
-    final.sort(key=lambda t: t[0])
-    return [o for _, o in final], merges, possible
+        outs[g] = out
+    for i, j, sc in possible:
+        if sc < THRESHOLD:
+            continue
+        for a, b in ((group_of[i], group_of[j]), (group_of[j], group_of[i])):
+            lst = outs[a].setdefault("possible_duplicate_of", [])
+            w = str(outs[b].get("where"))
+            if w not in lst:
+                lst.append(w)
+    return [outs[g] for g in sorted(groups)], merges, possible
 
 
 def tally(leads: list[dict], key: str) -> str:
@@ -237,10 +260,15 @@ def main(argv=None) -> int:
     def ref(i: int) -> str:
         return f"{raw[i]['found_by']} {raw[i].get('where')}"
 
-    lines = ["# Dedupe log", "", "## Merges"]
-    lines += [f"- {ref(i)} + {ref(j)} (similarity {sc:.2f})" for i, j, sc in merges] or ["- none"]
-    lines += ["", "## Possible duplicates (not merged; a person decides)"]
-    lines += [f"- {ref(i)} / {ref(j)} (similarity {sc:.2f})" for i, j, sc in possible] or ["- none"]
+    similar = [t for t in possible if t[2] >= THRESHOLD]
+    nearby = [t for t in possible if t[2] < THRESHOLD]
+    lines = ["# Dedupe log", "", "## Merges (exact duplicates: same where, same what)"]
+    lines += [f"- {ref(i)} + {ref(j)}" for i, j, _ in merges] or ["- none"]
+    lines += ["", "## Possible duplicates (kept)", "",
+              "Both leads are in the output, each with `possible_duplicate_of`; verify whether they are one defect."]
+    lines += [f"- {ref(i)} / {ref(j)} (similarity {sc:.2f})" for i, j, sc in similar] or ["- none"]
+    lines += ["", "## Nearby, different wording (kept)"]
+    lines += [f"- {ref(i)} / {ref(j)} (similarity {sc:.2f})" for i, j, sc in nearby] or ["- none"]
     if repaired:
         lines += ["", "## Repaired invalid escapes (original kept as <name>.orig)"] + [f"- {r}" for r in repaired]
     unparsed = [ref(i) for i, lead in enumerate(raw) if parse_where(lead.get("where")) is None]
@@ -260,8 +288,8 @@ def main(argv=None) -> int:
     print("; ".join(counts))
     for r in repaired:
         print(f"repaired invalid escapes: {r} (original kept as .orig)")
-    if possible:
-        print(f"possible duplicates: {len(possible)} (see log)")
+    if similar:
+        print(f"possible duplicates (kept): {len(similar)} (see log)")
     for i, s in enumerate(final):
         where = lint_leads.text(s.get("where")) or f"#{i + 1}"
         for rule, sev, msg in lint_leads.lint(s):
