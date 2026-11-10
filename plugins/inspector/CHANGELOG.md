@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+Note: an external review of 0.6.1 (reviewed commit d19bef0) reported four findings; all four were reproduced on that commit before the fixes below.
+
+- Fixed (R061-01): `merge_cards.py` merged leads by word similarity, so two distinct nearby claims could collapse into one (an earlier fix of this was merged into a branch that never reached main). Only exact duplicates now merge (same file and line-range set in `where`, same words in `what`; `found_by` / `also_found_by` / `merged_from` kept); similar or overlapping leads stay as separate, complete leads with `possible_duplicate_of` on both and are listed in the log.
+- Fixed (R061-02): `evals/scorecard.py` no longer matches gold keywords against `where`; the path still matches `where`, a keyword must appear in `what`, `breaks`, `change` or `test` of the same lead, NOT REAL still excluded.
+- Fixed (R061-03): `lint_leads.py` L9 accepts a structured `query_run: {"mode": "read-only", "status": "executed", "observed": "..."}` or a free-text probe that states a completed read-only run with an observed result; negation (not executed, unavailable, could not, no access) and instructions or conditions (run this, after deployment, should, will, must, before) warn. Documented in `references/labels.md` and the investigator, case-reader and verifier agents.
+- Fixed (R061-04): `leadsio.py` checks presence of `complete`, `complete.siblings` and `complete.checked_clear` separately from the value: an explicit `null` exits 2 with and without `--strict`, for file, folder and stdin; sweeper files and `merge_verdicts.py --leads` use the same rules.
+
 ## 0.6.1 (2026-11-10)
 
 - Fixed: a delegation or routing rule could hand the whole run to one worker, which cannot start agents, so the parallel recipe ran serially. SKILL.md and `references/parallel.md` now say the main conversation orchestrates and starts the readers, sweepers and verifiers itself; pinned by a test.

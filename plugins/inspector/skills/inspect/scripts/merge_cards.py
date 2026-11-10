@@ -5,15 +5,14 @@
 
 `--expect` lists the card ids: each must exist as `<folder>/<id>.json` and parse, else exit 2 naming
 them before anything is written. Every lead of each card's `complete.siblings` and of each sweeper
-file (an array) is kept field for field, plus `found_by` (card id or `sweeper`). Two leads are one
-defect only when the file of `where` is equal, the line ranges overlap or lie within 10 lines, and the
-Jaccard similarity of the words (length >= 4) of `what` is at least 0.5. The stronger level is kept
-(reproduced > read > suspect > inferred; tie: more filled fields, then first) and gets
-`also_found_by` and `merged_from`. A `where` that cannot be parsed is never merged. Same-file pairs
-within 10 lines below 0.5 stay separate and are listed as possible duplicates in the log, as are
-same-file pairs whose line ranges intersect (`path:15` is 15-15) even when the wording differs; both
-leads get `possible_duplicate_of` (the other's `where`) and the log gives the reason (`lines overlap`
-or `similar wording`). Nothing is merged or dropped for that.
+file (an array) is kept field for field, plus `found_by` (card id or `sweeper`). Two leads are merged
+only when they are exact duplicates: the same file and the same set of line ranges in `where`, and the
+same words in `what` (case, spacing and punctuation ignored). The stronger level is kept (reproduced >
+read > suspect > inferred; tie: more filled fields, then first) and gets `also_found_by` and
+`merged_from`. A `where` that cannot be parsed is never merged. Every other same-file pair within 10
+lines, and every pair whose line ranges intersect (`path:15` is 15-15), stays as two leads with all their
+fields; both get `possible_duplicate_of` (the other's `where`) and the log lists the pair with the
+reason (`lines overlap` or `similar wording`, plus the word similarity). Nothing else is merged or dropped.
 `--repair-escapes` (opt-in; default is to refuse): a card or sweeper file that fails with an invalid
 backslash escape (a regex class like backslash-s written with one backslash) gets every stray backslash doubled, is re-parsed,
 kept as `<name>.orig` and named in the log. Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 2 invalid input.
@@ -32,7 +31,6 @@ import leadsio  # noqa: E402
 import lint_leads  # noqa: E402
 
 NEAR = 10
-THRESHOLD = 0.5
 RANK = ("reproduced", "read", "suspect", "inferred")
 WHERE_RE = re.compile(r"^(?P<f>[^\s,]+?):(?P<r>L?\d+(?:\s*-\s*L?\d+)?(?:\s*,\s*L?\d+(?:\s*-\s*L?\d+)?)*)$")
 OVERLAP, SIMILAR = "lines overlap", "similar wording"
@@ -64,6 +62,15 @@ def words(s: object) -> set[str]:
 
 def jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b) if a | b else 0.0
+
+
+def exact_key(lead: dict, parsed) -> tuple | None:
+    """Identity of an exact duplicate: the file and the set of line ranges of `where`, and the words of `what`
+    (case, spacing and punctuation ignored). None when `where` cannot be parsed or `what` is empty: never merged."""
+    what = tuple(WORD_RE.findall(str(lead.get("what") or "").lower()))
+    if not parsed or not what:
+        return None
+    return parsed[0], frozenset(parsed[1]), what
 
 
 def level_rank(lead: dict) -> int:
@@ -159,9 +166,8 @@ def load_sweeps(paths: list[str], repair: bool = False, repaired: list[str] | No
             raise leadsio.LeadsError(f"{p}: invalid JSON or unreadable ({exc})")
         if not isinstance(data, list):
             raise leadsio.LeadsError(f"{p}: expected an array of leads")
-        for i, x in enumerate(data):
-            if not isinstance(x, dict):
-                raise leadsio.LeadsError(f"{os.path.basename(p)}[{i}]: expected an object")
+        leadsio.validate_leads(data, os.path.basename(p))  # objects, and the same complete/siblings rules
+        for x in data:
             leads.append({**x, "found_by": "sweeper"})
         print(f"sweep file {p}: {len(data)} leads", file=sys.stderr)
     print(f"sweep files loaded: {len(paths)}", file=sys.stderr)
@@ -181,19 +187,23 @@ def dedupe(raw: list[dict]):
         return x
 
     merges, possible = [], []
+    first: dict[tuple, int] = {}
+    for i in range(len(raw)):  # exact duplicates only: same normalized `where` set and same normalized `what`
+        key = exact_key(raw[i], parsed[i])
+        if key is None:
+            continue
+        if key in first:
+            merges.append((first[key], i, 1.0))
+            parent[find(i)] = find(first[key])
+        else:
+            first[key] = i
     for i in range(len(raw)):
         for j in range(i + 1, len(raw)):
-            if not parsed[i] or not parsed[j] or parsed[i][0] != parsed[j][0]:
+            if find(i) == find(j) or not parsed[i] or not parsed[j] or parsed[i][0] != parsed[j][0]:
                 continue
             g = gap(parsed[i][1], parsed[j][1])
-            if g > NEAR:
-                continue
-            sc = jaccard(toks[i], toks[j])
-            if sc >= THRESHOLD:
-                merges.append((i, j, sc))
-                parent[find(j)] = find(i)
-            else:  # kept apart; overlapping lines are flagged whatever the wording
-                possible.append((i, j, sc, OVERLAP if g <= 0 else SIMILAR))
+            if g <= NEAR:  # kept apart whatever the wording; a person decides
+                possible.append((i, j, jaccard(toks[i], toks[j]), OVERLAP if g <= 0 else SIMILAR))
     groups: dict[int, list[int]] = {}
     for i in range(len(raw)):
         groups.setdefault(find(i), []).append(i)
@@ -254,7 +264,7 @@ def main(argv=None) -> int:
         return f"{raw[i]['found_by']} {raw[i].get('where')}"
 
     lines = ["# Dedupe log", "", "## Merges"]
-    lines += [f"- {ref(i)} + {ref(j)} (similarity {sc:.2f})" for i, j, sc in merges] or ["- none"]
+    lines += [f"- {ref(i)} + {ref(j)} (exact duplicate)" for i, j, _ in merges] or ["- none"]
     lines += ["", "## Possible duplicates (kept)"]
     lines += [f"- {ref(i)} / {ref(j)} ({why}; similarity {sc:.2f}; not merged, a person decides)" for i, j, sc, why in possible] or ["- none"]
     if repaired:
