@@ -23,8 +23,10 @@ def test_outside_in_checklist_has_eight_headings() -> None:
     lines = raw.splitlines()
     for h in HEADINGS:
         assert h in lines, h
-    assert sum(1 for x in lines if x.startswith("## ")) == 8
+    assert sum(1 for x in lines if x[:3] == "## " and x[3].isdigit()) == 8
+    assert "## Edge payloads" in lines
     assert "security_actor" in raw and "references/labels.md" in raw
+    assert "rendered output" in raw and "Edge payloads" in raw
 
 
 def test_sweeper_documents_outside_in_mode() -> None:
