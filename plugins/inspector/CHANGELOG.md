@@ -1,6 +1,6 @@
 # Inspector changelog
 
-## Unreleased
+## 0.6.0 (2026-11-10)
 
 - `merge_cards.py`: leads in the same file whose line ranges intersect are flagged `possible_duplicate_of` each way even when the wording differs, and listed under "Possible duplicates (kept)" with the reason (`lines overlap` or `similar wording`); nothing is merged or dropped for it.
 - `lint_leads.py` L9: a `verified` change that contains a query or command to run against data (`| where`, `| summarize`, `SELECT ... FROM`, Kusto, `az monitor log-analytics query`) with no probe naming a read-only run warns.
@@ -17,7 +17,7 @@
 - Fixed: cached GitHub PR data now expires after 7 days; new `--refresh-github` re-reads it (a failed read keeps the old entry); GH_CACHE_VERSION v2.
 - Method rules: queries stay unverified until parsed or run read-only; production-noted failures sort first; log location, deploy order, dated exceptions, same-role siblings, allowlist counts, degrade-path failure modes.
 
-## 0.5.0 (candidate, not published)
+## 0.5.0
 
 Since 0.3.1:
 - Collector: batched and cached blame, so a second run reuses saved evidence.
