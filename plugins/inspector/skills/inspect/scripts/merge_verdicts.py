@@ -7,7 +7,8 @@
 Each lead gains `verdict` (REAL | REAL-LOW | NOT REAL | UNVERIFIABLE, or `unverified` when no
 verdict exists), `verified_by`, `false_claims`; the verifier's corrected labels replace the lead's
 (the originals stay under `original_category` / `original_reach`); the verifier's `unverifiable`
-parts are appended to `not_verified`. Exit 2 on invalid JSON or a verdict matching no lead.
+parts are appended to `not_verified`. Exit 2 on invalid JSON, a verdict matching no lead, two leads with the same `where`, or two
+different verdicts for one `where` (identical duplicates are fine).
 """
 from __future__ import annotations
 
@@ -35,8 +36,22 @@ def as_list(v: object) -> list:
 
 
 def merge(leads: list[dict], verdicts: list[dict]) -> tuple[list[dict], int]:
-    by_where = {str(v.get("where")): v for v in verdicts}
-    known = {str(x.get("where")) for x in leads}
+    seen: dict[str, int] = {}
+    for x in leads:
+        w = str(x.get("where"))
+        seen[w] = seen.get(w, 0) + 1
+    dup = sorted(w for w, n in seen.items() if n > 1)
+    if dup:
+        raise ValueError("two leads share the same where: " + ", ".join(dup)
+                         + "; make `where` unique (for example add a line range or a suffix)")
+    by_where: dict[str, dict] = {}
+    for v in verdicts:
+        w = str(v.get("where"))
+        if w in by_where and by_where[w] != v:
+            raise ValueError(f"verdicts for {w} disagree ({by_where[w].get('verdict')} vs {v.get('verdict')}); "
+                             "keep one verdict per where")
+        by_where[w] = v
+    known = set(seen)
     unmatched = sorted(w for w in by_where if w not in known)
     if unmatched:
         raise ValueError("verdicts match no lead: " + ", ".join(unmatched))
