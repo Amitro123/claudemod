@@ -27,7 +27,7 @@ Each lead has a mechanism and an impact, and they are two claims. Trace the impa
 from the failing point (what runs after it, what it skips), or cite where the host's behaviour is
 written, or mark it unverified. A mechanism you read doesn't make its impact read.
 Impact that depends on unobserved host behaviour: level `unverified`, flag `needs-host-check`.
-Label rules (security gate with `security_actor`, needs-host-check, `change_status`, `reach`/`reach_when`, traced claims, `not_verified`): references/labels.md. `security` needs `security_input`, `security_boundary`, `security_sink`, `security_actor`. Give `change_status` and `reach` (+ `reach_when`) on every lead. Every factual sub-claim in `what` must have been traced or run; put any other in `not_verified`, or drop it. A `reproduced` or `read` lead needs a `probe`; give `test_kind` and, when known, `downstream`.
+Label rules (security gate with `security_actor`, needs-host-check, `change_status`, `reach`/`reach_when`, traced claims, `not_verified`): references/labels.md. `security` needs `security_input`, `security_boundary`, `security_sink`, `security_actor`. Give `change_status` and `reach` (+ `reach_when`) on every lead. Every factual sub-claim in `what` must have been traced or run; put any other in `not_verified`, or drop it. A `reproduced` or `read` lead needs a `probe`; give `test_kind` and, when known, `downstream`. A change that replaces a refusal with a degrade path lists that path's own failure modes in `downstream`.
 
 When the case file is written, reply with at most 300 words:
 - **Findings**: the verdict, and the open leads by level;

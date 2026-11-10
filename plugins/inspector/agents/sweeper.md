@@ -25,6 +25,8 @@ Never end without a reply.
 2. The other readers of a format or value a fix changed.
 3. Promises with no test that would fail if they broke.
 4. The seams: what crosses each, and who checks it.
+5. Ignore and exception files (scanner ignore lists, lint suppressions, allowlists): grep them for dates and past `exp:`/expiry entries; for what an exception justifies, grep that the code reaches it (for example, whether it imports the library the exception names).
+6. Files that play the same role (clients, transports, pipelines, templates): a guard present in one and missing in another is a lead, `sibling of <file>`.
 
 ## Reply
 

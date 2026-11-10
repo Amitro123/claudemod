@@ -20,4 +20,10 @@ A failed or missing run: an alert, a freshness check, a visible "last updated". 
 ## 6. How readers join the table
 Dashboards and queries that inner-join, or filter on, a table that may be stale or lack the row drop rows silently. A left join shows the gap.
 
+## 7. Where the job's logs live
+Before writing any alert or log query, name the workspace, service or place the job's logs go to, from its own configuration (diagnostic settings, a logging block). It may differ from the workspace of the data table. If the configuration is not in the repository, say so in `not_verified`.
+
+## 8. Deploy order and schema skew
+When a change adds a field the job sends to a typed sink, the sink's schema goes first. The lead says what an old image with the new schema does and what a new image with the old schema does (works, or drops rows silently).
+
 Probe for each step: the line read or command run goes in the lead's `probe`.
