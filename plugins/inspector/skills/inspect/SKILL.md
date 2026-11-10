@@ -58,8 +58,8 @@ and an earlier case file, ask once: "since the last case file, or the whole hist
 one to answer, use since the last one.
 
 **Order for you, the main conversation:** run the collector first (step 2), then hand the work
-over as step 3 says. With a budget of up to 6, the investigator does step 1 and the rest; with more,
-you do step 1 while the case readers work. The steps below are the method, for whoever does them.
+over as step 3 says. With 1-2 cases, the investigator does step 1 and the rest; with 3 or more,
+follow references/parallel.md. The steps below are the method, for whoever does them.
 
 ## 1. The brief: what was the project meant to do?
 
@@ -204,7 +204,8 @@ worker in a clean context, briefed well, found more of the bugs that were fixed 
 in every run, against 1-3) than the main conversation reading on its own. The main context stayed
 a tenth of the size; the cost and time about doubled.
 
-- **A budget of up to 6 cases: one `investigator`** (it ships with this plugin and runs on
+- **3 or more cases: parallel, by default.** Follow `<skill_root>/references/parallel.md` (collector and brief-writer, then one `case-reader` per case plus a `sweeper`, all in one message). The two bullets below apply to 1-2 cases (one `investigator`) or to the readers' brief.
+- **1 or 2 cases: one `investigator`** (it ships with this plugin and runs on
   Sonnet). Its brief, in a few short paragraphs, ends with the case file's path:
   - the repository's absolute path, the scope, and the ref the collector read;
   - what the collector found: the cases to work, in order, with each one's `--dossier` command;
