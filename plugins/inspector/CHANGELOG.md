@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Outside-in sweep: rendered output (HTML, e-mail, markdown, dashboard, chat message) is a sink class in questions 1 and 2 with an edge-payload probe, and a closing "Edge payloads" section: `reproduced` only if an edge payload was run, else `suspect`.
 - Outside-in sweep: `references/outside-in.md` (eight questions: trust boundaries, context injection, secrets in logs, enforcement versus text, command construction, destructive writes, loss paths, packaging) and an `Outside-in mode` in the sweeper; the parallel recipe runs three sweepers (code, docs, outside-in).
 - Fixed: case-reader and sweeper must write strict JSON (doubled backslashes) and validate the file; `merge_cards.py --repair-escapes` (opt-in) repairs invalid escapes in a card, logs it and keeps `<name>.orig`; default still refuses.
 - Sweeper writes its JSON leads to `<tmp>/sweep-<k>.json` itself (tool `Write` added) and replies with the path and lead count; the merge step reads those files. Case-reader likewise writes its card to the path in its prompt (tool `Write` added) and replies with the card; no path means reply only.

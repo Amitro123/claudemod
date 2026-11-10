@@ -16,17 +16,22 @@ until parsed or run read-only. Expected lead fields are listed per question; eve
 
 Look for: every place text from outside the trust zone (a third party, an API or vendor response,
 another user or tenant, an outside PR author, a file a stranger can edit) reaches a model, a shell,
-a file or a commit. Probe: grep readers of external input (network calls, issue or PR text, files
-under shared folders, environment) and follow each to its first sink. Fields: `category: security`
+a file, a commit or rendered output (HTML, e-mail, markdown, a dashboard or chat message). Probe: grep
+readers of external input (network calls, issue or PR text, files under shared folders,
+environment) and follow each to its first sink. For a rendered-output sink: send or render one
+payload containing markup (`<script>`, `<b>`, a link, a long line, an empty or missing optional
+field) through the real or a stubbed renderer and read the produced body; reading the template is
+not enough. Fields: `category: security`
 only if all four are filled; `security_input` = the text, `security_boundary` = where trust ends,
 `security_sink` = model, shell, file or commit at `path:line`, `security_actor` = the outsider;
 `reach` = default-on or conditional.
 
 ## 2. Injection into session or agent context
 
-Look for: text added to a session, prompt, memory or agent context by a hook, script or tool. Is it
+Look for: text added to a session, prompt, memory, agent context or rendered output (HTML,
+e-mail, markdown, a dashboard or chat message) by a hook, script, template or tool. Is it
 size-limited, marked as data (not instructions), and who else can write the source? Probe: find
-hook output and context-injection code; check for a length cap, a delimiter or "data, not
+hook output and context-injection code (for rendered output, run the edge payload from question 1); check for a length cap, a delimiter or "data, not
 instructions" wording, and the file permissions or shared location of the source. Fields:
 `security_input` = the injected text, `security_boundary` = the context window, `security_sink` =
 the model reading it, `security_actor` = whoever can write the source; `reach` = `conditional` on
@@ -85,3 +90,10 @@ what ships in the package (files that should not, files that are missing, genera
 date). Probe: run the documented validator or a dry run on a copy, list the package contents,
 grep registrations for duplicates. Fields: `category: broken-flow`, `breaks` = the install claim,
 `reach` = default-on for a fresh install.
+
+## Edge payloads
+
+For any template, workflow or formatter that consumes external fields, a lead is `level: reproduced`
+only if an edge payload was actually run through it (markup, a long value, an empty or missing
+optional field) and the produced output was read. Otherwise the lead is `suspect`, with
+`not_verified` naming the payload that was not run.
