@@ -106,3 +106,16 @@ def test_unique_locations_unchanged_and_drop_only_the_verdict_holder(tmp_path, c
 def test_verdict_matching_no_lead_still_errors(tmp_path, capsys):
     code, _, err = run(tmp_path, capsys, [lead("a.py:1")], [verdict("zzz:9")])
     assert code == 2 and "zzz:9" in err
+
+
+def test_repeated_verdicts_flags_all_honoured_and_counted(tmp_path, capsys) -> None:
+    lf, out = tmp_path / "l.json", tmp_path / "o.json"
+    lf.write_text(json.dumps([lead("a.py:1"), lead("b.py:2")]), encoding="utf-8")
+    v1, v2 = tmp_path / "v1.json", tmp_path / "v2.json"
+    v1.write_text(json.dumps([verdict("a.py:1", "REAL")]), encoding="utf-8")
+    v2.write_text(json.dumps([verdict("b.py:2", "NOT REAL")]), encoding="utf-8")
+    code = merge_verdicts.main(["--leads", str(lf), "--verdicts", str(v1), "--verdicts", str(v2), "--out", str(out)])
+    err = capsys.readouterr().err
+    merged = json.loads(out.read_text(encoding="utf-8"))
+    assert code == 0 and [m["verdict"] for m in merged] == ["REAL", "NOT REAL"]
+    assert f"verdicts file {v1}: 1 verdicts" in err and f"verdicts file {v2}: 1 verdicts" in err

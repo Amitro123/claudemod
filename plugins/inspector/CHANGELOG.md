@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed: `merge_cards.py --sweep` and `merge_verdicts.py --verdicts` kept only the last occurrence when repeated, silently dropping earlier files; every occurrence is now honoured (also mixed with `--sweep a b`), and each file's lead count is printed to stderr. A missing sweep path still exits 2.
 - `merge_cards.py`: leads in the same file whose line ranges intersect are flagged `possible_duplicate_of` each way even when the wording differs, and listed under "Possible duplicates (kept)" with the reason (`lines overlap` or `similar wording`); nothing is merged or dropped for it.
 - `lint_leads.py` L9: a `verified` change that contains a query or command to run against data (`| where`, `| summarize`, `SELECT ... FROM`, Kusto, `az monitor log-analytics query`) with no probe naming a read-only run warns.
 - `handoff.py`: a lead with `observed_in_production: yes` now sorts above a higher-level lead whose production state is unknown or `no` (then level, reach, verdict).

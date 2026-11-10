@@ -26,7 +26,7 @@ small context, so six cases take about 6-9 minutes instead of 11-23 in one inves
 
    Each of the three gets its own `<k>`. Split the code sweep further when the collector lists
    hotspots in two or more top-level areas: one per area, each prompt adds `Scope: <paths>` and its own `<k>`. Each sweeper writes its own file; the main conversation saves nothing.
-3. **Merge (no agent).** `python scripts/merge_cards.py --cards <tmp>/cards --sweep <tmp>/sweep-*.json
+3. **Merge (no agent).** `python scripts/merge_cards.py --cards <tmp>/cards --sweep <tmp>/sweep-1.json <tmp>/sweep-2.json ...
    --expect <ids of the readers you started, e.g. 1,2,3,4,5,6> --out <tmp>/leads.json --log <tmp>/dedupe.md`.
    It exits 2 naming any expected card that is missing or unparsable (ask that reader to write it;
    never merge from memory; `--repair-escapes` opts in to doubling stray backslashes in a card, logged, original kept as `.orig`), keeps every lead word for word, merges only exact duplicates

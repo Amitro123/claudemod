@@ -90,13 +90,18 @@ def merge(leads: list[dict], verdicts: list[dict]) -> tuple[list[dict], int]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--leads", required=True)
-    ap.add_argument("--verdicts", required=True, nargs="+")
+    ap.add_argument("--verdicts", required=True, nargs="+", action="extend",
+                    help="verdict files; every occurrence of the flag counts")
     ap.add_argument("--out")
     ap.add_argument("--drop-not-real", action="store_true")
     a = ap.parse_args(argv)
     try:
         leads = load_array(a.leads, "leads")
-        verdicts = [v for p in a.verdicts for v in load_array(p, "verdicts")]
+        verdicts = []
+        for p in a.verdicts:
+            one = load_array(p, "verdicts")
+            print(f"verdicts file {p}: {len(one)} verdicts", file=sys.stderr)
+            verdicts += one
         merged, relabelled = merge(leads, verdicts)
     except ValueError as e:
         print(f"merge_verdicts: {e}", file=sys.stderr)
