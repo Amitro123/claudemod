@@ -1,5 +1,9 @@
 # Inspector changelog
 
+## Unreleased
+
+- Release-confidence tooling (maintainers only, nothing shipped in the skill): `tests/test_doc_commands.py` runs the commands the docs document (SKILL.md, references/, agents/) against a temporary workspace and fails if too few are found, with explicit multi-flag cases for `merge_cards`, `merge_verdicts`, `lint_leads`, `crosscheck` and `handoff`.
+
 ## 0.6.0 (2026-11-10)
 
 - Fixed: `merge_cards.py --sweep` and `merge_verdicts.py --verdicts` kept only the last occurrence when repeated, silently dropping earlier files; every occurrence is now honoured (also mixed with `--sweep a b`), and each file's lead count is printed to stderr. A missing sweep path still exits 2.
