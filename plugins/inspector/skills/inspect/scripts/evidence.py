@@ -497,7 +497,9 @@ class BlameCache:
 # Part of every blame cache key. RULE: bump it whenever what a blame entry stores, or how it is computed
 # (blame flags, filtering of trivial lines, range handling, ignore handling), changes; otherwise stale
 # disk entries from an older collector would be reused silently. v2: removal/ignore changes on fix/inspector-precision.
-BLAME_CACHE_VERSION = "v2"
+# v3: entries written while the repository was shallow may hold a wrong attribution (blame stops at the clone's
+# boundary and the entry survived `git fetch --unshallow`); the cache is now bypassed on a shallow repository.
+BLAME_CACHE_VERSION = "v3"
 
 
 def _blame_key(parent: str, old: str, ranges: list[tuple[int, int]], ignore_id: str) -> str:
@@ -764,12 +766,15 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
             ignore_id = "unreadable"
     if excludes is None:
         excludes = effective_excludes(path, roots - MONOREPO_ROOTS)
-    cache = BlameCache(None if not use_cache else (cache_dir or os.path.join(info.git_dir, "inspector", "cache")))
+    cache_folder = None if not use_cache else (cache_dir or os.path.join(info.git_dir, "inspector", "cache"))
+    # A shallow repository's blame stops at the boundary, and the same (parent, file, ranges) key gives a different
+    # answer once history is fetched: no read, no write of the blame cache until the clone is complete.
+    cache = BlameCache(None if shallow else cache_folder)
 
     worked = [u for u in units if u.sha in work_shas]
     gh_bodies, gh_warnings = None, []
     if github:
-        gh_bodies = github_phase(repo, worked, workers, cache.folder, gh_run or gh_runner, gh_warnings)
+        gh_bodies = github_phase(repo, worked, workers, cache_folder, gh_run or gh_runner, gh_warnings)
     jobs = [(u, c) for u in worked if u.is_fix and u.verdict != "removal" for c in u.commits if c.get("is_fix")]
 
     def analyze(job):
