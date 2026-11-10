@@ -6,6 +6,9 @@
 - INS-06: `lint_leads.py` rejects malformed `complete` / `complete.siblings` with exit 2, also without `--strict`.
 - INS-05: `merge_verdicts.py` exits 2 on duplicate lead `where` and on conflicting verdicts for one `where`.
 - INS-01: `handoff.py` prints `verifier:` evidence and `would settle:`, and lists NOT REAL leads in a separate "Rejected by the verifier" section.
+- Fixed: the blame cache is no longer used on a shallow repository, so `git fetch --unshallow` no longer leaves a stale attribution; BLAME_CACHE_VERSION v3.
+- Fixed: cached GitHub PR data now expires after 7 days; new `--refresh-github` re-reads it (a failed read keeps the old entry); GH_CACHE_VERSION v2.
+- Method rules: queries stay unverified until parsed or run read-only; production-noted failures sort first; log location, deploy order, dated exceptions, same-role siblings, allowlist counts, degrade-path failure modes.
 
 ## 0.5.0 (candidate, not published)
 
