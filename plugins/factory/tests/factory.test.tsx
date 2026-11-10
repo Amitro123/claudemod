@@ -1028,6 +1028,24 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     expect(w.sends.at(-1)?.text ?? last(w).prompt).toContain('Retry-After is in ms, not seconds')
   })
 
+  test('two findings alike from one reviewer each take their own ruling, not the first one\'s', async ($, on) => {
+    const w = engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', `${CHANGES}\n- [major] src/mw.ts:12 Retry-After is in ms, not seconds`)
+    const prompt = last(w).prompt
+    expect(prompt).toContain('F1. code [major] src/mw.ts:12 Retry-After is in ms, not seconds')
+    expect(prompt).toContain('F2. code [major] src/mw.ts:12 Retry-After is in ms, not seconds')
+    await answer($, 'a5', 'F1: STANDS the unit is wrong at src/mw.ts:12\nF2: REFUTED the header is already in seconds, src/mw.ts:12')
+    // One stands, one refuted: the builder gets exactly one of the two, not both and not none.
+    const toBuilder = w.sends.at(-1)?.text ?? last(w).prompt
+    expect(toBuilder.match(/Retry-After is in ms, not seconds/g)).toHaveLength(1)
+    expect(w.spawned.filter(a => a.subagentType === 'factory:builder')).toHaveLength(2)
+  })
+
   test('with the skeptic option off, the findings go straight to the builder', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
     const w = engine(on)
     await startRun($)
@@ -1180,6 +1198,9 @@ describe('the parsers', () => {
     expect(parseVerdict(CHANGES)).toEqual({ state: 'changes', findings: [{ severity: 'major', where: 'src/mw.ts:12', text: 'Retry-After is in ms, not seconds' }] })
     expect(parseVerdict('looks fine').state).toBe('changes')
     expect(parseVerdict('VERDICT: PASS\n- [blocker] a.ts:1 secret in code').state).toBe('changes')
+    // A PASS that lists a major finding disagrees with itself: changes, like a blocker. A minor one may stand under a pass.
+    expect(parseVerdict('VERDICT: PASS\nFINDINGS:\n- [major] a.ts:1 wrong').state).toBe('changes')
+    expect(parseVerdict('VERDICT: PASS\nFINDINGS:\n- [minor] a.ts:1 a name could be clearer').state).toBe('pass')
   })
 
   test('decisions: no decision is none (null); both is an escalation', () => {

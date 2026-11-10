@@ -181,7 +181,9 @@ export function parseNotChecked(answer: string): string[] | undefined {
 }
 
 // A reviewer ends with:  VERDICT: PASS | CHANGES  and  FINDINGS:  "- [major] path:line what and why".
-// No verdict, or both, reads as CHANGES, so a confused reviewer can't wave a change through.
+// No verdict, or both, reads as CHANGES, so a confused reviewer can't wave a change through. So does
+// a PASS that lists a blocker or major finding: the verdict and the findings disagree, and the safe
+// reading is changes (minor ones may stand under a pass).
 export function parseVerdict(answer: string): { state: 'pass' | 'changes'; findings: Finding[]; understood?: string; notChecked?: string[] } {
   const verdict = marker(answer, 'VERDICT', 'PASS|CHANGES', 'CHANGES')
   const findings: Finding[] = []
@@ -201,8 +203,8 @@ export function parseVerdict(answer: string): { state: 'pass' | 'changes'; findi
   const said = { ...(understood ? { understood } : {}), ...(notChecked ? { notChecked } : {}) }
   if (!verdict.value) return { state: 'changes', findings: [{ severity: 'major', where: '-', text: 'The reviewer gave no VERDICT line.' }, ...findings], ...said }
   if (verdict.mixed) return { state: 'changes', findings: [{ severity: 'major', where: '-', text: 'The reviewer gave both VERDICT: PASS and VERDICT: CHANGES.' }, ...findings], ...said }
-  // A PASS that still lists a blocker isn't a pass.
-  const state = verdict.value === 'PASS' && !findings.some(f => f.severity === 'blocker') ? 'pass' : 'changes'
+  // A PASS that still lists a blocker or major finding isn't a pass.
+  const state = verdict.value === 'PASS' && !findings.some(f => f.severity !== 'minor') ? 'pass' : 'changes'
   return { state, findings, ...said }
 }
 
