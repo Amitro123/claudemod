@@ -1,5 +1,12 @@
 # Inspector changelog
 
+## Unreleased
+
+- INS-02: `leadsio.py` is the one reader and validator for lint, handoff and crosscheck; `--cards merged.json` (a file) now works, errors name file and item path and exit 2 before any output is written.
+- INS-06: `lint_leads.py` rejects malformed `complete` / `complete.siblings` with exit 2, also without `--strict`.
+- INS-05: `merge_verdicts.py` exits 2 on duplicate lead `where` and on conflicting verdicts for one `where`.
+- INS-01: `handoff.py` prints `verifier:` evidence and `would settle:`, and lists NOT REAL leads in a separate "Rejected by the verifier" section.
+
 ## 0.5.0 (candidate, not published)
 
 Since 0.3.1:

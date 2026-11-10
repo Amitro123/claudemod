@@ -11,11 +11,12 @@ Rules L1-L8: references/labels.md says what each label means.
 from __future__ import annotations
 
 import argparse
-import glob
-import json
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import leadsio  # noqa: E402
 
 OWNER_ACTOR_RE = re.compile(
     r"\b(owner|maintainers?|we|our|same team|own repo(?:sitory)?|the person|the user themselves?|"
@@ -130,32 +131,8 @@ def lint(lead: dict) -> list[Finding]:
     return [f for r in RULES for f in r(lead)]
 
 
-def leads_of(items: list) -> list[dict]:
-    out = []
-    for x in items:
-        if not isinstance(x, dict):
-            raise ValueError("expected an object")
-        c = x.get("complete")
-        sibs = c.get("siblings") if isinstance(c, dict) else None
-        out.extend(s for s in (sibs if isinstance(sibs, list) else [x] if "where" in x or "what" in x else [])
-                   if isinstance(s, dict))
-    return out
-
-
 def load(src: str) -> list[dict]:
-    if src == "-":
-        raw = sys.stdin.read()
-        if not raw.strip():
-            raise ValueError("stdin is empty; use [] for an intentionally empty result")
-        data = json.loads(raw)
-        return leads_of(data if isinstance(data, list) else [data])
-    paths = sorted(glob.glob(os.path.join(src, "*.json"))) if os.path.isdir(src) else [src]
-    items: list = []
-    for p in paths:
-        with open(p, encoding="utf-8") as f:
-            d = json.load(f)
-        items.extend(d if isinstance(d, list) else [d])
-    return leads_of(items)
+    return leadsio.leads_of(leadsio.read_items(src))
 
 
 def main(argv=None) -> int:
@@ -165,7 +142,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     try:
         leads = load(a.leads)
-    except (OSError, ValueError) as exc:
+    except leadsio.LeadsError as exc:
         print(f"lint_leads.py: invalid input: {exc}", file=sys.stderr)
         return 2
     warns = 0

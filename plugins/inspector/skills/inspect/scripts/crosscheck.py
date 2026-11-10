@@ -26,6 +26,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # also under `python -I`
+import leadsio  # noqa: E402
 import snapshot  # noqa: E402
 
 
@@ -143,52 +144,11 @@ def markdown(r: dict) -> str:
 
 
 def read_cards(src: str) -> tuple[list[dict], list[str]]:
-    """Read objects/arrays consistently; never turn invalid input into an empty success."""
-    cards, bad = [], []
-
-    def accept(obj, label):
-        for i, item in enumerate(obj if isinstance(obj, list) else [obj]):
-            if not isinstance(item, dict):
-                bad.append(f"{label}[{i}]: expected an object")
-                continue
-            if any(item.get(k) is not None and not isinstance(item[k], dict)
-                   for k in ("complete", "culprit", "mechanism")):
-                bad.append(f"{label}[{i}]: malformed card fields")
-                continue
-            complete = item.get("complete") or {}
-            siblings, clear = complete.get("siblings", []), complete.get("checked_clear", [])
-            if (not isinstance(siblings, list) or any(not isinstance(x, dict) for x in siblings)
-                    or not isinstance(clear, list) or any(not isinstance(x, str) for x in clear)):
-                bad.append(f"{label}[{i}]: malformed complete.siblings or checked_clear")
-                continue
-            cards.append(item)
-
-    if src == "-":
-        text = sys.stdin.read().strip()
-        if not text:
-            return [], ["stdin is empty; use [] for an intentionally empty result"]
-        dec, i = json.JSONDecoder(), 0
-        while i < len(text):
-            while i < len(text) and text[i] in " \t\r\n,":
-                i += 1
-            if i >= len(text):
-                break
-            try:
-                obj, i = dec.raw_decode(text, i)
-            except ValueError:
-                bad.append(f"stdin at character {i}")
-                break
-            accept(obj, "stdin")
-        return cards, bad
-    if not os.path.isdir(src):
-        return [], [f"cards directory does not exist: {src}"]
-    for p in sorted(glob.glob(os.path.join(src, "*.json"))):
-        try:
-            with open(p, encoding="utf-8") as f:
-                accept(json.load(f), os.path.basename(p))
-        except (OSError, ValueError) as exc:
-            bad.append(f"{os.path.basename(p)}: {exc}")
-    return cards, bad
+    """Cards and problems, via the shared reader; invalid input is never an empty success."""
+    try:
+        return leadsio.read_items(src), []
+    except leadsio.LeadsError as exc:
+        return [], [str(exc)]
 
 
 def main(argv=None) -> int:
@@ -204,7 +164,7 @@ def main(argv=None) -> int:
     ap.add_argument("--max-blame-lines", type=int, default=400)
     ap.add_argument("--min-lines", type=int, default=3)
     ap.add_argument("--component-root", action="append", default=[])
-    ap.add_argument("--cards", required=True, help="a folder of case cards (*.json), or - for stdin")
+    ap.add_argument("--cards", required=True, help="a folder of case cards (*.json), a .json file, or - for stdin")
     ap.add_argument("--json", help="write the result here too")
     a = ap.parse_args(argv)
     a.path = snapshot.scope_path(a.path)

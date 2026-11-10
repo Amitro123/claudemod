@@ -409,12 +409,13 @@ def test_verdict_false_claims_and_relabel_are_printed_and_sorted(monkeypatch, ca
                   original_reach="opt-in")]
     _, out, _ = run(monkeypatch, capsys, leads)
     rows = _rows(out)
-    assert "[verdict: unverified]" in rows["u.py:1"] and "[verdict: NOT REAL]" in rows["n.py:1"]
+    assert "[verdict: unverified]" in rows["u.py:1"] and "n.py:1" not in rows   # NOT REAL: own section, not the table
     assert "false claims: it crashes; it loses data" in rows["r.py:1"]
     assert "relabelled: category security -> broken-flow" in rows["r.py:1"] and "relabelled: reach opt-in -> default-on" in rows["r.py:1"]
     assert "relabelled" not in rows["l.py:1"] and "false claims" not in rows["l.py:1"]
     assert [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l] == [
-        "r.py:1", "l.py:1", "v.py:1", "u.py:1", "n.py:1"]
+        "r.py:1", "l.py:1", "v.py:1", "u.py:1"]
+    assert out.split("## Rejected by the verifier")[1].count("`n.py:1`") == 1
     assert "Verified: 1 real, 1 real-low, 1 unverifiable, 1 not real, 1 unverified" in out
 
 
@@ -435,3 +436,66 @@ def test_merge_verdicts_output_renders_through_handoff(tmp_path, monkeypatch, ca
     assert code == 0 and "[verdict: REAL-LOW]" in row and "false claims: attacker controls the input" in row
     assert "relabelled: category security -> broken-flow" in row and "not verified: host behaviour" in row
     assert "[verdict: unverified]" in _rows(out)["b.py:2"]
+
+
+def _verdict_flow(monkeypatch, capsys, leads, verdicts):
+    import merge_verdicts
+    merged, _ = merge_verdicts.merge(leads, verdicts)
+    return run(monkeypatch, capsys, merged)
+
+
+def _l(where, what="w", **kw):
+    return {"where": where, "what": what, "level": "read", "probe": "p", "reach": "default-on", "category": "broken-flow", **kw}
+
+
+def test_unverifiable_keeps_verdict_and_what_would_settle_it(monkeypatch, capsys) -> None:
+    _, out, _ = _verdict_flow(monkeypatch, capsys, [_l("a.py:1", not_verified=["own note"])],
+                              [{"where": "a.py:1", "verdict": "UNVERIFIABLE", "evidence": "no host",
+                                "unverifiable": ["run it on the target host"]}])
+    row = _rows(out)["a.py:1"]
+    assert "[verdict: UNVERIFIABLE]" in row and "would settle: run it on the target host" in row
+    assert "verifier: no host" in row and "not verified: own note" in row
+
+
+def test_rejected_subclaim_visible_while_mechanism_is_real(monkeypatch, capsys) -> None:
+    _, out, _ = _verdict_flow(monkeypatch, capsys, [_l("a.py:1")],
+                              [{"where": "a.py:1", "verdict": "REAL", "evidence": "probe shows the loop skip",
+                                "false_claims": ["it also loses data"]}])
+    row = _rows(out)["a.py:1"]
+    assert "[verdict: REAL]" in row and "false claims: it also loses data" in row
+    assert "verifier: probe shows the loop skip" in row
+
+
+def test_not_real_goes_to_rejected_section_only(monkeypatch, capsys) -> None:
+    _, out, _ = _verdict_flow(monkeypatch, capsys, [_l("a.py:1", "keep me"), _l("b.py:2", "claims a crash")],
+                              [{"where": "a.py:1", "verdict": "REAL", "evidence": "ok"},
+                               {"where": "b.py:2", "verdict": "NOT REAL", "evidence": "guarded at c.py:5",
+                                "false_claims": ["crash"]}])
+    table, _, rejected = out.partition("## Rejected by the verifier")
+    assert "b.py:2" not in table and "a.py:1" in table
+    assert "`b.py:2`" in rejected and "guarded at c.py:5" in rejected and "crash" in rejected and "claims a crash" in rejected
+    assert "a.py:1" not in rejected
+    assert "Verified: 1 real, 0 real-low, 0 unverifiable, 1 not real, 0 unverified" in out
+
+
+def test_no_rejected_section_without_rejections(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, [CARD])
+    assert "Rejected by the verifier" not in out
+
+
+def test_real_low_keeps_corrected_labels_and_missing_verdict_is_visibly_unverified(monkeypatch, capsys) -> None:
+    _, out, _ = _verdict_flow(monkeypatch, capsys, [_l("a.py:1", category="security", reach="opt-in"), _l("b.py:2")],
+                              [{"where": "a.py:1", "verdict": "REAL-LOW", "evidence": "e",
+                                "corrected": {"category": "hardening", "reach": "conditional"}}])
+    rows = _rows(out)
+    assert "relabelled: category security -> hardening" in rows["a.py:1"]
+    assert "relabelled: reach opt-in -> conditional" in rows["a.py:1"]
+    assert "[verdict: unverified]" in rows["b.py:2"]
+
+
+def test_drop_not_real_still_removes_the_lead_completely(tmp_path, monkeypatch, capsys) -> None:
+    import merge_verdicts
+    merged, _ = merge_verdicts.merge([_l("a.py:1"), _l("b.py:2")], [{"where": "b.py:2", "verdict": "NOT REAL"}])
+    merged = [m for m in merged if m["verdict"] != "NOT REAL"]
+    _, out, _ = run(monkeypatch, capsys, merged)
+    assert "b.py:2" not in out and "Rejected by the verifier" not in out
