@@ -7,7 +7,7 @@ This copies each lead's words and levels from the case cards (their `complete.si
 investigator's list of leads, and lets the caller only drop a lead or lower a level. A note the
 caller adds is marked as theirs and unverified.
 
-    python handoff.py --cards <folder of cards> | - [--out file.md] [--title T]
+    python handoff.py --cards <folder | file.json | ->  [--out file.md] [--title T]
                       [--lower 'path:line=suspect'] [--drop 'path:line'] [--note 'path:line=text']
 """
 from __future__ import annotations
@@ -18,21 +18,11 @@ import sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from crosscheck import read_cards  # noqa: E402
+import leadsio  # noqa: E402
 
 SEC_FIELDS = ("security_input", "security_boundary", "security_sink", "security_actor")
 REACH_ORDER = {"default-on": 0, "conditional": 1, "unknown": 2, "opt-in": 3}
 RANK = {"reproduced": 3, "read": 2, "suspect": 1, "unverified": 0}
-
-
-def leads_of(items: list[dict]) -> list[dict]:
-    """A case card gives its complete.siblings; an investigator's list gives the leads themselves."""
-    out = []
-    for x in items:
-        sibs = (x.get("complete") or {}).get("siblings") if isinstance(x.get("complete"), dict) else None
-        for s in (sibs if sibs is not None else [x] if "where" in x else []):
-            out.append({**s, "case": x.get("case") or x.get("unit") or s.get("case") or ""})
-    return out
 
 
 def level_word(v: object) -> str:
@@ -203,22 +193,23 @@ def pairs(values: list[str]) -> dict[str, str]:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--cards", required=True, help="a folder of cards (*.json), or - for stdin (cards or leads)")
+    ap.add_argument("--cards", required=True, help="a folder of cards (*.json), a .json file, or - for stdin (cards or leads)")
     ap.add_argument("--out", help="write the list here too")
     ap.add_argument("--title", default="Open leads, for whoever fixes them")
     ap.add_argument("--lower", action="append", default=[], help="'path:line=level': lower that lead's level")
     ap.add_argument("--drop", action="append", default=[], help="'path:line': leave that lead out")
     ap.add_argument("--note", action="append", default=[], help="'path:line=text': add a note, marked as yours and unverified")
     a = ap.parse_args(argv)
-    items, bad = read_cards(a.cards)
-    if bad:
-        print("handoff.py: invalid cards: " + "; ".join(bad), file=sys.stderr)
+    try:
+        items = leadsio.read_items(a.cards)
+    except leadsio.LeadsError as exc:
+        print(f"handoff.py: invalid cards: {exc}", file=sys.stderr)
         return 2
     warns: list[str] = []
-    text, errors = build(leads_of(items), pairs(a.lower), {d.strip().strip("`") for d in a.drop}, pairs(a.note), a.title, warns)
+    text, errors = build(leadsio.leads_of(items), pairs(a.lower), {d.strip().strip("`") for d in a.drop}, pairs(a.note), a.title, warns)
     for w in warns:
         print(f"handoff.py: warning: {w}", file=sys.stderr)
-    for e in errors + [f"unreadable: {b}" for b in bad]:
+    for e in errors:
         print(f"handoff.py: {e}", file=sys.stderr)
     if errors:
         return 2
