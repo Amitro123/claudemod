@@ -44,3 +44,11 @@ def test_case_reader_writes_card_when_given_a_path() -> None:
     assert "Write" in t.split("---")[1].split("tools:")[1].splitlines()[0]
     assert "write the card there first" in t and "reply with the card only" in t
     assert "write no file at all" not in t
+
+
+def test_main_conversation_orchestrates_rule_is_pinned() -> None:
+    for f in ("skills/inspect/SKILL.md", "skills/inspect/references/parallel.md"):
+        t = " ".join(_t(f).split())
+        assert "cannot start agents" in t, f
+    assert "main conversation orchestrates" in " ".join(_t("skills/inspect/SKILL.md").split())
+    assert "Do not collapse the run into one worker" in _t("skills/inspect/references/parallel.md")

@@ -1,5 +1,9 @@
 # Inspector changelog
 
+## Unreleased
+
+- Fixed: a delegation or routing rule could hand the whole run to one worker, which cannot start agents, so the parallel recipe ran serially. SKILL.md and `references/parallel.md` now say the main conversation orchestrates and starts the readers, sweepers and verifiers itself; pinned by a test.
+
 ## 0.6.0 (2026-11-10)
 
 - Fixed: `merge_cards.py --sweep` and `merge_verdicts.py --verdicts` kept only the last occurrence when repeated, silently dropping earlier files; every occurrence is now honoured (also mixed with `--sweep a b`), and each file's lead count is printed to stderr. A missing sweep path still exits 2.
