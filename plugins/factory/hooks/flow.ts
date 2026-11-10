@@ -87,7 +87,7 @@ export function parseTasks(answer: string): SpecTask[] {
   if (at < 0) return []
   const out: SpecTask[] = []
   for (const raw of answer.slice(at + 6).split('\n')) {
-    const m = /^\s*\d+[.)]\s*\[(high|medium|low)\]\s*(.+?)\s*(?:\(needs ([\d,\s]+(?:(?:and|&)\s*\d+)?)\))?\s*$/i.exec(raw)
+    const m = /^\s*(?:[-*•]\s+(?:\d+[.)]\s*)?|\**\d+[.)]\**\s*)\**\[(high|medium|low)\]\**[\s:—–-]*(.+?)\s*(?:\(needs ([\d,\s]+(?:(?:and|&)\s*\d+)?)\))?\s*$/i.exec(raw)
     if (!m) continue
     out.push({ title: m[2]!.trim(), priority: m[1]!.toLowerCase() as SpecTask['priority'], dependsOn: ((m[3] ?? '').match(/\d+/g) ?? []).map(Number) })
   }
@@ -144,13 +144,21 @@ function marker(answer: string, key: string, options: string, safe: string): { v
     // Bold anywhere around the key or the value (**VERDICT:** PASS, **VERDICT**: PASS, VERDICT: **PASS**)
     // is still the marker: it read as no verdict before (inspector open-bugs #8).
     const all = [...line.matchAll(new RegExp(`${key}\\**:\\**\\s*\\**\\s*(${options})`, 'gi'))]
-    if (all.length === 1) found.add(all[0]![1]!.toUpperCase())
+    if (all.length !== 1) continue
+    // "VERDICT: PASS | CHANGES", "PASS or CHANGES": the options listed, the prompt's placeholder echoed,
+    // not a choice. The same as no marker on that line.
+    const rest = line.slice(all[0]!.index! + all[0]![0].length)
+    if (new RegExp(`^\\**\\s*(?:\\||/|,|\\bor\\b)\\s*\\**\\s*(?:${key}\\**:\\**\\s*\\**\\s*)?(?:${options})\\b`, 'i').test(rest)) continue
+    found.add(all[0]![1]!.toUpperCase())
   }
   if (found.size > 1) return { value: safe, mixed: true }
   return { value: [...found][0], mixed: false }
 }
 
-const FINDING = /^\s*[-*]\s*\[(blocker|major|minor)\]\s+(\S+)\s+[—–-]?\s*(.+)$/i
+// "- [major] path:line text", also "1. [major] ...", "**[major]** ..." and "- **[major]** ...". The words
+// critical and high say blocker and major; medium and low say minor.
+const FINDING = /^\s*(?:[-*•]|\d+[.)])?\s*\**\[(blocker|critical|major|high|minor|medium|low)\]\**\s+(\S+)\s+[—–-]?\s*(.+)$/i
+const SEVERITY: Record<string, Severity> = { blocker: 'blocker', critical: 'blocker', major: 'major', high: 'major', minor: 'minor', medium: 'minor', low: 'minor' }
 const isNone = (t: string) => /^(none|nothing|n\/a|-)?\.?$/i.test(t.trim())
 
 // The reviewer's own words for what the change must do: its UNDERSTOOD line, the last one.
@@ -193,7 +201,7 @@ export function parseVerdict(answer: string): { state: 'pass' | 'changes'; findi
   for (const raw of answer.split('\n')) {
     const m = FINDING.exec(raw)
     if (m) {
-      open = { severity: m[1]!.toLowerCase() as Severity, where: m[2]!, text: m[3]!.trim() }
+      open = { severity: SEVERITY[m[1]!.toLowerCase()]!, where: m[2]!, text: m[3]!.trim() }
       findings.push(open)
     } else if (open && /^\s+\S/.test(raw) && !/^\s*[A-Z][A-Z ]+:/.test(raw)) open.text = `${open.text} ${raw.trim()}`.slice(0, 1200)
     else open = null
