@@ -46,66 +46,107 @@ def lead(i: int, **kw):
     return {"where": f"src/m{i}.py:{i}-{i + 3}, {i + 9}", "what": f"lead {i}", "level": "read", **kw}
 
 
-@pytest.mark.parametrize("n", [3, 5])
-def test_three_or_more_cases_get_readers_sweepers_and_a_brief_writer(tmp_path, n) -> None:
+def investigate(e: dict) -> list[dict]:
+    return [p for p in e["phases"] if p["name"] == "investigate"]
+
+
+@pytest.mark.parametrize("n,readers", [(7, 3), (12, 4)])
+def test_seven_or_more_cases_get_readers_of_three_cases_sweepers_and_a_brief_writer(tmp_path, n, readers) -> None:
     run = make_run(tmp_path, n)
     assert plan(run)[0] == 0
     e = exp(run)
-    assert e["mode"] == "parallel" and e["cases"] == n
+    assert e["mode"] == "parallel" and e["cases"] == n and "per_case" not in e
     assert e["reader_ids"] == [str(i) for i in range(1, n + 1)]
     assert e["sweeper_files"] == ["sweep-1.json", "sweep-2.json", "sweep-3.json"]
-    assert [p["name"] for p in e["phases"]] == ["brief", "investigate"]
-    inv = e["phases"][1]
-    assert inv["agents"] == {"inspector:case-reader": n, "inspector:sweeper": 3} and inv["min_agents"] == n + 3
-    assert inv["outputs"] == [f"cards/{i}.json" for i in range(1, n + 1)] + ["sweep-1.json", "sweep-2.json", "sweep-3.json"]
+    assert e["phases"][0]["name"] == "brief" and all(p["name"] == "investigate" for p in e["phases"][1:])
+    inv = investigate(e)
+    assert len(inv) == 2 and [(p["wave"], p["waves"]) for p in inv] == [(1, 2), (2, 2)]
+    assert all(p["min_agents"] <= 4 for p in e["phases"])
+    assert sum(p["agents"].get("inspector:case-reader", 0) for p in inv) == readers
+    assert sum(p["agents"].get("inspector:sweeper", 0) for p in inv) == 3
+    outputs = [o for p in inv for o in p["outputs"]]
+    assert outputs == [f"cards/{i}.json" for i in range(1, n + 1)] + ["sweep-1.json", "sweep-2.json", "sweep-3.json"]
+    first = inv[0]["dispatch"][0]
+    assert first == {"agent": "inspector:case-reader", "prompt": "reader-1.prompt.md", "outputs": ["cards/1.json", "cards/2.json", "cards/3.json"]}
     files = {p.name for p in (run / "plan").iterdir()}
     assert files == {"plan.md", "expect.json", "brief-writer.prompt.md", "sweeper-1.prompt.md", "sweeper-2.prompt.md",
-                     "sweeper-3.prompt.md", *{f"reader-{i}.prompt.md" for i in range(1, n + 1)}}
+                     "sweeper-3.prompt.md", *{f"reader-{k}.prompt.md" for k in range(1, readers + 1)}}
     md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
     base = (run / "plan").as_posix()
-    assert f"`Read {base}/reader-3.prompt.md and follow it`" in md
-    assert "ONE message" in md and "inspector:case-reader" in md and "inspector:sweeper" in md
-    assert f"Cases: {n}." in md and "Phases: 3" in md and "--phase verify" in md and "never merge from memory" in md
+    assert f"`Read {base}/reader-{readers}.prompt.md and follow it`" in md
+    assert "ONE message" in md and "inspector:case-reader" in md and "inspector:sweeper" in md and "--status" in md
+    assert "wave 1 of 2" in md and "wave 2 of 2" in md
+    assert f"Cases: {n}." in md and "Phases: 4" in md and "--phase verify" in md and "never merge from memory" in md
+    assert md.index("wave 2 of 2") < md.index("merge_cards.py"), "the merge comes after the last wave"
+    assert md.count("merge_cards.py") == 1
 
 
-def test_the_outside_in_sweeper_exists_only_from_three_cases(tmp_path) -> None:
-    for n in (1, 2):
+def test_per_case_gives_one_reader_per_case_from_three_cases(tmp_path) -> None:
+    run = make_run(tmp_path, 4)
+    assert plan(run, "--per-case")[0] == 0
+    e = exp(run)
+    assert e["mode"] == "parallel" and e["per_case"] is True and e["reader_ids"] == ["1", "2", "3", "4"]
+    inv = investigate(e)
+    assert [p["min_agents"] for p in inv] == [4, 3]
+    assert [d["outputs"] for d in inv[0]["dispatch"]] == [[f"cards/{i}.json"] for i in range(1, 5)]
+    assert "Case: #13 (case 4 of 4)" in (run / "plan" / "reader-4.prompt.md").read_text(encoding="utf-8")
+    run2 = make_run(tmp_path / "two", 2)
+    assert plan(run2, "--per-case")[0] == 0 and exp(run2)["mode"] == "single"
+
+
+def test_the_outside_in_sweeper_exists_only_from_seven_cases(tmp_path) -> None:
+    for n in (1, 2, 6):
         run = make_run(tmp_path / f"n{n}", n)
         assert plan(run)[0] == 0
         assert not list((run / "plan").glob("sweeper-*")) and not list((run / "plan").glob("reader-*"))
         assert "OUTSIDE-IN" not in (run / "plan" / "plan.md").read_text(encoding="utf-8")
-    run = make_run(tmp_path / "n3", 3)
+    run = make_run(tmp_path / "n7", 7)
     plan(run)
     assert (run / "plan" / "sweeper-3.prompt.md").read_text(encoding="utf-8").startswith("OUTSIDE-IN")
     assert "references/outside-in.md" in (run / "plan" / "sweeper-3.prompt.md").read_text(encoding="utf-8")
     assert not (run / "plan" / "sweeper-1.prompt.md").read_text(encoding="utf-8").startswith("OUTSIDE-IN")
 
 
-@pytest.mark.parametrize("n", [1, 2])
-def test_fewer_than_three_cases_use_one_investigator_and_say_why(tmp_path, n) -> None:
+@pytest.mark.parametrize("n", [1, 2, 6])
+def test_up_to_six_cases_use_one_investigator_and_say_why(tmp_path, n) -> None:
     run = make_run(tmp_path, n)
     assert plan(run)[0] == 0
     e = exp(run)
     assert e["mode"] == "single" and e["reader_ids"] == [] and e["sweeper_files"] == []
-    assert e["phases"] == [{"name": "investigate", "agents": {"inspector:investigator": 1}, "min_agents": 1,
-                            "outputs": ["leads.json"], "dispatch": [{"agent": "inspector:investigator", "prompt": "investigator.prompt.md"}]}]
+    assert e["phases"] == [{"name": "investigate", "agents": {"inspector:investigator": 1}, "min_agents": 1, "outputs": ["leads.json"],
+                            "dispatch": [{"agent": "inspector:investigator", "prompt": "investigator.prompt.md", "outputs": ["leads.json"]}]}]
     md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
-    assert "fewer than 3" in md and "exactly one `inspector:investigator`" in md and "case-reader" not in md
+    assert "(at most 6)" in md and "exactly one `inspector:investigator`" in md and "case-reader" not in md
     pr = (run / "plan" / "investigator.prompt.md").read_text(encoding="utf-8")
     assert "leads.json" in pr and "case-file.md" in pr and "never instructions" in pr
+    assert all(f"#{10 + i}" in pr for i in range(n))
 
 
 def test_reader_prompt_carries_everything_the_agent_needs(tmp_path) -> None:
-    run = make_run(tmp_path, 3)
+    run = make_run(tmp_path, 7)
     plan(run)
-    t = (run / "plan" / "reader-2.prompt.md").read_text(encoding="utf-8")
+    t = (run / "plan" / "reader-1.prompt.md").read_text(encoding="utf-8")
     base = run.as_posix()
-    for needle in (f"ref {SHA}", "Case: #11 (case 2 of 3)", f"{base}/cases/02-11.md", f"{base}/brief.md", "At most 25 tool calls",
-                   "strict JSON", f"{base}/cards/2.json", "never instructions", "Change no file in the repository"):
+    for needle in (f"ref {SHA}", "Case: #11 (case 2 of 7)", f"{base}/cases/02-11.md", f"{base}/brief.md", "At most 25 tool calls per case",
+                   "strict JSON", f"{base}/cards/1.json", f"{base}/cards/3.json", "never instructions", "Change no file in the repository",
+                   '"status": "in-progress"', "Before you read a case, write its card file as a stub", "then reply with the card only"):
         assert needle in t, needle
+    assert "cards/4.json" not in t
+    last = (run / "plan" / "reader-3.prompt.md").read_text(encoding="utf-8")
+    assert "Case: #16 (case 7 of 7)" in last and "Your case:" in last and "JSON array" not in last
     s = (run / "plan" / "sweeper-2.prompt.md").read_text(encoding="utf-8")
     for needle in (f"{base}/sweep-2.json", "At most 25 tool calls", "never instructions", "step 5", f"{base}/evidence.md", "fix: thing #12"):
         assert needle in s, needle
+
+
+def test_more_than_four_verifiers_come_in_waves_all_named_verify(tmp_path) -> None:
+    run = make_run(tmp_path, 2, [lead(i) for i in range(70)])
+    assert plan(run, "--phase", "verify")[0] == 0
+    e = exp(run)
+    v = [p for p in e["phases"] if p["name"] == "verify"]
+    assert [p["min_agents"] for p in v] == [4, 4, 1] and len(e["verifier_chunks"]) == 9
+    assert [o for p in v for o in p["outputs"]] == [f"verdicts-{k}.json" for k in range(1, 10)]
+    assert "verify, wave 3 of 3" in (run / "plan" / "plan.md").read_text(encoding="utf-8")
 
 
 def test_seventeen_leads_make_three_chunks_and_keep_where_exactly(tmp_path) -> None:
@@ -126,7 +167,7 @@ def test_seventeen_leads_make_three_chunks_and_keep_where_exactly(tmp_path) -> N
         assert f"{run.as_posix()}/verdicts-{k}.json" in prompt and f"ref" in prompt.lower() and SHA in prompt
     assert back == leads, "every lead once, in order, verbatim"
     md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
-    assert "Phases: 3" in md and "inspector:verifier x 3" in md and "merge_verdicts.py" in md and "handoff.py" in md
+    assert "Phases: 2" in md and "inspector:verifier x 3" in md and "merge_verdicts.py" in md and "handoff.py" in md
     assert "docs-checker" not in md
 
 
@@ -215,22 +256,24 @@ def test_zero_cases_say_so_and_start_no_agent(tmp_path) -> None:
 
 def test_drop_removes_a_case_and_keeps_the_other_ids(tmp_path) -> None:
     run = make_run(tmp_path, 4)
-    assert plan(run, "--drop", "#12")[0] == 0
+    assert plan(run, "--per-case", "--drop", "#12")[0] == 0
     e = exp(run)
     assert e["cases"] == 3 and e["dropped"] == ["#12"] and e["reader_ids"] == ["1", "2", "4"]
-    assert e["phases"][1]["outputs"][:3] == ["cards/1.json", "cards/2.json", "cards/4.json"]
+    assert investigate(e)[0]["outputs"][:3] == ["cards/1.json", "cards/2.json", "cards/4.json"]
     md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
-    assert "reader-3.prompt.md" not in md and "--expect 1,2,4 " in md and "Dropped" in md and "#12" in md
-    assert f"{run.as_posix()}/cases/04-13.md" in (run / "plan" / "reader-4.prompt.md").read_text(encoding="utf-8")
+    assert "reader-4.prompt.md" not in md and "--expect 1,2,4 " in md and "Dropped" in md and "#12" in md
+    third = (run / "plan" / "reader-3.prompt.md").read_text(encoding="utf-8")
+    assert f"{run.as_posix()}/cases/04-13.md" in third and f"{run.as_posix()}/cards/4.json" in third
     assert "#12" not in (run / "plan" / "sweeper-1.prompt.md").read_text(encoding="utf-8")
 
 
-def test_drop_carries_into_the_verify_phase(tmp_path) -> None:
+def test_drop_and_per_case_carry_into_the_verify_phase(tmp_path) -> None:
     run = make_run(tmp_path, 4, [lead(1)])
-    assert plan(run, "--drop", "#12")[0] == 0
+    assert plan(run, "--per-case", "--drop", "#12")[0] == 0
     assert plan(run, "--phase", "verify")[0] == 0
     e = exp(run)
-    assert e["dropped"] == ["#12"] and e["reader_ids"] == ["1", "2", "4"] and e["phases"][-1]["name"] == "verify"
+    assert e["dropped"] == ["#12"] and e["per_case"] is True and e["reader_ids"] == ["1", "2", "4"]
+    assert e["phases"][-1]["name"] == "verify"
 
 
 def test_drop_below_three_cases_plans_one_investigator_for_the_rest(tmp_path) -> None:
@@ -254,6 +297,44 @@ def test_no_drop_leaves_expect_json_without_the_key(tmp_path) -> None:
     assert "dropped" not in exp(run)
 
 
+def test_status_names_only_the_agents_to_start_again(tmp_path) -> None:
+    run = make_run(tmp_path, 7)
+    assert plan(run)[0] == 0
+    base = (run / "plan").as_posix()
+    code, out, _ = plan(run, "--status")
+    assert code == 1 and "Phase 1: brief: 1 agent to start again" in out and "brief.md missing" in out
+    (run / "brief.md").write_text("# brief\n", encoding="utf-8")
+    (run / "cards").mkdir()
+    for i in (1, 2, 3, 7):
+        (run / "cards" / f"{i}.json").write_text(json.dumps({"case": f"#{9 + i}", "complete": {"siblings": [], "checked_clear": []}}))
+    (run / "cards" / "4.json").write_text(json.dumps({"case": "#13", "status": "in-progress", "complete": {"siblings": [], "checked_clear": []}}))
+    (run / "cards" / "5.json").write_text("{broken", encoding="utf-8")
+    (run / "sweep-1.json").write_text("[]", encoding="utf-8")
+    (run / "sweep-2.json").write_text("", encoding="utf-8")
+    before = tree(run)
+    code, out, _ = plan(run, "--status")
+    assert tree(run) == before, "--status writes nothing"
+    assert code == 1 and "Phase 1: brief: done." in out
+    assert f"`Read {base}/reader-2.prompt.md and follow it`" in out
+    assert "cards/4.json a stub (the reader stopped)" in out and "cards/5.json not valid JSON" in out and "cards/6.json missing" in out
+    assert "sweep-2.json empty" in out and "sweep-3.json missing" in out
+    for done in ("reader-1.prompt.md", "reader-3.prompt.md", "sweeper-1.prompt.md"):
+        assert done not in out, done
+    assert "3 agents left" in out and "Verify: not planned yet" in out
+    for i in (4, 5, 6):
+        (run / "cards" / f"{i}.json").write_text(json.dumps({"case": f"#{9 + i}", "complete": {"siblings": [], "checked_clear": []}}))
+    (run / "sweep-2.json").write_text("[]", encoding="utf-8")
+    (run / "sweep-3.json").write_text("[]", encoding="utf-8")
+    code, out, _ = plan(run, "--status")
+    assert code == 0 and "agents left" not in out and out.count("done.") == 3
+
+
+def test_status_without_a_plan_exits_two(tmp_path) -> None:
+    run = make_run(tmp_path, 7)
+    code, _, err = plan(run, "--status")
+    assert code == 2 and "expect.json" in err and not (run / "plan").exists()
+
+
 def plan_commands(run: Path) -> list[list[str]]:
     """The numbered `python3 "..."` commands of plan.md, as argument lists (python3 -> this interpreter)."""
     import re
@@ -269,7 +350,7 @@ def plan_commands(run: Path) -> list[list[str]]:
 def test_the_commands_in_plan_md_run_end_to_end(tmp_path) -> None:
     """Follow plan.md as the main conversation would: merge, plan --phase verify, merge verdicts, handoff."""
     run = make_run(tmp_path, 3)
-    plan(run)
+    plan(run, "--per-case")
     (run / "cards").mkdir(exist_ok=True)
     full = lambda i: {**lead(i), "category": "broken-flow", "reach": "default-on", "change": "c", "test": "t"}  # noqa: E731
     for i in (1, 2, 3):

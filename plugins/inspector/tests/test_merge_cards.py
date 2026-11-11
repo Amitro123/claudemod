@@ -53,6 +53,21 @@ def test_missing_card_exits_2_and_writes_nothing(tmp_path, capsys) -> None:
     assert "card 2: missing" in cap.err and "card 1" not in cap.err
 
 
+def test_stub_card_merges_with_its_leads_capped_at_suspect(tmp_path, capsys) -> None:
+    stub = {**card(2, lead("b.py:9", TEXT_B, level="reproduced"), lead("c.py:3", level="inferred", not_verified="the caller")),
+            "status": "in-progress"}
+    code, leads, log, cap = run(tmp_path, capsys, {"1": card(1, lead("a.py:5")), "2": stub, "3": card(3)}, "1,2,3")
+    assert code == 0
+    by = {x["where"]: x for x in leads}
+    assert by["a.py:5"]["level"] == "read" and "original_level" not in by["a.py:5"]
+    assert by["b.py:9"]["level"] == "suspect" and by["b.py:9"]["original_level"] == "reproduced"
+    assert by["b.py:9"]["not_verified"] == ["the case reader stopped before finishing this case"]
+    assert by["c.py:3"]["level"] == "inferred" and "original_level" not in by["c.py:3"]
+    assert by["c.py:3"]["not_verified"] == ["the caller", "the case reader stopped before finishing this case"]
+    assert "## Unfinished cards" in log and "- card 2" in log and "card 1" not in log.split("## Unfinished cards")[1].split("##")[0]
+    assert "unfinished cards (stubs; leads capped at suspect): 2" in cap.out
+
+
 def test_unparsable_card_exits_2_and_writes_nothing(tmp_path, capsys) -> None:
     code, leads, log, cap = run(tmp_path, capsys, {"1": card(1), "2": "{not json"}, "1,2")
     assert code == 2 and leads is None and log is None and "card 2" in cap.err

@@ -75,7 +75,7 @@ def test_generated_prompts_agree_with_the_agent_files_and_the_docs(tmp_path) -> 
     import sys
     run = tmp_path / "run"
     (run / "cases").mkdir(parents=True)
-    labels = ["#1", "#2", "#3"]
+    labels = [f"#{i}" for i in range(1, 8)]  # 7: the fewest cases that get case readers
     (run / "evidence.json").write_text(json.dumps({"cases": labels, "ref_sha": "a" * 40, "repo_path": "/r", "timeline": []}))
     for i, lab in enumerate(labels, 1):
         (run / "cases" / f"{i:02d}-{lab[1:]}.md").write_text("d")
@@ -90,5 +90,8 @@ def test_generated_prompts_agree_with_the_agent_files_and_the_docs(tmp_path) -> 
         assert "strict json" in prompt.lower() and "Strict JSON" in a
     assert "cards/1.json" in reader and "Sweep file:" in sweeper and "reply with only that path and the lead count" in sweeper
     assert "reply with only that path and the lead count" in " ".join(_t("agents/sweeper.md").split())
-    assert "then reply with the card only" in reader and "write the card there first" in " ".join(_t("agents/case-reader.md").split())
+    reader_agent = " ".join(_t("agents/case-reader.md").split())
+    assert "then reply with the card only" in reader and "write the card there first" in reader_agent
+    assert '"status": "in-progress"' in reader and '"status": "in-progress"' in reader_agent
+    assert "per case" in reader and "per case" in reader_agent
     assert "plan.py" in _t("skills/inspect/references/verify.md") and "plan.py" in _t("skills/inspect/SKILL.md") or "RUN PLAN" in _t("skills/inspect/SKILL.md")

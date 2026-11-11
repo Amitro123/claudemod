@@ -4,7 +4,8 @@
     python merge_cards.py --cards <folder> [--sweep a.json b.json ...] --expect 1,2,3 --out leads.json [--log dedupe.md] [--repair-escapes]
 
 `--expect` lists the card ids: each must exist as `<folder>/<id>.json` and parse, else exit 2 naming
-them before anything is written. Every lead of each card's `complete.siblings` and of each sweeper
+them before anything is written. A stub card (`"status": "in-progress"`: its reader stopped) is merged,
+its leads capped at `suspect` (`original_level` kept, `not_verified` says why) and listed in the log. Every lead of each card's `complete.siblings` and of each sweeper
 file (an array) is kept field for field, plus `found_by` (card id or `sweeper`). Two leads are merged
 only when they are exact duplicates: the same file and the same set of line ranges in `where`, and the
 same words and comparison operators (`<`, `>`, `<=`, `>=`, `==`, `!=`) in `what` (case, spacing and other punctuation ignored). The stronger level is kept (reproduced >
@@ -40,6 +41,8 @@ SIMILAR_AT = 0.5  # word similarity from which a flagged pair is called "similar
 OWN_KEYS = ("found_by", "also_found_by", "merged_from", "merged_variants", "possible_duplicate_of", "case")
 WORD_RE = re.compile(r"[a-z0-9_]+")
 IDENT_RE = re.compile(r"[a-z0-9_]+|[<>=!]+")  # identity tokens: words plus comparison operators (`<` and `>` are different claims)
+STUB = "in-progress"  # a card's `status` while its reader is still on the case
+UNFINISHED = "the case reader stopped before finishing this case"
 
 
 def parse_where(w: object):
@@ -127,7 +130,18 @@ def repair_escapes(path: str, exc: Exception) -> bool:
     return True
 
 
-def load_cards(folder: str, ids: list[str], repair: bool = False, repaired: list[str] | None = None) -> list[dict]:
+def cap_unfinished(lead: dict) -> dict:
+    """A lead of a stub card: its reader stopped before checking it to the end, so it is at most `suspect`."""
+    if level_rank(lead) < RANK.index("suspect"):
+        lead["original_level"], lead["level"] = lead.get("level"), "suspect"
+    nv = lead.get("not_verified")
+    nv = [] if nv in (None, "", []) else nv if isinstance(nv, list) else [nv]
+    lead["not_verified"] = nv + [UNFINISHED]
+    return lead
+
+
+def load_cards(folder: str, ids: list[str], repair: bool = False, repaired: list[str] | None = None,
+               unfinished: list[str] | None = None) -> list[dict]:
     leads, bad = [], []
     for cid in ids:
         p = os.path.join(folder, f"{cid}.json")
@@ -148,8 +162,12 @@ def load_cards(folder: str, ids: list[str], repair: bool = False, repaired: list
         except leadsio.LeadsError as exc:
             bad.append(f"card {cid}: {exc}")
             continue
-        for s in leadsio.leads_of(items):
-            leads.append({**s, "found_by": cid})
+        for item in items:
+            stub = item.get("status") == STUB
+            if stub and unfinished is not None and cid not in unfinished:
+                unfinished.append(cid)
+            for s in leadsio.leads_of([item]):
+                leads.append(cap_unfinished({**s, "found_by": cid}) if stub else {**s, "found_by": cid})
     if bad:
         raise leadsio.LeadsError("; ".join(bad))
     return leads
@@ -275,8 +293,9 @@ def main(argv=None) -> int:
     if not ids or len(set(ids)) != len(ids) or any(not re.fullmatch(r"[\w.-]+", x) for x in ids):
         return die(f"--expect needs distinct ids such as 1,2,3 (got {a.expect!r})")
     repaired: list[str] = []
+    unfinished: list[str] = []
     try:
-        raw = load_cards(a.cards, ids, a.repair_escapes, repaired) + load_sweeps(a.sweep, a.repair_escapes, repaired)
+        raw = load_cards(a.cards, ids, a.repair_escapes, repaired, unfinished) + load_sweeps(a.sweep, a.repair_escapes, repaired)
     except leadsio.LeadsError as exc:
         return die(f"invalid input: {exc}")
     final, merges, possible = dedupe(raw)
@@ -290,6 +309,8 @@ def main(argv=None) -> int:
     lines += [f"- {ref(i)} / {ref(j)} ({why}; similarity {sc:.2f}; not merged, a person decides)" for i, j, sc, why in possible] or ["- none"]
     if repaired:
         lines += ["", "## Repaired invalid escapes (original kept as <name>.orig)"] + [f"- {r}" for r in repaired]
+    if unfinished:
+        lines += ["", "## Unfinished cards (the reader stopped; their leads are at most suspect)"] + [f"- card {u}" for u in unfinished]
     unparsed = [ref(i) for i, lead in enumerate(raw) if parse_where(lead.get("where")) is None]
     if unparsed:
         lines += ["", "## Unparsable where (never merged)"] + [f"- {u}" for u in unparsed]
@@ -309,6 +330,8 @@ def main(argv=None) -> int:
     print("; ".join(counts))
     for r in repaired:
         print(f"repaired invalid escapes: {r} (original kept as .orig)")
+    if unfinished:
+        print(f"unfinished cards (stubs; leads capped at suspect): {', '.join(unfinished)}")
     if possible:
         print(f"possible duplicates: {len(possible)} (see log)")
     for i, s in enumerate(final):

@@ -209,9 +209,10 @@ this order:
 
 The rest are worked from their titles only (*inferred*).
 
-**Who does the work.** The RUN PLAN the collector printed decides from the case count: 1 or 2
-cases, one `investigator`; 3 or more, a brief-writer, a `case-reader` per case and three
-`sweeper`s, then the verifiers (references/parallel.md). You don't read the diffs yourself: on a
+**Who does the work.** The RUN PLAN the collector printed decides from the case count: up to 6
+cases, one `investigator`; 7 or more, a brief-writer, `case-reader`s (3 cases each) and three
+`sweeper`s in waves of 4, then the verifiers (references/parallel.md). An agent
+stopped: `plan.py --status` names what to restart. You don't read the diffs yourself: on a
 measured backtest one briefed worker in a clean context found more of the later-fixed bugs than
 the main conversation reading alone, at a tenth of the main context. Without the Agent tool or
 these agent types, do the work yourself; the method is in `<skill_root>/../../agents/case-reader.md`.

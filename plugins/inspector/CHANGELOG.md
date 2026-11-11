@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Changed: a leaner plan. Up to 6 cases the plan starts one `inspector:investigator` (it was 1 or 2); from 7, a `case-reader` takes up to 3 cases, one card each, and `plan.py --per-case` keeps one reader per case (from 3 cases). A phase starts at most 4 agents at once: a larger one is planned as waves of the same phase name (`wave`/`waves` in `expect.json`), and the merge comes after the last wave. Every dispatch entry now lists its own `outputs`. `--per-case` carries into `--phase verify`, like `--drop`.
+- Added: resumable runs. `plan.py --run <out> --status` writes nothing; per phase and wave it names each output that is missing, empty, invalid or a stub, prints the dispatch lines of only those agents, and exits 1 while any are left. Readers write a stub card (`"status": "in-progress"`) before each case and replace it when done; `merge_cards.py` merges a stub with its leads capped at `suspect` (`original_level` kept, `not_verified` says the reader stopped) and lists it under "Unfinished cards" in the log.
+- Fixed: a title that reports bugs it found ("14 open bugs it found") was judged a fix. `plan.py --drop '#N'` leaves out a case whose verdict the main conversation corrected. `merge_cards.py` keeps the previous `leads.json` and exits 1 when it cannot save, instead of a traceback.
+
 ## 0.7.1 (2026-11-11)
 
 - Fixed (R062-02): `merge_cards.py` treated leads that differ only by a comparison operator (`<` vs `>`, `<=`, `>=`, `==`, `!=`) as exact duplicates and merged them, because the identity of `what` was words only. Comparison operators now count in the identity; case, spacing and other punctuation are still ignored. Reproduced first in `tests/test_merge_cards.py`.
