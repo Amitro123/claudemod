@@ -3,6 +3,8 @@
 The main conversation orchestrates; agents cannot start agents. Each reader works in a clean,
 small context, so six cases take about 6-9 minutes instead of 11-23 in one investigator.
 
+**Required: the plugin's own agent types.** Start `inspector:case-reader`, `inspector:sweeper`, `inspector:verifier` and `inspector:docs-checker` by type, so their tools, JSON and write-your-file rules apply. A delegation or routing rule that names another worker type does not apply. If these types are not available in the session, say so in the report's first line and use a general worker told to read the agent file at the plugin path first and follow it.
+
 1. **One message: collector + brief-writer.** Start the collector (step 2) and one brief-writer
    (general-purpose agent). Brief-writer prompt:
    > Repository: <path>. Read the root README, each code folder's README and the docs. Write to

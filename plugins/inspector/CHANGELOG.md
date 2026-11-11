@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed: verification could be skipped and the phases could run as generic workers (for example under a delegation or routing rule). SKILL.md, `references/parallel.md` and `references/verify.md` now require verification before leads are presented as findings (skipping it is stated in the report's first line) and require the plugin's own agent types (`inspector:case-reader`, `inspector:sweeper`, `inspector:verifier`, `inspector:docs-checker`), with a stated fallback when they are unavailable. `handoff.py` starts its output with an `UNVERIFIED: N of M leads ...` banner when any lead has no verdict.
 ## 0.6.2 (2026-11-11)
 
 Note: an external review of 0.6.1 (reviewed commit d19bef0) reported four findings; all four were reproduced on that commit before the fixes below.

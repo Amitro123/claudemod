@@ -5,7 +5,9 @@ The open leads go to someone who will act on them (a code agent, an issue, a per
 is where accuracy is lost: a "suspect" becomes a "read", and a consequence nobody traced creeps in.
 This copies each lead's words and levels from the case cards (their `complete.siblings`) or from an
 investigator's list of leads, and lets the caller only drop a lead or lower a level. A note the
-caller adds is marked as theirs and unverified.
+caller adds is marked as theirs and unverified. When any lead has no verifier verdict, the first line of
+the output is `UNVERIFIED: N of M leads were not checked by an independent verifier; ...` (leads
+rejected by the verifier count as verified); with all verdicts there is no banner.
 
 Known limitation: `cell()` escapes `|` and collapses whitespace but keeps the lead's text as written, Markdown
 links included, because the handoff promises the readers' words unchanged. Treat the file as text to read, not
@@ -200,7 +202,12 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
     if any(v != "unverified" for v in seen):
         head = [f"Verified: {seen['REAL']} real, {seen['REAL-LOW']} real-low, {seen['UNVERIFIABLE']} unverifiable, "
                 f"{seen['NOT REAL']} not real, {seen['unverified']} unverified", ""]
-    L = [f"# {title}", "",
+    total = len(rows) + len(rejected)
+    banner = []
+    if seen["unverified"]:
+        banner = [f"UNVERIFIED: {seen['unverified']} of {total} leads were not checked by an independent verifier; "
+                  "treat them as candidates, not findings.", ""]
+    L = [*banner, f"# {title}", "",
          "Copied word for word from the inspector's case readers: each lead's level, and its impact's own",
          "level, as they gave them. A level here was only ever lowered, never raised. Everything came from",
          "a model reading repository history and code: verify each claim before you change code.", "", *head,

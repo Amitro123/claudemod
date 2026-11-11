@@ -64,8 +64,8 @@ follow references/parallel.md. The steps below are the method, for whoever does 
 The main conversation orchestrates this skill. A delegation or routing rule that would hand the
 whole run to one worker does not apply to it: a worker cannot start agents. Run the script steps
 yourself (or via a light worker for one script), and start the case-readers, sweepers and
-verifiers yourself, in parallel, in one message each phase. With 3 or more cases follow
-references/parallel.md.
+verifiers yourself, in parallel, in one message each phase. Use the plugin's own agent types;
+references/parallel.md has them.
 
 ## 1. The brief: what was the project meant to do?
 
@@ -404,9 +404,9 @@ the session:
 - for a class that recurred 3+ times, a rule for `CLAUDE.md` or `.claude/rules/`
   (brain-hud's `/brain-hud:mistake-brain promote`), and a regression test per seam that broke twice.
 
-## 7. Verify (optional)
+## 7. Verify (required)
 
-Before the leads are handed off, an independent verifier can re-check them (references/verify.md).
+Verification is required before leads are presented as findings; skipping it must be said in the report's first line (references/verify.md).
 
 ## Limits
 
