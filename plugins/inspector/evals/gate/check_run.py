@@ -25,6 +25,7 @@ import sys
 from collections import Counter
 
 CHECKS: dict = {}
+LEAD_SUFFIX = re.compile(r" \[lead \d+\]$")
 
 
 class Invalid(Exception):
@@ -353,17 +354,24 @@ def _merged(r: Run):
     mrel, merged = r.one("merged")
     if leads is None or merged is None:
         return res("skipped", "needs leads.json and merged.json")
-    lw = Counter(r.where(x) for x in leads if isinstance(x, dict))
-    mw = Counter(r.where(x) for x in merged if isinstance(x, dict))
+    # merge_verdicts.py refuses two leads with one `where` and tells the user to add a suffix; the run then
+    # carries ` [lead N]` on the disambiguated wheres. Compare on the base `where`, but the suffixes must be unique.
+    suffixed = [r.where(x) for x in merged if isinstance(x, dict) and LEAD_SUFFIX.search(r.where(x))]
+    dup_suffix = sorted(w for w, n in Counter(suffixed).items() if n > 1)
+    base = lambda x: LEAD_SUFFIX.sub("", r.where(x))
+    lw = Counter(base(x) for x in leads if isinstance(x, dict))
+    mw = Counter(base(x) for x in merged if isinstance(x, dict))
     dropped = {v.upper() for v in r.p.get("dropped_verdicts", [])}
     verdict_of = {}
     for rel, d in r.items("verdicts"):
         for v in d:
             if isinstance(v, dict):
-                verdict_of[r.where(v)] = str(v.get(r.f("verdict")) or "").upper()
+                verdict_of[base(v)] = str(v.get(r.f("verdict")) or "").upper()
     extra = [w for w in mw if w not in lw]
     gone = [w for w in lw if mw[w] < lw[w] and verdict_of.get(w) not in dropped]
     problems = []
+    if dup_suffix:
+        problems.append(f"{len(dup_suffix)} suffixed wheres repeat in merged.json: " + short(dup_suffix))
     if extra:
         problems.append(f"{len(extra)} merged leads not in leads.json: " + short(extra))
     if gone:

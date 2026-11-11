@@ -374,3 +374,47 @@ def test_a_malformed_plan_is_invalid_input(tmp_path, breakage):
     w(run / "plan" / "expect.json", doc)
     code, rep, err = run_plan_check(run)
     assert code == 2 and rep is None and err.startswith("check_run.py:")
+
+
+def _suffix_run(tmp_path, suffixes=("[lead 0]", "[lead 1]")):
+    """Two leads share one `where`; the run disambiguates them as merge_verdicts.py asks, then merges."""
+    run = tmp_path / "run"
+    a, b = lead("src/b.py:12", "first problem"), lead("src/b.py:12", "second, different problem")
+    w(run / "cards" / "1.json", {"case": "1", "complete": {"siblings": [a, b]}})
+    w(run / "sweep-1.json", [lead("c.py:1")])
+    leads = [{**a, "found_by": "1"}, {**b, "found_by": "1"}, {**lead("c.py:1"), "found_by": "sweeper"}]
+    w(run / "leads.json", leads)
+    w(run / "dedupe.md", "# Dedupe log\n\n## Merges\n- none\n\n## Counts\n- raw: 3\n- merged: 0\n- final: 3\n")
+    uniq = [dict(x) for x in leads]
+    uniq[0]["where"] += " " + suffixes[0]
+    uniq[1]["where"] += " " + suffixes[1]
+    w(run / "merged.json", [{**x, "verdict": "REAL"} for x in uniq])
+    w(run / "open-bugs.md", handoff(3))
+    return run
+
+
+def test_lead_suffix_is_normalised(tmp_path):
+    code, rep, _ = run_check(_suffix_run(tmp_path), "--expect", "1")
+    assert status(rep)["merged.matches_leads"] == "pass", rep
+
+
+def test_repeated_lead_suffix_fails(tmp_path):
+    rep = run_check(_suffix_run(tmp_path, ("[lead 0]", "[lead 0]")), "--expect", "1")[1]
+    assert failing(rep) == ["merged.matches_leads"] and "suffixed wheres repeat" in str(rep)
+
+
+def test_suffixed_where_absent_from_leads_fails(tmp_path):
+    run = _suffix_run(tmp_path)
+    merged = json.loads((run / "merged.json").read_text())
+    merged[2]["where"] = "nowhere.py:9 [lead 2]"
+    w(run / "merged.json", merged)
+    rep = run_check(run, "--expect", "1")[1]
+    assert failing(rep) == ["merged.matches_leads"] and "not in leads.json" in str(rep)
+
+
+def test_unknown_where_still_fails(tmp_path):
+    run = build(tmp_path)
+    merged = json.loads((run / "merged.json").read_text())
+    merged[0]["where"] = "nowhere.py:9"
+    w(run / "merged.json", merged)
+    assert "merged.matches_leads" in failing(run_check(run)[1])
