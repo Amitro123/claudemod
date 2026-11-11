@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 GATE = Path(__file__).parent.parent / "evals" / "gate"
 CHECK = GATE / "check_run.py"
 PROFILE = GATE / "profile.json"
@@ -265,3 +267,110 @@ def test_profile_is_self_consistent():
     prof = json.loads(PROFILE.read_text())
     assert prof["invariants"] == ALL
     assert set(prof["artifacts"]) >= {"cards", "sweeps", "leads", "dedupe_log", "verdicts", "merged", "handoff"}
+
+
+# ---------------------------------------------------------------- plan/expect.json (written by plan.py)
+def add_plan(run: Path, *, verify: bool = True, mode: str = "parallel", sweepers=("sweep-1.json", "sweep-2.json"),
+             chunks=("verdicts-1.json", "verdicts-2.json")) -> Path:
+    w(run / "brief.md", "# brief\nP1 ...\n")
+    phases = [{"name": "brief", "agents": {"general-purpose": 1}, "min_agents": 1, "outputs": ["brief.md"]},
+              {"name": "investigate", "agents": {"inspector:case-reader": 2, "inspector:sweeper": len(sweepers)},
+               "min_agents": 2 + len(sweepers), "outputs": ["cards/1.json", "cards/2.json", *sweepers]}]
+    if verify:
+        phases.append({"name": "verify", "agents": {"inspector:verifier": len(chunks)}, "min_agents": len(chunks), "outputs": list(chunks)})
+    doc = {"plan_version": 1, "mode": mode, "cases": 4, "phases": phases, "reader_ids": ["1", "2"], "sweeper_files": list(sweepers),
+           "verifier_chunks": [{"id": str(i), "chunk": f"plan/chunk-{i}.json", "verdicts": c, "size": 4} for i, c in enumerate(chunks, 1)] if verify else [],
+           "docs_checker": {"needed": False, "questions": 0}}
+    w(run / "plan" / "expect.json", doc)
+    return run
+
+
+def run_plan_check(run: Path, *extra):
+    """No --expect: the plan supplies the ids."""
+    p = subprocess.run([sys.executable, str(CHECK), str(run), *extra], capture_output=True, text=True)
+    try:
+        rep = json.loads(p.stdout)
+    except ValueError:
+        rep = None
+    return p.returncode, rep, p.stderr
+
+
+def test_complete_run_with_a_plan_passes(tmp_path):
+    run = add_plan(build(tmp_path))
+    code, rep, _ = run_plan_check(run)
+    assert code == 0 and rep["ok"], rep
+    assert list(status(rep)) == ALL + ["plan.phases"] and set(status(rep).values()) == {"pass"}
+    assert "3 phases" in next(i for i in rep["invariants"] if i["id"] == "plan.phases")["evidence"]
+
+
+def test_the_plan_replaces_the_command_line(tmp_path):
+    """--expect 7,8 would look for cards 7 and 8; with a plan the readers are 1 and 2."""
+    run = add_plan(build(tmp_path))
+    p = subprocess.run([sys.executable, str(CHECK), str(run), "--expect", "7,8"], capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout[-400:]
+
+
+def test_skipped_verifier_phase_fails(tmp_path):
+    """The model stopped after the merge: no verdicts, no merged.json, no handoff."""
+    run = add_plan(build(tmp_path))
+    for f in ("verdicts-1.json", "verdicts-2.json", "merged.json", "open-bugs.md"):
+        (run / f).unlink()
+    code, rep, _ = run_plan_check(run)
+    assert code == 1 and "plan.phases" in failing(rep)
+    ev = next(i for i in rep["invariants"] if i["id"] == "plan.phases")["evidence"]
+    assert "phase 'verify' skipped" in ev and "verdicts-1.json" in ev
+
+
+def test_a_missing_sweeper_output_fails_even_with_one_sweep_file(tmp_path):
+    run = add_plan(build(tmp_path), sweepers=("sweep-1.json", "sweep-2.json", "sweep-3.json"))
+    code, rep, _ = run_plan_check(run)
+    assert code == 1 and "plan.phases" in failing(rep) and "artifacts.present" in failing(rep)
+    assert "sweep-3.json" in next(i for i in rep["invariants"] if i["id"] == "plan.phases")["evidence"]
+
+
+def test_a_plan_without_a_verify_phase_fails(tmp_path):
+    run = add_plan(build(tmp_path), verify=False)
+    code, rep, _ = run_plan_check(run)
+    assert code == 1 and "plan.phases" in failing(rep)
+    assert "no verify phase was planned" in next(i for i in rep["invariants"] if i["id"] == "plan.phases")["evidence"]
+
+
+def test_a_skipped_reader_phase_fails(tmp_path):
+    run = add_plan(build(tmp_path))
+    (run / "cards" / "2.json").unlink()
+    code, rep, _ = run_plan_check(run)
+    assert code == 1 and "plan.phases" in failing(rep)
+    assert "phase 'investigate'" in next(i for i in rep["invariants"] if i["id"] == "plan.phases")["evidence"]
+
+
+def test_single_investigator_plan_needs_no_cards(tmp_path):
+    run = build(tmp_path)
+    for p in (run / "cards").glob("*.json"):
+        p.unlink()
+    for p in run.glob("sweep-*.json"):
+        p.unlink()
+    (run / "dedupe.md").unlink()
+    doc = {"plan_version": 1, "mode": "single", "cases": 2, "reader_ids": [], "sweeper_files": [], "docs_checker": {"needed": False, "questions": 0},
+           "phases": [{"name": "investigate", "agents": {"inspector:investigator": 1}, "min_agents": 1, "outputs": ["leads.json"]},
+                      {"name": "verify", "agents": {"inspector:verifier": 2}, "min_agents": 2, "outputs": ["verdicts-1.json", "verdicts-2.json"]}],
+           "verifier_chunks": [{"id": "1", "verdicts": "verdicts-1.json"}, {"id": "2", "verdicts": "verdicts-2.json"}]}
+    w(run / "plan" / "expect.json", doc)
+    code, rep, _ = run_plan_check(run)
+    assert code == 0, rep
+    (run / "verdicts-2.json").unlink()
+    assert "plan.phases" in failing(run_plan_check(run)[1])
+
+
+@pytest.mark.parametrize("breakage", ["not json", {"plan_version": 2}, "path", "reader"])
+def test_a_malformed_plan_is_invalid_input(tmp_path, breakage):
+    run = add_plan(build(tmp_path))
+    doc = json.loads((run / "plan" / "expect.json").read_text())
+    if breakage == "path":
+        doc["phases"][0]["outputs"] = ["../outside.json"]
+    elif breakage == "reader":
+        doc["reader_ids"] = ["../x"]
+    else:
+        doc = breakage
+    w(run / "plan" / "expect.json", doc)
+    code, rep, err = run_plan_check(run)
+    assert code == 2 and rep is None and err.startswith("check_run.py:")

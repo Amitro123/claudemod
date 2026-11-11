@@ -7,6 +7,9 @@ Reads profile.json (default: next to this script) and checks every invariant it 
 from the plugin: file names, fields and log formats come from the profile. Prints one JSON report on
 stdout: {"run", "profile", "ok", "invariants": [{"id", "status": pass|fail|skipped, "evidence"}]}.
 `--override` deep-merges a JSON object onto the profile (use it when a run folder names files differently).
+When `<run>/plan/expect.json` exists (written by the plugin's plan.py) it replaces the command line: the reader ids,
+the sweeper files and the verifier verdict files come from it, and the extra invariant `plan.phases` fails when a
+planned phase left its outputs missing or invalid (the model skipped the phase), or when no verify phase was planned.
 `--report` writes the same JSON elsewhere; a path inside the run folder is refused (exit 2).
 Exit 0 all invariants pass or are skipped, 1 at least one fails, 2 invalid input (no run folder, unreadable
 or invalid profile or override, unknown invariant id, bad --report path).
@@ -65,8 +68,8 @@ def read_text(path: str):
 class Run:
     """Everything read from the run folder, once. Problems are recorded, never raised."""
 
-    def __init__(self, folder: str, prof: dict, expect: list[str] | None):
-        self.folder, self.p = folder, prof
+    def __init__(self, folder: str, prof: dict, expect: list[str] | None, plan: dict | None = None):
+        self.folder, self.p, self.plan = folder, prof, plan
         self.F = prof.get("fields", {})
         self.expect = expect
         self.paths: dict[str, list[str]] = {}
@@ -94,6 +97,11 @@ class Run:
                 for i, pth in zip(ids, self.paths[name]):
                     if not os.path.isfile(pth):
                         self.missing.append(pat.replace("{id}", i))
+            elif isinstance(a.get("files"), list):
+                self.paths[name] = [os.path.join(self.folder, *f.split("/")) for f in a["files"]]
+                for f, pth in zip(a["files"], self.paths[name]):
+                    if not os.path.isfile(pth):
+                        self.missing.append(f)
             else:
                 self.paths[name] = self._glob(pat)
                 if not self.paths[name]:
@@ -388,6 +396,89 @@ def _handoff(r: Run):
     return res("pass", f"{shown} rows + {rejected} rejected = {len(merged)}")
 
 
+def safe_rel(f) -> bool:
+    return isinstance(f, str) and bool(f) and not os.path.isabs(f) and ".." not in f.replace("\\", "/").split("/")
+
+
+def load_plan(folder: str):
+    """The parsed `plan/expect.json`, or None when the run has no plan. Raises Invalid for an unreadable or malformed plan."""
+    path = os.path.join(folder, "plan", "expect.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        d = load_json(path)
+    except (OSError, ValueError) as exc:
+        raise Invalid(f"plan/expect.json unreadable: {exc}")
+    if not isinstance(d, dict) or d.get("plan_version") != 1 or d.get("mode") not in ("none", "single", "parallel"):
+        raise Invalid("plan/expect.json: needs plan_version 1 and a mode (none, single, parallel)")
+    for key in ("reader_ids", "sweeper_files", "phases", "verifier_chunks"):
+        if not isinstance(d.get(key), list):
+            raise Invalid(f"plan/expect.json: `{key}` must be a list")
+    for ph in d["phases"]:
+        if not (isinstance(ph, dict) and isinstance(ph.get("name"), str) and isinstance(ph.get("min_agents"), int)
+                and isinstance(ph.get("outputs"), list) and all(safe_rel(o) for o in ph["outputs"])):
+            raise Invalid("plan/expect.json: every phase needs a name, an integer min_agents and relative `outputs`")
+    if not all(isinstance(x, str) and re.fullmatch(r"[\w.\-]+", x) for x in d["reader_ids"]):
+        raise Invalid("plan/expect.json: reader ids must be plain names")
+    if not all(safe_rel(f) for f in d["sweeper_files"]) or not all(
+            isinstance(c, dict) and safe_rel(c.get("verdicts")) for c in d["verifier_chunks"]):
+        raise Invalid("plan/expect.json: file names must be relative and stay in the run folder")
+    return d
+
+
+def apply_plan(prof: dict, plan: dict) -> list[str] | None:
+    """Make the profile follow the plan; returns the expected reader ids (None when there are no readers)."""
+    arts = prof["artifacts"]
+    if plan["mode"] == "parallel":
+        if "sweeps" in arts:
+            arts["sweeps"] = {**arts["sweeps"], "files": list(plan["sweeper_files"])}
+        if "verdicts" in arts:
+            arts["verdicts"] = {**arts["verdicts"], "files": [c["verdicts"] for c in plan["verifier_chunks"]]}
+    else:
+        for k in ("cards", "sweeps", "dedupe_log"):
+            arts.pop(k, None)
+        if "verdicts" in arts:
+            arts["verdicts"] = {**arts["verdicts"], "files": [c["verdicts"] for c in plan["verifier_chunks"]]}
+    if "plan.phases" not in prof["invariants"]:
+        prof["invariants"] = [*prof["invariants"], "plan.phases"]
+    return list(plan["reader_ids"]) if plan["mode"] == "parallel" else None
+
+
+@check("plan.phases")
+def _phases(r: Run):
+    plan = r.plan
+    if plan is None:
+        return res("skipped", "the run has no plan/expect.json")
+    if plan["mode"] == "none":
+        return res("pass", "the plan had no case to work")
+    names = [ph["name"] for ph in plan["phases"]]
+    problems = []
+    if "verify" not in names:
+        problems.append("no verify phase was planned (plan.py --phase verify was not run): verification is required")
+    for ph in plan["phases"]:
+        absent, broken = [], []
+        for o in ph["outputs"]:
+            pth = os.path.join(r.folder, *o.split("/"))
+            if not os.path.isfile(pth):
+                absent.append(o)
+            elif o.endswith(".json"):
+                try:
+                    if not isinstance(load_json(pth), (dict, list)):
+                        broken.append(o)
+                except (OSError, ValueError):
+                    broken.append(o)
+            elif os.path.getsize(pth) == 0:
+                broken.append(o)
+        if absent:
+            problems.append(f"phase {ph['name']!r} skipped or unfinished: missing {short(absent, 8)} (planned {ph['min_agents']} agents)")
+        if broken:
+            problems.append(f"phase {ph['name']!r}: invalid or empty {short(broken, 8)}")
+    if problems:
+        return res("fail", "; ".join(problems))
+    n = sum(ph["min_agents"] for ph in plan["phases"])
+    return res("pass", f"{len(plan['phases'])} phases ({', '.join(names)}), {n} planned agents, every planned output present and valid")
+
+
 def validate_profile(p) -> None:
     if not isinstance(p, dict) or not isinstance(p.get("artifacts"), dict) or not isinstance(p.get("invariants"), list):
         raise Invalid("profile needs an `artifacts` object and an `invariants` list")
@@ -427,6 +518,8 @@ def main(argv=None) -> int:
         except (OSError, ValueError) as exc:
             raise Invalid(f"profile or override unreadable: {exc}")
         validate_profile(prof)
+        plan = load_plan(a.run)
+        planned = apply_plan(prof, plan) if plan else None
         expect = None
         raw = a.expect if a.expect is not None else prof.get("expect_ids")
         if isinstance(raw, list):
@@ -435,6 +528,8 @@ def main(argv=None) -> int:
             expect = [x.strip() for x in str(raw).split(",") if x.strip()]
             if len(set(expect)) != len(expect):
                 raise Invalid("expected ids must be distinct")
+        if plan and plan["mode"] == "parallel":
+            expect = planned  # the plan, not the command line, says which readers were started
         for bad_re in (prof.get("dedupe_log", {}).get("raw_count"), prof.get("handoff", {}).get("banner")):
             if bad_re:
                 try:
@@ -444,7 +539,7 @@ def main(argv=None) -> int:
     except Invalid as exc:
         print(f"check_run.py: {exc}", file=sys.stderr)
         return 2
-    run = Run(a.run, prof, expect)
+    run = Run(a.run, prof, expect, plan)
     out = []
     for cid in prof["invariants"]:
         status, ev = CHECKS[cid](run)
