@@ -753,7 +753,11 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
         if unit.startswith("#") or (want.isdigit() and len(want) < 7):
             hit = next((u for u in units if u.pr is not None and str(u.pr) == want), None)
         if not hit and len(want) >= 4:
-            hit = next((owner[s] for s in owner if s.startswith(want.lower())), None)
+            matches = {owner[s].sha: owner[s] for s in owner if s.startswith(want.lower())}
+            if len(matches) > 1:
+                raise AmbiguousUnit(f"--unit {unit} is ambiguous: it matches " + ", ".join(
+                    f"{m.label()} ({m.sha[:12]})" for m in matches.values()) + "; give more characters of the sha")
+            hit = next(iter(matches.values()), None)
         if not hit:
             raise RuntimeError(f"no unit {unit} in the last {max(history, limit)} first-parent units (raise --history)")
         work_shas = {hit.sha}
@@ -871,6 +875,10 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
         "unit_shas": {u.label(): u.sha for u in units},
         **({"gh_bodies": gh_bodies} if gh_bodies is not None else {}),     # popped by main(): never saved
     }
+
+
+class AmbiguousUnit(RuntimeError):
+    """--unit named a sha prefix that several units match; the CLI exits 2 (as crosscheck.py does for a commit prefix)."""
 
 
 class GhUnavailable(Exception):
@@ -1492,6 +1500,11 @@ def main(argv=None) -> int:
         if not hit:
             print(f"evidence.py: no unit {a.show} in {saved}", file=sys.stderr)
             return 1
+        if len(hit) > 1:
+            print(f"evidence.py: --show {a.show} is ambiguous: it matches "
+                  + ", ".join(f"{u['unit']} ({u['sha'][:12]})" for u in hit) + "; give more characters of the sha",
+                  file=sys.stderr)
+            return 2
         owner_sha = r.get("unit_shas") or {u["unit"]: u["sha"] for u in r["timeline"]}
         try:
             sys.stdout.write(dossier(saved_repo, hit[0], owner_sha, path=r.get("path"), file=a.file,
@@ -1507,6 +1520,9 @@ def main(argv=None) -> int:
                         a.cache_dir, not a.no_cache,
                         effective_excludes(a.path, a.component_root, a.exclude, not a.no_default_excludes),
                         github=not a.no_github, refresh_github=a.refresh_github)
+    except AmbiguousUnit as e:
+        print(f"evidence.py: {e}", file=sys.stderr)
+        return 2
     except (RuntimeError, ValueError, OSError) as e:
         print(f"evidence.py: {e}", file=sys.stderr)
         return 1
