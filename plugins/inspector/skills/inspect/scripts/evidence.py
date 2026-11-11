@@ -1421,12 +1421,12 @@ def default_out(repo: str) -> str:
     return path
 
 
-def write(path: str, text: str) -> None:
+def write(path: str, text: str, newline: str | None = None) -> None:
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
     tmp = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=d, delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline=newline, dir=d, delete=False) as f:
             tmp = f.name
             f.write(text)
         os.replace(tmp, path)

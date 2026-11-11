@@ -119,3 +119,27 @@ def test_repeated_verdicts_flags_all_honoured_and_counted(tmp_path, capsys) -> N
     merged = json.loads(out.read_text(encoding="utf-8"))
     assert code == 0 and [m["verdict"] for m in merged] == ["REAL", "NOT REAL"]
     assert f"verdicts file {v1}: 1 verdicts" in err and f"verdicts file {v2}: 1 verdicts" in err
+
+
+def test_output_is_written_atomically(tmp_path, capsys, monkeypatch) -> None:
+    """A write that fails part-way leaves the previous output intact and no stray temp file behind."""
+    import os
+    lf, vf, out = tmp_path / "l.json", tmp_path / "v.json", tmp_path / "o.json"
+    lf.write_text(json.dumps([lead("a.py:1")]), encoding="utf-8")
+    vf.write_text(json.dumps([verdict("a.py:1")]), encoding="utf-8")
+    out.write_text("previous run", encoding="utf-8")
+
+    def broken(src, dst):
+        raise OSError("disk full")
+    monkeypatch.setattr(os, "replace", broken)
+    try:
+        merge_verdicts.main(["--leads", str(lf), "--verdicts", str(vf), "--out", str(out)])
+    except OSError:
+        pass
+    assert out.read_text(encoding="utf-8") == "previous run"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["l.json", "o.json", "v.json"]
+
+
+def test_output_keeps_unix_newlines(tmp_path, capsys) -> None:
+    run(tmp_path, capsys, [lead("a.py:1")], [verdict("a.py:1")])
+    assert b"\r\n" not in (tmp_path / "o.json").read_bytes()
