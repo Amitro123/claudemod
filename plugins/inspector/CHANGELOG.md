@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.1 (2026-11-11)
+
 - Fixed (R062-02): `merge_cards.py` treated leads that differ only by a comparison operator (`<` vs `>`, `<=`, `>=`, `==`, `!=`) as exact duplicates and merged them, because the identity of `what` was words only. Comparison operators now count in the identity; case, spacing and other punctuation are still ignored. Reproduced first in `tests/test_merge_cards.py`.
 - Fixed (R062-03): a run with no leads ended without `merged.json` and `open-bugs.md`, which the release gate requires. `merge_verdicts.py` accepts no `--verdicts` when `leads.json` is empty (output `[]`; still exit 2 when there are leads and no verdict file), and the generated plan's "No lead to verify" branch now lists the `merge_verdicts.py` and `handoff.py` commands. Reproduced first in `tests/test_plan.py`.
 - Fixed: `evals/gate/check_run.py` `verdicts.no_orphans` failed on a verdict whose `where` carries the ` [lead N]` suffix; it now compares on the base `where`, like `merged.matches_leads`. A suffixed verdict naming no lead still fails.

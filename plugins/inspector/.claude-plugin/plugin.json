@@ -1,6 +1,6 @@
 {
   "name": "inspector",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Investigates a repository's history of bug fixes: /inspector:inspect reads what the project promises, finds the PRs that fixed something, traces each fix to the change whose lines it undid (git blame on the fix's parent), classifies the bugs and the seams they cluster at, sweeps today's code for the same bugs, and writes a case file of what still needs fixing",
   "author": {
     "name": "Amit Rosen",
