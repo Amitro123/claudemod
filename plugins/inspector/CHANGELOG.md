@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed: blame line counts now skip the same trivial lines as the copy detector (comment lines, bare `return`/`pass`/`break`), so a comment-only hunk no longer inflates the top `introduced_by` culprit or turns a change into a fix-of-fix. `BLAME_CACHE_VERSION` is v4, so older cache entries are not reused.
 ## 0.6.1 (2026-11-10)
 
 - Fixed: a delegation or routing rule could hand the whole run to one worker, which cannot start agents, so the parallel recipe ran serially. SKILL.md and `references/parallel.md` now say the main conversation orchestrates and starts the readers, sweepers and verifiers itself; pinned by a test.

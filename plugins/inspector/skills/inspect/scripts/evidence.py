@@ -500,7 +500,8 @@ class BlameCache:
 # disk entries from an older collector would be reused silently. v2: removal/ignore changes on fix/inspector-precision.
 # v3: entries written while the repository was shallow may hold a wrong attribution (blame stops at the clone's
 # boundary and the entry survived `git fetch --unshallow`); the cache is now bypassed on a shallow repository.
-BLAME_CACHE_VERSION = "v3"
+# v4: blame counts leave out the same trivial lines (comments, bare return/pass/break) as the copy detector.
+BLAME_CACHE_VERSION = "v4"
 
 
 def _blame_key(parent: str, old: str, ranges: list[tuple[int, int]], ignore_id: str) -> str:
@@ -518,7 +519,7 @@ def _count_origins(out: str) -> list[list]:
             sha = ln.split()[0]
         elif ln.startswith("\t"):
             content = ln[1:].strip()
-            if sha and content and content not in ("}", "{", ")", "];", "});", "end", "fi"):
+            if sha and content and content not in ("}", "{", ")", "];", "});", "end", "fi") and not TRIVIAL.search(content):
                 res[sha] = res.get(sha, 0) + 1
     return [[k, v] for k, v in res.items()]
 
