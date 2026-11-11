@@ -17,7 +17,7 @@ similarity). When exact duplicates differ in other fields, the winner gains the 
 conflicting value of the loser is recorded under `merged_variants`; nothing is dropped silently.
 `--repair-escapes` (opt-in; default is to refuse): a card or sweeper file that fails with an invalid
 backslash escape (a regex class like backslash-s written with one backslash) gets every stray backslash doubled, is re-parsed,
-kept as `<name>.orig` and named in the log. Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 2 invalid input.
+kept as `<name>.orig` and named in the log. Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 1 not saved (the previous file is kept), 2 invalid input.
 """
 from __future__ import annotations
 
@@ -298,12 +298,14 @@ def main(argv=None) -> int:
               f"per reach: {tally(final, 'reach')}"]
     lines += ["", "## Counts"] + [f"- {c}" for c in counts]
 
-    os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-    with open(a.out, "w", encoding="utf-8") as f:
-        json.dump(final, f, ensure_ascii=False, indent=2)
-    if a.log:
-        with open(a.log, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+    from evidence import write  # temp file + os.replace: a failed run never leaves a truncated file
+    try:
+        write(a.out, json.dumps(final, ensure_ascii=False, indent=2))
+        if a.log:
+            write(a.log, "\n".join(lines) + "\n")
+    except OSError as exc:
+        print(f"merge_cards.py: not saved ({exc})", file=sys.stderr)
+        return 1
     print("; ".join(counts))
     for r in repaired:
         print(f"repaired invalid escapes: {r} (original kept as .orig)")

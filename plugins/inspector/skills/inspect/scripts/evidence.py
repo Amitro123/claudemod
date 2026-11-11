@@ -56,6 +56,9 @@ STRONG = [
     r"\brevert(s|ed)?\b", r"\bhotfix\b", r"\bbroke(n)?\b", r"\bcrash(es|ed)?\b",
     r"תיקון|תוקן|באג|תקלה|נשבר|שבור",
 ]
+# A title that reports bugs it found ("14 open bugs it found", "3 bugs found by X") fixes none of them.
+FOUND_BUGS = re.compile(r"\b(\d+|open|known|new)\s+(open\s+)?bugs\b(?=.{0,30}\bfound\b)"
+                        r"|\bfound\s+(\d+\s+)?(open\s+)?bugs\b", re.I)
 WEAK = [r"\bno longer\b", r"\bwhat .{0,40}\bfound\b", r"\bwrong\b", r"\bstale\b", r"\brace\b", r"\bleak(s|ed)?\b", r"\bNaN\b",
         r"\bmissing\b", r"\b(doesn't|don't|didn't|isn't|wasn't|can't)\b", r"\binstead of\b"]
 # A feature says so first: "Add X", "feat: X", "factory 0.6.0: support Y" (after a "name 1.2.3:" prefix).
@@ -210,7 +213,7 @@ def subject_verdict(subject: str) -> tuple[bool, list[str]]:
     """A commit subject or PR title: a fix when it says so strongly and isn't housekeeping."""
     if CHORE.search(subject):
         return False, ["housekeeping"]
-    strong, weak = words(subject, STRONG), words(subject, WEAK)
+    strong, weak = words(FOUND_BUGS.sub(" ", subject), STRONG), words(subject, WEAK)
     if not strong:
         return False, weak
     if starts_as_feature(subject) and not weak and len(strong) == 1:

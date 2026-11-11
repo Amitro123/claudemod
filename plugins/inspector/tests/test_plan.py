@@ -213,6 +213,47 @@ def test_zero_cases_say_so_and_start_no_agent(tmp_path) -> None:
     assert plan(run, "--phase", "verify")[0] == 2
 
 
+def test_drop_removes_a_case_and_keeps_the_other_ids(tmp_path) -> None:
+    run = make_run(tmp_path, 4)
+    assert plan(run, "--drop", "#12")[0] == 0
+    e = exp(run)
+    assert e["cases"] == 3 and e["dropped"] == ["#12"] and e["reader_ids"] == ["1", "2", "4"]
+    assert e["phases"][1]["outputs"][:3] == ["cards/1.json", "cards/2.json", "cards/4.json"]
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    assert "reader-3.prompt.md" not in md and "--expect 1,2,4 " in md and "Dropped" in md and "#12" in md
+    assert f"{run.as_posix()}/cases/04-13.md" in (run / "plan" / "reader-4.prompt.md").read_text(encoding="utf-8")
+    assert "#12" not in (run / "plan" / "sweeper-1.prompt.md").read_text(encoding="utf-8")
+
+
+def test_drop_carries_into_the_verify_phase(tmp_path) -> None:
+    run = make_run(tmp_path, 4, [lead(1)])
+    assert plan(run, "--drop", "#12")[0] == 0
+    assert plan(run, "--phase", "verify")[0] == 0
+    e = exp(run)
+    assert e["dropped"] == ["#12"] and e["reader_ids"] == ["1", "2", "4"] and e["phases"][-1]["name"] == "verify"
+
+
+def test_drop_below_three_cases_plans_one_investigator_for_the_rest(tmp_path) -> None:
+    run = make_run(tmp_path, 3)
+    assert plan(run, "--drop", "#11")[0] == 0
+    e = exp(run)
+    assert e["mode"] == "single" and e["cases"] == 2
+    pr = (run / "plan" / "investigator.prompt.md").read_text(encoding="utf-8")
+    assert "#10" in pr and "#12" in pr and "#11" not in pr
+
+
+def test_drop_of_an_unknown_case_exits_two_and_writes_nothing(tmp_path) -> None:
+    run = make_run(tmp_path, 3)
+    code, _, err = plan(run, "--drop", "#99")
+    assert code == 2 and "#99" in err and not (run / "plan").exists()
+
+
+def test_no_drop_leaves_expect_json_without_the_key(tmp_path) -> None:
+    run = make_run(tmp_path, 3)
+    plan(run)
+    assert "dropped" not in exp(run)
+
+
 def plan_commands(run: Path) -> list[list[str]]:
     """The numbered `python3 "..."` commands of plan.md, as argument lists (python3 -> this interpreter)."""
     import re

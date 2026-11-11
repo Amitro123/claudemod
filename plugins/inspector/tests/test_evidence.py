@@ -125,6 +125,10 @@ def test_fix_detection(repo: Path) -> None:
     ("factory 0.18.0: what the first real run found", False),       # weak alone
     ("factory 0.18.0: fixes from what the first real run found", True),
     ("Revert \"Add caching\"", True),
+    ("inspector 0.2.0: a bug detective for the history, its evals, and 14 open bugs it found on main", False),
+    ("followups: 3 bugs found by the inspector", False),            # reports bugs, fixes none
+    ("fix 3 bugs found in review", True),
+    ("found and fixed two bugs in the export", True),
 ])
 def test_subject_verdict(subject: str, is_fix: bool) -> None:
     assert evidence.subject_verdict(subject)[0] is is_fix

@@ -58,6 +58,20 @@ def test_unparsable_card_exits_2_and_writes_nothing(tmp_path, capsys) -> None:
     assert code == 2 and leads is None and log is None and "card 2" in cap.err
 
 
+def test_write_failure_keeps_the_previous_leads_and_says_so(tmp_path, capsys, monkeypatch) -> None:
+    d, _ = setup(tmp_path, {"1": card(1, lead("a.py:5"))})
+    out = tmp_path / "leads.json"
+    out.write_text("previous", encoding="utf-8")
+
+    def refuse(src, dst):
+        raise PermissionError(13, "denied", dst)
+    monkeypatch.setattr(merge_cards.os, "replace", refuse)
+    code = merge_cards.main(["--cards", str(d), "--expect", "1", "--out", str(out)])
+    assert code == 1 and "merge_cards.py: not saved" in capsys.readouterr().err
+    assert out.read_text(encoding="utf-8") == "previous"
+    assert [p.name for p in tmp_path.iterdir() if p.is_file()] == ["leads.json"], "no temp file left behind"
+
+
 def test_invalid_sweeper_exits_2(tmp_path, capsys) -> None:
     d, _ = setup(tmp_path, {"1": card(1)})
     bad = tmp_path / "sw.json"
