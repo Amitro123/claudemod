@@ -7,6 +7,10 @@ This copies each lead's words and levels from the case cards (their `complete.si
 investigator's list of leads, and lets the caller only drop a lead or lower a level. A note the
 caller adds is marked as theirs and unverified.
 
+Known limitation: `cell()` escapes `|` and collapses whitespace but keeps the lead's text as written, Markdown
+links included, because the handoff promises the readers' words unchanged. Treat the file as text to read, not
+to render with trust.
+
     python handoff.py --cards <folder | file.json | ->  [--out file.md] [--title T]
                       [--lower 'path:line=suspect'] [--drop 'path:line'] [--note 'path:line=text']
 """

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Documented (not changed): `handoff.py` keeps model-written Markdown links in table cells because the handoff copies the readers' words unchanged; stripping them would break that promise.
 - Fixed: `crosscheck.py` no longer treats a bare basename (`util.py:10`) as the same sibling as every copy that shares it; a shortened path must be a component-boundary suffix of exactly one copy path, otherwise the sibling stays "reader only" and the copies stay unchecked.
 - Fixed: `merge_verdicts.py --out` writes through the shared temp-file-and-replace writer, so a failed run cannot leave a truncated file (output stays LF).
 - Fixed: the `evidence.py` docstring no longer says "offline"; `--github` and `--show` call `gh` over the network when it is available.
