@@ -41,7 +41,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # also under `python -I`, which drops the script folder
+import plan  # noqa: E402
 import snapshot  # noqa: E402
+
+RUN_DIR = ".inspector-run"  # the default run folder, inside the working tree (git-ignored)
 
 # Strong: the words people use for a fix. Weak: words fixes use, and so do features; they only
 # count beside a strong one. Scored on subjects and titles, never on bodies (a feature PR's body
@@ -1405,20 +1408,50 @@ def dossier(repo: str, u: dict, owner_sha: dict[str, str], diff_lines: int = 60,
 
 
 def default_out(repo: str) -> str:
-    """A folder that lasts between commands and stays out of the working tree: .git/inspector/<time>.
-    Some sandboxes give each command its own /tmp, so a temporary folder is gone by the next one."""
+    """The run folder: <worktree>/.inspector-run/<time>, with a `.gitignore` of `*` beside it so git never
+    lists it. An agent's Write tool asks for approval inside `.git/` (a protected path) but not inside the
+    working directory, and the run's agents write their own files here (references/run-folder.md). If the
+    working tree is not writable it falls back to .git/inspector/<time>, then to a temporary folder.
+    Some sandboxes give each command its own /tmp, so a temporary folder may be gone by the next command."""
     import time
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    bases = []
     try:
-        base = os.path.join(git(repo, "rev-parse", "--absolute-git-dir").strip(), "inspector")
+        bases.append((os.path.join(git(repo, "rev-parse", "--show-toplevel").strip(), RUN_DIR), True))
     except RuntimeError:
-        return tempfile.mkdtemp(prefix="inspector-")
-    path = os.path.join(base, time.strftime("%Y%m%d-%H%M%S"))
-    n = 1
-    while os.path.exists(path):
-        n += 1
-        path = os.path.join(base, time.strftime("%Y%m%d-%H%M%S") + f"-{n}")
-    os.makedirs(path)
-    return path
+        pass
+    try:
+        bases.append((os.path.join(git(repo, "rev-parse", "--absolute-git-dir").strip(), "inspector"), False))
+    except RuntimeError:
+        pass
+    for base, ignore in bases:
+        try:
+            os.makedirs(base, exist_ok=True)
+            marker = os.path.join(base, ".gitignore")
+            if ignore and not os.path.exists(marker):
+                with open(marker, "w", encoding="utf-8", newline="\n") as f:
+                    f.write("*\n")
+            path = os.path.join(base, stamp)
+            n = 1
+            while os.path.exists(path):
+                n += 1
+                path = os.path.join(base, f"{stamp}-{n}")
+            os.makedirs(path)
+            return path
+        except OSError:
+            continue
+    return tempfile.mkdtemp(prefix="inspector-")
+
+
+def print_run_plan(run_dir: str) -> str:
+    """Write the RUN PLAN into the run folder; return the pointer block for the summary (or a one-line why not)."""
+    try:
+        files = plan.build(run_dir)
+        plan.write_all(run_dir, files)
+    except (plan.Invalid, OSError) as e:
+        return f"RUN PLAN: not written ({e}); work the cases as SKILL.md describes.\n"
+    return (f"RUN PLAN: {plan.posix(run_dir)}/plan/plan.md: read it now and execute phase 1; "
+            "do not skip phases\n")
 
 
 def write(path: str, text: str, newline: str | None = None) -> None:
@@ -1460,7 +1493,7 @@ def main(argv=None) -> int:
                     help="a path prefix left out of blame diffs and the copies search (repeatable; adds to " + ", ".join(DEFAULT_EXCLUDES) + ")")
     ap.add_argument("--no-default-excludes", action="store_true", help="do not leave " + ", ".join(DEFAULT_EXCLUDES) + " out of blame and the copies search")
     ap.add_argument("--min-lines", type=int, default=3, help="blamed lines from an earlier fix that make a fix-of-fix")
-    ap.add_argument("--out", help="folder for evidence.json, evidence.md and cases/ (default: a new .git/inspector/<time>)")
+    ap.add_argument("--out", help="folder for evidence.json, evidence.md and cases/ (default: a new .inspector-run/<time> in the working tree, git-ignored)")
     ap.add_argument("--json", help="write the full evidence here instead of <out>/evidence.json")
     ap.add_argument("--md", help="write the summary here instead of <out>/evidence.md")
     ap.add_argument("--github", action="store_true", help="also read the last merged PRs through gh (automatic on a shallow clone)")
@@ -1616,6 +1649,8 @@ def finish(a, r: dict, owner_sha: dict) -> int:
                 jpath = None
     sys.stdout.write(md)
     if jpath:
+        if out and r["cases"]:
+            sys.stdout.write("\n" + print_run_plan(out))
         sys.stdout.write(f"\nSaved: {jpath}\n")
     elif saved_note:
         sys.stdout.write(f"\n{saved_note}\n")
