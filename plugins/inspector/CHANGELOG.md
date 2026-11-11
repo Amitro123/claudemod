@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.2 (2026-11-11)
+
 Note: an external review of 0.6.1 (reviewed commit d19bef0) reported four findings; all four were reproduced on that commit before the fixes below.
 
 - Fixed (R061-01): `merge_cards.py` merged leads by word similarity, so two distinct nearby claims could collapse into one (an earlier fix of this was merged into a branch that never reached main). Only exact duplicates now merge (same file and line-range set in `where`, same words in `what`; `found_by` / `also_found_by` / `merged_from` kept); similar or overlapping leads stay as separate, complete leads with `possible_duplicate_of` on both and are listed in the log.
