@@ -432,7 +432,7 @@ forward explicitly. Full Claude runs and token/cost improvements require separat
 
 ### Inspector: local copies and saved evidence
 
-Inspector 0.6.1 records a schema version, plugin content fingerprint, plugin path, repository,
+Inspector 0.6.2 records a schema version, plugin content fingerprint, plugin path, repository,
 commit SHA and collection options in every new evidence snapshot. `--show` and cross-check
 reject a snapshot made by changed plugin files or an unsupported schema. They warn when HEAD
 has moved or staged, unstaged or untracked files are present. The collector analyzes committed
@@ -464,7 +464,7 @@ session's loaded copy. To test the candidate directly, use an absolute plugin di
 claude --plugin-dir /absolute/path/to/claudemod/plugins/inspector
 ```
 
-The 0.6.1 release is the version in this checkout. This mechanism
+The 0.6.2 release is the version in this checkout. This mechanism
 checks saved evidence freshness, not the LLM provider's prompt cache.
 
 ### Inspector: failure reporting
