@@ -2,12 +2,21 @@
 
 ## Unreleased
 
+Note: an external review of 0.6.1 (reviewed commit d19bef0) reported four findings; all four were reproduced on that commit before the fixes below.
+
+- Fixed (R061-01): `merge_cards.py` merged leads by word similarity, so two distinct nearby claims could collapse into one (an earlier fix of this was merged into a branch that never reached main). Only exact duplicates now merge (same file and line-range set in `where`, same words in `what`; `found_by` / `also_found_by` / `merged_from` kept); similar or overlapping leads stay as separate, complete leads with `possible_duplicate_of` on both and are listed in the log.
+- Fixed (second review, M2): the dedupe log called every non-overlapping pair within 10 lines `similar wording`, even at similarity 0.0; it now says `lines overlap`, `similar wording` (similarity 0.5 or more) or `within 10 lines`.
+- Fixed (second review, M3): when exact duplicates differ in other fields, the winner gains the fields it lacked and a conflicting value of the loser is recorded under `merged_variants` instead of being dropped.
+- Fixed (R061-02): `evals/scorecard.py` no longer matches gold keywords against `where`; the path still matches `where`, a keyword must appear in `what`, `breaks`, `change` or `test` of the same lead, NOT REAL still excluded.
+- Fixed (R061-03): `lint_leads.py` L9 accepts a structured `query_run: {"mode": "read-only", "status": "executed", "observed": "..."}` or a free-text probe that states a completed read-only run with an observed result; negation (not executed, unavailable, could not, no access) and instructions or conditions (run this, after deployment, should, will, must, before) warn. Documented in `references/labels.md` and the investigator, case-reader and verifier agents.
+- Fixed (R061-04): `leadsio.py` checks presence of `complete`, `complete.siblings` and `complete.checked_clear` separately from the value: an explicit `null` exits 2 with and without `--strict`, for file, folder and stdin; sweeper files and `merge_verdicts.py --leads` use the same rules.
 - Documented (not changed): `handoff.py` keeps model-written Markdown links in table cells because the handoff copies the readers' words unchanged; stripping them would break that promise.
 - Fixed: `crosscheck.py` no longer treats a bare basename (`util.py:10`) as the same sibling as every copy that shares it; a shortened path must be a component-boundary suffix of exactly one copy path, otherwise the sibling stays "reader only" and the copies stay unchecked.
 - Fixed: `merge_verdicts.py --out` writes through the shared temp-file-and-replace writer, so a failed run cannot leave a truncated file (output stays LF).
 - Fixed: the `evidence.py` docstring no longer says "offline"; `--github` and `--show` call `gh` over the network when it is available.
 - Fixed: `evidence.py --unit` (and `--show`) with a sha prefix that matches more than one unit now exits 2 naming the candidates instead of silently using the first match; a full or unambiguous prefix works as before.
 - Fixed: blame line counts now skip the same trivial lines as the copy detector (comment lines, bare `return`/`pass`/`break`), so a comment-only hunk no longer inflates the top `introduced_by` culprit or turns a change into a fix-of-fix. `BLAME_CACHE_VERSION` is v4, so older cache entries are not reused.
+
 ## 0.6.1 (2026-11-10)
 
 - Fixed: a delegation or routing rule could hand the whole run to one worker, which cannot start agents, so the parallel recipe ran serially. SKILL.md and `references/parallel.md` now say the main conversation orchestrates and starts the readers, sweepers and verifiers itself; pinned by a test.

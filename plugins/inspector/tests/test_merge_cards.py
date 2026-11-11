@@ -70,18 +70,18 @@ def test_same_defect_keeps_stronger_and_records_finders(tmp_path, capsys) -> Non
     code, leads, log, cap = run(
         tmp_path, capsys,
         {"1": card(1, lead("a.py:154-160,60-62", TEXT_A, "read")), "2": card(2)},
-        "1,2", {"sweep.json": [lead("a.py:158", TEXT_A2, "reproduced", probe="ran it")]})
+        "1,2", {"sweep.json": [lead("a.py:60-62, 154-160", TEXT_A.upper() + ".", "reproduced", probe="ran it")]})
     assert code == 0 and len(leads) == 1
     assert leads[0]["level"] == "reproduced" and leads[0]["found_by"] == "sweeper"
     assert leads[0]["also_found_by"] == ["1"] and leads[0]["merged_from"] == ["a.py:154-160,60-62"]
-    assert "raw: 2" in log and "final: 1" in log and "similarity" in log
+    assert "raw: 2" in log and "final: 1" in log and "exact duplicate" in log
     assert "raw: 2" in cap.out
 
 
 def test_tie_prefers_more_filled_fields(tmp_path, capsys) -> None:
     _, leads, _, _ = run(tmp_path, capsys,
                          {"1": card(1, lead("a.py:5", level="read")),
-                          "2": card(2, lead("a.py:7", TEXT_A2, "read", probe="x", reach_when="always"))}, "1,2")
+                          "2": card(2, lead("a.py:5", TEXT_A, "read", probe="x", reach_when="always"))}, "1,2")
     assert len(leads) == 1 and leads[0]["found_by"] == "2" and leads[0]["also_found_by"] == ["1"]
 
 
@@ -222,7 +222,7 @@ def test_overlapping_ranges_flagged_each_way_with_reason(tmp_path, capsys) -> No
 def test_adjacent_ranges_not_flagged_as_overlap(tmp_path, capsys) -> None:
     _, leads, log, _ = _two(tmp_path, capsys, "a.py:10-12", "a.py:13")
     assert len(leads) == 2 and "lines overlap" not in log
-    assert "similar wording" in _dup_section(log)  # near, so still listed, but for the other reason
+    assert "within 10 lines" in _dup_section(log) and "similar wording" not in _dup_section(log)  # TEXT_A vs TEXT_B share no words
 
 
 def test_overlap_in_different_files_not_flagged(tmp_path, capsys) -> None:
@@ -233,10 +233,10 @@ def test_overlap_in_different_files_not_flagged(tmp_path, capsys) -> None:
 def test_overlap_drops_and_merges_nothing(tmp_path, capsys) -> None:
     sibs = [lead("a.py:12-20", TEXT_A, probe="p1"), lead("a.py:15", TEXT_B, probe="p2"), lead("a.py:14-16", TEXT_A2)]
     _, leads, log, _ = run(tmp_path, capsys, {"1": card(1, *sibs[:2]), "2": card(2, sibs[2])}, "1,2")
-    # the third is a wording duplicate of the first (merged as before); the second stays, flagged
+    # the third is worded like the first but is not an exact duplicate: all three stay, each flagged
     assert [x["what"] for x in leads if x["where"] == "a.py:15"] == [TEXT_B]
-    assert {x["where"] for x in leads} >= {"a.py:15"} and len(leads) == 2
-    assert "possible_duplicate_of" in next(x for x in leads if x["where"] == "a.py:15")
+    assert len(leads) == 3 and all("possible_duplicate_of" in x for x in leads)
+    assert all("merged_from" not in x for x in leads)
 
 
 def test_exact_duplicates_still_merge_without_flag(tmp_path, capsys) -> None:
@@ -285,3 +285,92 @@ def test_per_file_counts_reported_on_stderr(tmp_path, capsys) -> None:
     assert code == 0
     assert f"sweep file {p[0]}: 1 leads" in err and f"sweep file {p[1]}: 1 leads" in err
     assert "sweep files loaded: 2" in err
+
+
+TENANT = {"where": "cache.py:10", "what": "cache key ignores tenant identity", "level": "read", "found_by": "1",
+          "probe": "p-tenant", "impact": {"what": "tenant data mixes", "level": "read"}, "change": "add tenant", "test": "t-tenant"}
+LOCALE = {"where": "cache.py:12", "what": "cache key ignores locale identity", "level": "read", "found_by": "2",
+          "probe": "p-locale", "impact": {"what": "wrong language", "level": "read"}, "change": "add locale", "test": "t-locale"}
+
+
+def chunks(leads: list[dict], size: int = 8) -> list[list[dict]]:
+    """references/verify.md step 1: split the open leads into chunks of at most 8, `where` untouched."""
+    return [leads[i:i + size] for i in range(0, len(leads), size)]
+
+
+def test_distinct_similar_leads_both_reach_the_verifier_chunk(tmp_path, capsys) -> None:
+    final, merges, possible = merge_cards.dedupe([dict(TENANT), dict(LOCALE)])
+    assert merges == [] and len(final) == 2 and len(possible) == 1
+    code, leads, log, _ = run(tmp_path, capsys, {"1": card(1, {k: v for k, v in TENANT.items() if k != "found_by"}),
+                                                 "2": card(2, {k: v for k, v in LOCALE.items() if k != "found_by"})}, "1,2")
+    assert code == 0
+    chunk = chunks(leads)[0]
+    assert [x["where"] for x in chunk] == ["cache.py:10", "cache.py:12"]
+    for orig, got in zip((TENANT, LOCALE), chunk):  # every field of every kept lead survives
+        assert {k: v for k, v in got.items() if k not in ("case", "possible_duplicate_of")} == orig
+    assert chunk[0]["possible_duplicate_of"] == ["cache.py:12"] and chunk[1]["possible_duplicate_of"] == ["cache.py:10"]
+    assert "cache.py:10" in _dup_section(log) and "cache.py:12" in _dup_section(log)
+    verdicts = [{"where": x["where"], "verdict": "REAL"} for x in chunk]
+    import merge_verdicts
+    merged, _ = merge_verdicts.merge(chunk, verdicts)
+    assert [m["verdict"] for m in merged] == ["REAL", "REAL"]
+
+
+def test_exact_duplicates_merge_with_provenance_kept() -> None:
+    a, b = dict(TENANT), {**TENANT, "found_by": "sweeper", "what": "Cache key ignores tenant identity.", "where": "cache.py:10"}
+    final, merges, possible = merge_cards.dedupe([a, b])
+    assert len(final) == 1 and merges == [(0, 1, 1.0)] and possible == []
+    assert final[0]["found_by"] == "1" and final[0]["also_found_by"] == ["sweeper"] and final[0]["merged_from"] == ["cache.py:10"]
+
+
+def test_high_word_overlap_with_other_lines_is_flagged_not_merged() -> None:
+    near = {**TENANT, "where": "cache.py:11", "found_by": "2", "what": TENANT["what"] + " too"}
+    final, merges, possible = merge_cards.dedupe([dict(TENANT), near])
+    assert merges == [] and len(final) == 2 and possible[0][2] >= 0.5
+    assert all("merged_from" not in x for x in final) and final[0]["possible_duplicate_of"] == ["cache.py:11"]
+
+
+def test_parallel_md_promise_matches_behaviour() -> None:
+    doc = (Path(__file__).parent.parent / "skills" / "inspect" / "references" / "parallel.md").read_text(encoding="utf-8")
+    flat = " ".join(doc.split())
+    assert "merges only exact duplicates (same locations, same text)" in flat
+    assert "keeps similar nearby leads" in flat and "possible_duplicate_of" in flat
+    # the documented promise, as behaviour: same locations and text merge; similar nearby text does not
+    assert len(merge_cards.dedupe([dict(TENANT), {**TENANT, "found_by": "2"}])[0]) == 1
+    assert len(merge_cards.dedupe([dict(TENANT), dict(LOCALE)])[0]) == 2
+
+
+def test_reason_matches_the_case() -> None:
+    def reasons(w1, t1, w2, t2):
+        return [r[3] for r in merge_cards.dedupe([{"where": w1, "what": t1, "found_by": "1"},
+                                                  {"where": w2, "what": t2, "found_by": "2"}])[2]]
+    assert reasons("a.py:10", TEXT_A, "a.py:18", TEXT_B) == ["within 10 lines"]       # similarity 0.0
+    assert reasons("a.py:10", TEXT_A, "a.py:18", TEXT_A2) == ["similar wording"]
+    assert reasons("a.py:10-20", TEXT_A, "a.py:15", TEXT_B) == ["lines overlap"]
+
+
+def _variant_pair(**loser):
+    a = {"where": "a.py:10", "what": "parser swallows invalid settings", "found_by": "1", "level": "suspect",
+         "impact": {"what": "i1"}, "probe": "p1", "change": "c1"}
+    b = {**a, "found_by": "2", "level": "read", "impact": {"what": "i2"}, "probe": "p2", "test": "t2",
+         "not_verified": ["x"], **loser}
+    del b["change"]
+    return a, b
+
+
+def test_exact_duplicate_merge_unions_missing_fields_and_records_conflicts() -> None:
+    a, b = _variant_pair()
+    final, merges, _ = merge_cards.dedupe([a, b])
+    (out,) = final
+    assert out["level"] == "read" and out["found_by"] == "2" and out["also_found_by"] == ["1"]
+    assert out["change"] == "c1"                      # the winner lacked it: filled from the loser
+    assert out["impact"] == {"what": "i2"} and out["probe"] == "p2"   # winner's value kept
+    assert out["merged_variants"] == [{"found_by": "1", "where": "a.py:10", "level": "suspect",
+                                       "impact": {"what": "i1"}, "probe": "p1"}]
+    assert out["test"] == "t2" and out["not_verified"] == ["x"]
+
+
+def test_identical_exact_duplicates_have_no_variants_and_winner_fields_never_change() -> None:
+    a, b = _variant_pair()
+    final, _, _ = merge_cards.dedupe([a, {**a, "found_by": "2"}])
+    assert "merged_variants" not in final[0] and final[0]["impact"] == {"what": "i1"}

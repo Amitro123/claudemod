@@ -14,8 +14,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import leadsio  # noqa: E402
 
 
 def load_array(path: str, what: str) -> list:
@@ -97,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     try:
         leads = load_array(a.leads, "leads")
+        leadsio.validate_leads(leads, "leads")
         verdicts = []
         for p in a.verdicts:
             one = load_array(p, "verdicts")

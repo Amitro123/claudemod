@@ -2,8 +2,8 @@
 """The one reader and validator for leads and case cards (lint_leads, handoff, crosscheck). Stdlib only.
 
 Input: `-` (stdin), a folder of *.json, or a single .json file. Each holds an array or an object;
-every lead or card is an object; `complete` (when present) is an object and `complete.siblings` (when
-present) is a list of objects (an explicit empty list is valid). Any violation raises LeadsError naming
+every lead or card is an object; `complete` (when the key is present, even as null) is an object and
+`complete.siblings` (when present, even as null) is a list of objects (an explicit empty list is valid). Any violation raises LeadsError naming
 the file and the item path, e.g. `merged.json[3].complete.siblings: expected a list`; callers exit 2
 before they write anything.
 """
@@ -27,22 +27,31 @@ def _check(item: object, path: str, bad: list[str]) -> bool:
     for k in ("culprit", "mechanism"):
         if item.get(k) is not None and not isinstance(item[k], dict):
             bad.append(f"{path}.{k}: expected an object")
-    c = item.get("complete")
-    if c is not None:
+    if "complete" in item:  # presence, not value: an explicit null is invalid too
+        c = item["complete"]
         if not isinstance(c, dict):
             bad.append(f"{path}.complete: expected an object")
         else:
-            sibs = c.get("siblings")
-            if sibs is not None:
+            if "siblings" in c:
+                sibs = c["siblings"]
                 if not isinstance(sibs, list):
                     bad.append(f"{path}.complete.siblings: expected a list")
                 else:
                     bad += [f"{path}.complete.siblings[{j}]: expected an object"
                             for j, s in enumerate(sibs) if not isinstance(s, dict)]
             clear = c.get("checked_clear")
-            if clear is not None and (not isinstance(clear, list) or any(not isinstance(x, str) for x in clear)):
+            if "checked_clear" in c and (not isinstance(clear, list) or any(not isinstance(x, str) for x in clear)):
                 bad.append(f"{path}.complete.checked_clear: expected a list of strings")
     return len(bad) == n
+
+
+def validate_leads(data: list, label: str) -> None:
+    """Check a list of bare leads (a sweeper file, leads.json) with the same rules; raises LeadsError."""
+    bad: list[str] = []
+    for i, x in enumerate(data):
+        _check(x, f"{label}[{i}]", bad)
+    if bad:
+        raise LeadsError("; ".join(bad))
 
 
 def _accept(data: object, label: str, bad: list[str]) -> list[dict]:
@@ -103,6 +112,6 @@ def leads_of(items: list[dict]) -> list[dict]:
     for x in items:
         c = x.get("complete")
         sibs = c.get("siblings") if isinstance(c, dict) else None
-        for s in (sibs if sibs is not None else [x] if "where" in x or "what" in x else []):
+        for s in (sibs if isinstance(sibs, list) else [x] if "where" in x or "what" in x else []):
             out.append({**s, "case": x.get("case") or x.get("unit") or s.get("case") or ""})
     return out

@@ -33,7 +33,12 @@ QUERY_RE = re.compile(
     r"\|\s*(?:where|summarize)\b|(?-i:\bSELECT\b.+?\bFROM\b)|\bkusto\b|\baz\s+monitor\s+log-analytics\s+query\b",
     re.I | re.S)
 READ_ONLY_RE = re.compile(r"read[- ]?only", re.I)
-RAN_RE = re.compile(r"\b(?:ran|run|executed?|executing)\b", re.I)
+DONE_RE = re.compile(r"\b(?:ran|executed)\b", re.I)  # completed; not "run" (an instruction) or "executing"
+OBSERVED_RE = re.compile(r"\b(?:returned|returns|rows?|records?|results?|count(?:ed)?|yielded|showed|output|found|empty)\b", re.I)
+NEGATED_RE = re.compile(
+    r"\b(?:not|never|no access|unavailable|unable|could ?n[o']t|can ?n[o']t|did ?n[o']t|was ?n[o']t|were ?n[o']t)\b|n't\b", re.I)
+FUTURE_RE = re.compile(
+    r"\b(?:run this|to be run|to run|to execute|after|before|should|will|must|would|needs? to|please|once|later|if|when|pending)\b", re.I)
 VERIFIED_LEVELS = ("reproduced", "read")
 
 Finding = tuple[str, str, str]  # rule id, severity, message
@@ -132,10 +137,17 @@ def rule_l8(s: dict) -> list[Finding]:
 def rule_l9(s: dict) -> list[Finding]:
     if text(s.get("change_status")).lower() != "verified" or not QUERY_RE.search(text(s.get("change"))):
         return []
+    run = s.get("query_run")
+    if isinstance(run, dict):  # structured evidence: the producer says what it did and what it saw
+        observed = text(run.get("observed"))
+        if (text(run.get("mode")).lower() == "read-only" and text(run.get("status")).lower() == "executed"
+                and observed and not NEGATED_RE.search(observed)):
+            return []
     probe = text(s.get("probe"))
-    if READ_ONLY_RE.search(probe) and RAN_RE.search(probe):
+    if (READ_ONLY_RE.search(probe) and DONE_RE.search(probe) and OBSERVED_RE.search(probe)
+            and not NEGATED_RE.search(probe) and not FUTURE_RE.search(probe)):
         return []
-    return [("L9", "warn", "query inside a verified change was not executed; run it read-only or mark the change unverified")]
+    return [("L9", "warn", "query inside a verified change has no evidence of a completed read-only run with an observed result (probe text or `query_run`); run it read-only or mark the change unverified")]
 
 
 RULES = (rule_l1, rule_l2, rule_l3, rule_l4, rule_l5, rule_l6, rule_l7, rule_l8, rule_l9)

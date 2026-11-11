@@ -55,6 +55,7 @@ Write a JSON array to the caller's file, one object per lead in the chunk:
 "corrected": {"category": "...", "reach": "...", "test_kind": "..."}, "false_claims": ["..."],
 "unverifiable": ["<what would settle it>"]}]`.
 Keep `where` exactly as given: it is the join key. Leave `corrected` empty when the labels hold.
+A lead whose `change` holds a query that you ran read-only: put `"query_run": {"mode": "read-only", "status": "executed", "observed": "<result summary>"}` in `corrected`; if you did not run it, say so in `unverifiable`.
 
 Reply with a table (where, verdict, one line why, labels changed) and anything you could not
 check. At most 350 words.
