@@ -314,8 +314,10 @@ def _orph(r: Run):
         return res("skipped", "needs leads.json")
     if not vs:
         return res("skipped", "no verdict files")
-    known = {r.where(x) for x in leads if isinstance(x, dict)}
-    orphans = [(rel, r.where(v)) for rel, d in vs for v in d if isinstance(v, dict) and r.where(v) not in known]
+    # a verdict may carry the ` [lead N]` suffix that disambiguates two leads with one `where`: compare on the base `where`
+    known = {LEAD_SUFFIX.sub("", r.where(x)) for x in leads if isinstance(x, dict)}
+    orphans = [(rel, r.where(v)) for rel, d in vs for v in d
+               if isinstance(v, dict) and LEAD_SUFFIX.sub("", r.where(v)) not in known]
     n = sum(len(d) for _, d in vs)
     if orphans:
         return res("fail", f"{len(orphans)} verdicts name a where absent from leads: " + short(f"{a}:{w}" for a, w in orphans))

@@ -252,3 +252,20 @@ def test_the_commands_in_plan_md_run_end_to_end(tmp_path) -> None:
         assert p.returncode == 0, (c, p.stdout[-300:], p.stderr[-300:])
     assert (run / "merged.json").is_file() and (run / "open-bugs.md").is_file()
     assert not (run / "open-bugs.md").read_text(encoding="utf-8").startswith("UNVERIFIED")
+
+
+def test_no_leads_plan_produces_the_artifacts_the_release_gate_requires(tmp_path) -> None:
+    """R062-03: with no lead to verify the plan must still end in merged.json and open-bugs.md, by running its own commands."""
+    import re
+    import shlex
+    run = make_run(tmp_path, 3, [])
+    assert plan(run, "--phase", "verify")[0] == 0
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    cmds = [m.group(1) for m in re.finditer(r"^\d+\. (.+)$", md, re.M) if "merge_verdicts.py" in m.group(1) or "handoff.py" in m.group(1)]
+    assert len(cmds) == 2, md
+    for c in cmds:
+        argv = shlex.split(c)
+        p = subprocess.run([sys.executable, *argv[1:]], capture_output=True, text=True, encoding="utf-8")
+        assert p.returncode == 0, c + p.stderr
+    assert json.loads((run / "merged.json").read_text(encoding="utf-8")) == []
+    assert "no leads" in (run / "open-bugs.md").read_text(encoding="utf-8")

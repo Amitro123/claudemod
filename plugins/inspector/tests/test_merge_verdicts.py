@@ -143,3 +143,25 @@ def test_output_is_written_atomically(tmp_path, capsys, monkeypatch) -> None:
 def test_output_keeps_unix_newlines(tmp_path, capsys) -> None:
     run(tmp_path, capsys, [lead("a.py:1")], [verdict("a.py:1")])
     assert b"\r\n" not in (tmp_path / "o.json").read_bytes()
+
+
+def test_empty_leads_need_no_verdict_file_and_write_an_empty_array(tmp_path) -> None:
+    """R062-03: a run with no lead to verify still gets merged.json."""
+    import subprocess
+    import sys
+    script = Path(__file__).parent.parent / "skills" / "inspect" / "scripts" / "merge_verdicts.py"
+    (tmp_path / "leads.json").write_text("[]", encoding="utf-8")
+    p = subprocess.run([sys.executable, str(script), "--leads", str(tmp_path / "leads.json"), "--out", str(tmp_path / "merged.json")],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert json.loads((tmp_path / "merged.json").read_text(encoding="utf-8")) == []
+
+
+def test_leads_without_any_verdict_file_are_still_refused(tmp_path) -> None:
+    import subprocess
+    import sys
+    script = Path(__file__).parent.parent / "skills" / "inspect" / "scripts" / "merge_verdicts.py"
+    (tmp_path / "leads.json").write_text(json.dumps([{"where": "a.py:1", "what": "x y z w", "level": "read"}]), encoding="utf-8")
+    p = subprocess.run([sys.executable, str(script), "--leads", str(tmp_path / "leads.json"), "--out", str(tmp_path / "merged.json")],
+                       capture_output=True, text=True)
+    assert p.returncode == 2 and not (tmp_path / "merged.json").exists()

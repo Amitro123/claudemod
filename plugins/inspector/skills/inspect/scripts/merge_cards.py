@@ -7,7 +7,7 @@
 them before anything is written. Every lead of each card's `complete.siblings` and of each sweeper
 file (an array) is kept field for field, plus `found_by` (card id or `sweeper`). Two leads are merged
 only when they are exact duplicates: the same file and the same set of line ranges in `where`, and the
-same words in `what` (case, spacing and punctuation ignored). The stronger level is kept (reproduced >
+same words and comparison operators (`<`, `>`, `<=`, `>=`, `==`, `!=`) in `what` (case, spacing and other punctuation ignored). The stronger level is kept (reproduced >
 read > suspect > inferred; tie: more filled fields, then first) and gets `also_found_by` and
 `merged_from`. A `where` that cannot be parsed is never merged. Every other same-file pair within 10
 lines, and every pair whose line ranges intersect (`path:15` is 15-15), stays as two leads with all their
@@ -39,6 +39,7 @@ OVERLAP, SIMILAR, NEARBY = "lines overlap", "similar wording", "within 10 lines"
 SIMILAR_AT = 0.5  # word similarity from which a flagged pair is called "similar wording"
 OWN_KEYS = ("found_by", "also_found_by", "merged_from", "merged_variants", "possible_duplicate_of", "case")
 WORD_RE = re.compile(r"[a-z0-9_]+")
+IDENT_RE = re.compile(r"[a-z0-9_]+|[<>=!]+")  # identity tokens: words plus comparison operators (`<` and `>` are different claims)
 
 
 def parse_where(w: object):
@@ -70,8 +71,9 @@ def jaccard(a: set[str], b: set[str]) -> float:
 
 def exact_key(lead: dict, parsed) -> tuple | None:
     """Identity of an exact duplicate: the file and the set of line ranges of `where`, and the words of `what`
-    (case, spacing and punctuation ignored). None when `where` cannot be parsed or `what` is empty: never merged."""
-    what = tuple(WORD_RE.findall(str(lead.get("what") or "").lower()))
+    (case, spacing and other punctuation ignored; comparison operators count). None when `where` cannot be parsed or `what` is empty: never merged."""
+    text = str(lead.get("what") or "").lower()
+    what = tuple(IDENT_RE.findall(text)) if WORD_RE.search(text) else ()
     if not parsed or not what:
         return None
     return parsed[0], frozenset(parsed[1]), what

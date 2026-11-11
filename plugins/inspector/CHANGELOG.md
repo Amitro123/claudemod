@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed (R062-02): `merge_cards.py` treated leads that differ only by a comparison operator (`<` vs `>`, `<=`, `>=`, `==`, `!=`) as exact duplicates and merged them, because the identity of `what` was words only. Comparison operators now count in the identity; case, spacing and other punctuation are still ignored. Reproduced first in `tests/test_merge_cards.py`.
+- Fixed (R062-03): a run with no leads ended without `merged.json` and `open-bugs.md`, which the release gate requires. `merge_verdicts.py` accepts no `--verdicts` when `leads.json` is empty (output `[]`; still exit 2 when there are leads and no verdict file), and the generated plan's "No lead to verify" branch now lists the `merge_verdicts.py` and `handoff.py` commands. Reproduced first in `tests/test_plan.py`.
+- Fixed: `evals/gate/check_run.py` `verdicts.no_orphans` failed on a verdict whose `where` carries the ` [lead N]` suffix; it now compares on the base `where`, like `merged.matches_leads`. A suffixed verdict naming no lead still fails.
+- Documented: the ` [lead N]` suffix and the no-leads commands in `references/run-folder.md` and `merge_verdicts.py`.
+
 ## 0.7.0 (2026-11-11)
 
 - Added: a deterministic RUN PLAN. The collector now runs `scripts/plan.py` and ends its summary with `RUN PLAN: <run>/plan/plan.md: read it now and execute phase 1; do not skip phases`. The plan names the phases and the plugin agent types to start (one `inspector:investigator` for fewer than 3 cases; otherwise a brief-writer, an `inspector:case-reader` per case and three `inspector:sweeper`s, then `inspector:verifier`s per chunk of at most 8 leads via `plan.py --phase verify`), and every agent prompt is a generated file (`Read <path> and follow it`), so no prompt is hand-written and the main conversation stays small. `plan/expect.json` records the agents and output files each phase must leave. SKILL.md shrinks from 4450 to 3853 words (the size pin is now 3900): detail moved to `references/cross-check.md`, `parallel.md` and `verify.md` point at the generated prompts. Changed: the code sweep is no longer split per hotspot area (three sweepers are planned). The release gate (`evals/gate/check_run.py`) takes readers, sweeper files and verifier chunks from `plan/expect.json` and its new `plan.phases` invariant fails a skipped phase.
