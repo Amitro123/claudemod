@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed: the `evidence.py` docstring no longer says "offline"; `--github` and `--show` call `gh` over the network when it is available.
 - Fixed: `evidence.py --unit` (and `--show`) with a sha prefix that matches more than one unit now exits 2 naming the candidates instead of silently using the first match; a full or unambiguous prefix works as before.
 - Fixed: blame line counts now skip the same trivial lines as the copy detector (comment lines, bare `return`/`pass`/`break`), so a comment-only hunk no longer inflates the top `introduced_by` culprit or turns a change into a fix-of-fix. `BLAME_CACHE_VERSION` is v4, so older cache entries are not reused.
 ## 0.6.1 (2026-11-10)

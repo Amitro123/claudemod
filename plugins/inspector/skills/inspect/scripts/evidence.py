@@ -12,7 +12,8 @@ Two windows: the *work* window (what --since, --max, --unit and --path select) i
 investigation works; the *attribution* window (--history units back from --ref) is what blame
 results are mapped to, so a fix in the work window still sees that its culprit was a fix.
 
-Stdlib only, offline, read-only. The fix verdict is a heuristic for Claude to confirm by reading
+Stdlib only, read-only; no network except `gh` (GitHub enrichment with --github, PR text with --show) when it is
+available. The fix verdict is a heuristic for Claude to confirm by reading
 the diff, not a verdict.
 
     python evidence.py [--repo .] [--ref HEAD] [--since REF|YYYY-MM-DD] [--max 200]
