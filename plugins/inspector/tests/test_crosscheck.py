@@ -114,3 +114,35 @@ def test_fallback_preserves_scope_and_limits(monkeypatch) -> None:
                             '--min-lines', '2']) == 0
     assert seen['ref'] == 'abcdef123' and seen['unit'] == '#2'
     assert (seen['limit'], seen['history'], seen['max_blame'], seen['min_lines']) == (10, 20, 30, 2)
+
+
+def _two_util_files() -> dict:
+    left = [{"line": "render(x, escape=False)", "at": ["a/util.py:10", "b/util.py:11"]}]
+    return {"timeline": [{"unit": "#2", "sha": "aaa1111", "introduced_by": [],
+                          "commits": [{"sha": "c2c2c2c", "left_behind": left}]}],
+            "left_behind": [{"unit": "#2", "commit": "c2c2c2c", "line": left[0]["line"], "at": left[0]["at"]}]}
+
+
+def test_near_matches_on_path_components_only() -> None:
+    assert crosscheck.near(("util.py", 10), ("a/util.py", 10))
+    assert crosscheck.near(("a/util.py", 10), ("a/util.py", 12))
+    assert not crosscheck.near(("a/util.py", 10), ("b/util.py", 10))
+    assert not crosscheck.near(("til.py", 10), ("a/util.py", 10))              # not on a component boundary
+    assert not crosscheck.near(("util.py", 10), ("a/util.py", 20))
+    # a bare basename two copies share is ambiguous: it names neither
+    paths = {"a/util.py", "b/util.py"}
+    assert not crosscheck.near(("util.py", 10), ("a/util.py", 10), paths=paths)
+    assert crosscheck.near(("a/util.py", 10), ("a/util.py", 10), paths=paths)
+    assert crosscheck.near(("b/util.py", 10), ("b/util.py", 10), paths=paths)
+
+
+def test_a_bare_basename_does_not_clear_two_different_files() -> None:
+    ev = _two_util_files()
+    r = crosscheck.crosscheck(ev, [card("#2", "c2c2c2c", "#1", siblings=[{"where": "util.py:10", "level": "read"}])])
+    assert r["cases"][0]["siblings"][0]["source"] == "reader only"
+    assert r["copies_left_unchecked"][0]["at"] == ["a/util.py:10", "b/util.py:11"]
+    r = crosscheck.crosscheck(ev, [card("#2", "c2c2c2c", "#1", clear=["util.py:10: escaped"])])
+    assert r["copies_left_unchecked"][0]["at"] == ["a/util.py:10", "b/util.py:11"]
+    r = crosscheck.crosscheck(ev, [card("#2", "c2c2c2c", "#1", siblings=[{"where": "b/util.py:11", "level": "read"}])])
+    assert r["cases"][0]["siblings"][0]["source"] == "both"
+    assert r["copies_left_unchecked"][0]["at"] == ["a/util.py:10"]
