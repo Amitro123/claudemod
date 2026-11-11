@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Fixed: verification could be skipped and the phases could run as generic workers (for example under a delegation or routing rule). SKILL.md, `references/parallel.md` and `references/verify.md` now require verification before leads are presented as findings (skipping it is stated in the report's first line) and require the plugin's own agent types (`inspector:case-reader`, `inspector:sweeper`, `inspector:verifier`, `inspector:docs-checker`), with a stated fallback when they are unavailable. `handoff.py` starts its output with an `UNVERIFIED: N of M leads ...` banner when any lead has no verdict.
+- Release-confidence tooling (maintainers only, nothing shipped in the skill): `evals/gate/` holds `RELEASING.md` (checklist before a version bump), `profile.json` (the artifacts and invariants a parallel run must leave in its run folder) and `check_run.py` (stdlib, read-only; exit 0 pass, 1 findings, 2 invalid input; JSON report per invariant). It flags a multi-file input silently dropped by a merge step, missing or invalid cards, unverified leads without the banner, orphan verdicts, and counts that do not line up between steps. Tested in `tests/test_gate_check.py`.
+
 ## 0.6.2 (2026-11-11)
 
 Note: an external review of 0.6.1 (reviewed commit d19bef0) reported four findings; all four were reproduced on that commit before the fixes below.

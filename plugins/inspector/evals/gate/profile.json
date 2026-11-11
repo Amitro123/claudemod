@@ -1,0 +1,31 @@
+{
+  "profile_version": 1,
+  "name": "inspector-parallel-run",
+  "description": "Artifacts a parallel run (references/parallel.md and verify.md) must leave in one run folder, and the invariants between them. Data only: check_run.py reads this file and a run folder and imports nothing from the plugin. Paths are relative to the run folder; {id} is a reader id. Override any key with check_run.py --override file.json (deep merge, objects only).",
+  "expect_ids": null,
+  "artifacts": {
+    "cards": {"path": "cards/{id}.json", "per_id": true, "required": true, "kind": "json", "leads_at": "complete.siblings"},
+    "sweeps": {"path": "sweep-*.json", "min": 1, "kind": "json-array", "leads_at": "$"},
+    "leads": {"path": "leads.json", "required": true, "kind": "json-array"},
+    "dedupe_log": {"path": "dedupe.md", "required": true, "kind": "text"},
+    "verdicts": {"path": "verdicts-*.json", "min": 0, "kind": "json-array"},
+    "merged": {"path": "merged.json", "required": true, "kind": "json-array"},
+    "handoff": {"path": "open-bugs.md", "required": true, "kind": "text"}
+  },
+  "fields": {"where": "where", "verdict": "verdict", "found_by": "found_by", "merged_from": "merged_from"},
+  "dedupe_log": {"raw_count": "^- raw: (\\d+)\\s*$", "merges_heading": "## Merges", "none_marker": "- none"},
+  "handoff": {"banner": "^UNVERIFIED: (\\d+) of (\\d+) leads", "rejected_prefix": "- `"},
+  "unverified_values": ["unverified"],
+  "dropped_verdicts": ["NOT REAL"],
+  "invariants": [
+    "artifacts.present",
+    "artifacts.valid_json",
+    "leads.source",
+    "inputs.match_log_raw",
+    "leads.count",
+    "verdicts.no_orphans",
+    "verdicts.coverage",
+    "merged.matches_leads",
+    "handoff.counts"
+  ]
+}
