@@ -113,7 +113,7 @@ def sweeper_prompt(c: Ctx, k: int) -> str:
         lines.insert(0, f"OUTSIDE-IN. Method: read {c.skill_root}/references/outside-in.md first.")
     lines += [f"Do step 5 of the method only, for your part ({part}).",
               f"At most 25 tool calls. {EVIDENCE}",
-              "Write the JSON array of leads (strict JSON) to the sweep file, then reply with only its path and the lead count.", ""]
+              "Write the JSON array of leads (strict JSON) to the sweep file, then reply with only that path and the lead count.", ""]
     return "\n".join(lines)
 
 
