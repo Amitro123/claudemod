@@ -31,7 +31,7 @@ DOC_FILES = [SKILL / "SKILL.md", *sorted((SKILL / "references").glob("*.md")), *
 ENV = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUTF8": "1"}
 TIMEOUT = 60
 FLOOR = 7  # documented commands that must be extracted and run; raise it when the docs gain commands
-REQUIRED_SCRIPTS = {"evidence.py", "merge_cards.py", "merge_verdicts.py", "crosscheck.py", "handoff.py", "doctor.py"}
+REQUIRED_SCRIPTS = {"evidence.py", "merge_cards.py", "merge_verdicts.py", "crosscheck.py", "handoff.py", "doctor.py", "plan.py"}
 
 
 # ---------------------------------------------------------------- fixture workspace
@@ -85,6 +85,8 @@ def build_workspace(ws: Path, repo: bool) -> None:
         run_script("evidence.py", ["--repo", str(r), "--out", str(ev)], cwd=ws)
         assert (ev / "evidence.json").exists()
         (ws / "evidence.json").write_bytes((ev / "evidence.json").read_bytes())
+        assert (ev / "plan" / "plan.md").exists(), "the collector wrote the RUN PLAN"
+        (ev / "leads.json").write_bytes((ws / "leads.json").read_bytes())  # what merge_cards.py leaves, for `plan.py --phase verify`
 
 
 def run_script(script: str, args: list[str], cwd: Path, stdin: str | None = None, ok=(0,)):

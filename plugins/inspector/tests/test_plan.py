@@ -211,3 +211,44 @@ def test_zero_cases_say_so_and_start_no_agent(tmp_path) -> None:
     assert exp(run)["mode"] == "none" and exp(run)["phases"] == []
     assert "Start no agent" in (run / "plan" / "plan.md").read_text(encoding="utf-8")
     assert plan(run, "--phase", "verify")[0] == 2
+
+
+def plan_commands(run: Path) -> list[list[str]]:
+    """The numbered `python3 "..."` commands of plan.md, as argument lists (python3 -> this interpreter)."""
+    import re
+    import shlex
+    out = []
+    for line in (run / "plan" / "plan.md").read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^\d+\. (python3 .*)$", line)
+        if m:
+            out.append([sys.executable, *shlex.split(m.group(1), posix=True)[1:]])
+    return out
+
+
+def test_the_commands_in_plan_md_run_end_to_end(tmp_path) -> None:
+    """Follow plan.md as the main conversation would: merge, plan --phase verify, merge verdicts, handoff."""
+    run = make_run(tmp_path, 3)
+    plan(run)
+    (run / "cards").mkdir(exist_ok=True)
+    full = lambda i: {**lead(i), "category": "broken-flow", "reach": "default-on", "change": "c", "test": "t"}  # noqa: E731
+    for i in (1, 2, 3):
+        (run / "cards" / f"{i}.json").write_text(json.dumps({"case": str(i), "complete": {"siblings": [full(i)], "checked_clear": []}}))
+    for k in (1, 2, 3):
+        (run / f"sweep-{k}.json").write_text(json.dumps([full(10 + k)]))
+    cmds = plan_commands(run)
+    assert [Path(c[1]).name for c in cmds] == ["merge_cards.py", "crosscheck.py", "plan.py"]
+    env = {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONUTF8": "1", "PATH": __import__("os").environ["PATH"], "SYSTEMROOT": __import__("os").environ.get("SYSTEMROOT", "")}
+    for c in (cmds[0], cmds[2]):  # crosscheck needs a real collector snapshot; the collector test covers it
+        p = subprocess.run(c, capture_output=True, text=True, encoding="utf-8", env=env)
+        assert p.returncode == 0, (c, p.stdout[-300:], p.stderr[-300:])
+    leads = json.loads((run / "leads.json").read_text(encoding="utf-8"))
+    assert len(leads) == 6 and len(exp(run)["verifier_chunks"]) == 1
+    for ch in exp(run)["verifier_chunks"]:
+        (run / ch["verdicts"]).write_text(json.dumps([{"where": x["where"], "verdict": "REAL"} for x in leads]))
+    after = plan_commands(run)
+    assert [Path(c[1]).name for c in after][-3:] == ["plan.py", "merge_verdicts.py", "handoff.py"] or [Path(c[1]).name for c in after][-2:] == ["merge_verdicts.py", "handoff.py"]
+    for c in [x for x in after if Path(x[1]).name in ("merge_verdicts.py", "handoff.py")]:
+        p = subprocess.run(c, capture_output=True, text=True, encoding="utf-8", env=env)
+        assert p.returncode == 0, (c, p.stdout[-300:], p.stderr[-300:])
+    assert (run / "merged.json").is_file() and (run / "open-bugs.md").is_file()
+    assert not (run / "open-bugs.md").read_text(encoding="utf-8").startswith("UNVERIFIED")
