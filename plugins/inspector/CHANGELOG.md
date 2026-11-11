@@ -10,6 +10,12 @@ Note: an external review of 0.6.1 (reviewed commit d19bef0) reported four findin
 - Fixed (R061-02): `evals/scorecard.py` no longer matches gold keywords against `where`; the path still matches `where`, a keyword must appear in `what`, `breaks`, `change` or `test` of the same lead, NOT REAL still excluded.
 - Fixed (R061-03): `lint_leads.py` L9 accepts a structured `query_run: {"mode": "read-only", "status": "executed", "observed": "..."}` or a free-text probe that states a completed read-only run with an observed result; negation (not executed, unavailable, could not, no access) and instructions or conditions (run this, after deployment, should, will, must, before) warn. Documented in `references/labels.md` and the investigator, case-reader and verifier agents.
 - Fixed (R061-04): `leadsio.py` checks presence of `complete`, `complete.siblings` and `complete.checked_clear` separately from the value: an explicit `null` exits 2 with and without `--strict`, for file, folder and stdin; sweeper files and `merge_verdicts.py --leads` use the same rules.
+- Documented (not changed): `handoff.py` keeps model-written Markdown links in table cells because the handoff copies the readers' words unchanged; stripping them would break that promise.
+- Fixed: `crosscheck.py` no longer treats a bare basename (`util.py:10`) as the same sibling as every copy that shares it; a shortened path must be a component-boundary suffix of exactly one copy path, otherwise the sibling stays "reader only" and the copies stay unchecked.
+- Fixed: `merge_verdicts.py --out` writes through the shared temp-file-and-replace writer, so a failed run cannot leave a truncated file (output stays LF).
+- Fixed: the `evidence.py` docstring no longer says "offline"; `--github` and `--show` call `gh` over the network when it is available.
+- Fixed: `evidence.py --unit` (and `--show`) with a sha prefix that matches more than one unit now exits 2 naming the candidates instead of silently using the first match; a full or unambiguous prefix works as before.
+- Fixed: blame line counts now skip the same trivial lines as the copy detector (comment lines, bare `return`/`pass`/`break`), so a comment-only hunk no longer inflates the top `introduced_by` culprit or turns a change into a fix-of-fix. `BLAME_CACHE_VERSION` is v4, so older cache entries are not reused.
 
 ## 0.6.1 (2026-11-10)
 

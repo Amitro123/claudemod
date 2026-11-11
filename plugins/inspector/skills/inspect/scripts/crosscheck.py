@@ -35,9 +35,18 @@ def at(where: str) -> tuple[str, int] | None:
     return (m.group(1), int(m.group(2))) if m else None
 
 
-def near(a: tuple[str, int] | None, b: tuple[str, int] | None, slack: int = 3) -> bool:
-    return bool(a and b and (a[0] == b[0] or a[0].endswith("/" + b[0]) or b[0].endswith("/" + a[0]))
-                and abs(a[1] - b[1]) <= slack)
+def near(a: tuple[str, int] | None, b: tuple[str, int] | None, slack: int = 3, paths: set[str] | None = None) -> bool:
+    """Same file (equal paths, or one a suffix of the other on a path-component boundary) within `slack` lines.
+    With `paths` (every path the collector found), a shortened path that is a suffix of more than one of them
+    names none of them: two different files with the same basename are not the same sibling."""
+    if not (a and b and abs(a[1] - b[1]) <= slack):
+        return False
+    if a[0] == b[0]:
+        return True
+    short, long_ = sorted((a[0], b[0]), key=len)
+    if not long_.endswith("/" + short):
+        return False
+    return paths is None or sum(p == short or p.endswith("/" + short) for p in paths) <= 1
 
 
 def norm_unit(u: str | None) -> str:
@@ -98,10 +107,11 @@ def crosscheck(evidence: dict, cards: list[dict]) -> dict:
         copies = [(src["sha"][:12], x, at(h))
                   for src in ([] if identity_error else [commit] if commit else (unit or {}).get("commits", []))
                   for x in src.get("left_behind", []) for h in x["at"] if at(h)]
+        copy_paths = {h[0] for _, _, h in copies}
         sibs = []
         for sibling in (c.get("complete") or {}).get("siblings", []):
             loc = at(sibling.get("where", ""))
-            hits = [(sha, x, h) for sha, x, h in copies if near(loc, h)]
+            hits = [(sha, x, h) for sha, x, h in copies if near(loc, h, paths=copy_paths)]
             for sha, x, h in hits:
                 decided.add((unit["unit"], sha, x["line"], h))
             sibs.append({"where": sibling.get("where"), "level": sibling.get("level"), "breaks": sibling.get("breaks"),
@@ -109,7 +119,7 @@ def crosscheck(evidence: dict, cards: list[dict]) -> dict:
         for note in (c.get("complete") or {}).get("checked_clear", []):
             loc = at(note)
             for sha, x, h in copies:
-                if near(loc, h):
+                if near(loc, h, paths=copy_paths):
                     decided.add((unit["unit"], sha, x["line"], h))
         out_cards.append({"case": c.get("case") or c.get("unit"), "culprit": culprit,
                           "mechanism_level": (c.get("mechanism") or {}).get("level"),

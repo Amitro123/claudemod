@@ -116,8 +116,8 @@ def main(argv: list[str] | None = None) -> int:
         merged = [m for m in merged if m["verdict"].upper() != "NOT REAL"]
     text = json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
     if a.out:
-        with open(a.out, "w", encoding="utf-8", newline="\n") as f:
-            f.write(text)
+        from evidence import write              # temp file + os.replace: a failed run never leaves a truncated file
+        write(a.out, text, newline="\n")
     else:
         sys.stdout.write(text)
     print("merge_verdicts: " + ", ".join(f"{k}: {n}" for k, n in sorted(counts.items()))
