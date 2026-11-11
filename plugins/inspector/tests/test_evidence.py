@@ -259,8 +259,53 @@ def test_default_out_is_a_new_folder(repo: Path, capsys) -> None:
     assert evidence.main(["--repo", str(repo)]) == 0
     saved = capsys.readouterr().out.strip().splitlines()[-1]
     assert saved.startswith("Saved: ") and Path(saved.split()[1].rstrip(".")).exists()
-    assert "/.git/inspector/" in saved.replace("\\", "/"), "the default folder lasts between commands and is out of the tree"
-    assert run(repo, "status", "--porcelain") == ""
+    assert "/.inspector-run/" in saved.replace("\\", "/"), "the default folder is inside the working directory, where an agent's Write needs no approval"
+    assert run(repo, "status", "--porcelain") == "", "and git never lists it"
+    assert (repo / ".inspector-run" / ".gitignore").read_text() == "*\n"
+
+
+def test_default_out_falls_back_to_git_dir_then_temp(tmp_path: Path) -> None:
+    r = new_repo(tmp_path / "blocked")
+    (r / ".inspector-run").write_text("a file, so the folder cannot be made")
+    p = Path(evidence.default_out(str(r)))
+    assert p.parent == (r / ".git" / "inspector") and p.is_dir()
+    assert Path(evidence.default_out(str(tmp_path / "not-a-repo-at-all"))).name.startswith("inspector-")
+
+
+def test_out_flag_overrides_the_default(repo: Path, tmp_path: Path, capsys) -> None:
+    out = tmp_path / "chosen"
+    assert evidence.main(["--repo", str(repo), "--out", str(out), "--min-lines", "1"]) == 0
+    text = capsys.readouterr().out
+    assert f"Saved: {out / 'evidence.json'}" in text and (out / "plan" / "plan.md").exists()
+    assert ".inspector-run" not in text.splitlines()[-1]
+
+
+def test_summary_ends_with_the_run_plan_pointer(repo: Path, tmp_path: Path, capsys) -> None:
+    out = tmp_path / "ev-plan"
+    assert evidence.main(["--repo", str(repo), "--out", str(out), "--min-lines", "1"]) == 0
+    lines = capsys.readouterr().out.rstrip("\n").splitlines()
+    assert lines[-1].startswith("Saved: "), "the Saved line stays last"
+    pointer = lines[-3]
+    assert pointer.startswith("RUN PLAN: ") and pointer.endswith("/plan/plan.md: read it now and execute phase 1; do not skip phases")
+    assert (out / "plan" / "plan.md").is_file() and (out / "plan" / "expect.json").is_file()
+    assert "Read " in (out / "plan" / "plan.md").read_text(encoding="utf-8")
+
+
+def test_no_plan_pointer_when_nothing_is_saved(repo: Path, capsys, monkeypatch) -> None:
+    def no_write(*a, **k):
+        raise OSError("Read-only file system")
+    monkeypatch.setattr(evidence, "default_out", no_write)
+    assert evidence.main(["--repo", str(repo), "--min-lines", "1"]) == 0
+    assert "RUN PLAN" not in capsys.readouterr().out
+
+
+def test_a_plan_failure_never_breaks_the_collector(repo: Path, tmp_path: Path, capsys, monkeypatch) -> None:
+    def boom(*a, **k):
+        raise evidence.plan.Invalid("synthetic")
+    monkeypatch.setattr(evidence.plan, "build", boom)
+    assert evidence.main(["--repo", str(repo), "--out", str(tmp_path / "ev-boom"), "--min-lines", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "RUN PLAN: not written (synthetic)" in out and out.rstrip().splitlines()[-1].startswith("Saved: ")
 
 
 def test_triage_writes_dossiers_in_order(repo: Path, tmp_path: Path, capsys) -> None:

@@ -292,7 +292,7 @@ def test_downstream_is_printed_only_when_given(monkeypatch, capsys) -> None:
 
 def test_skill_md_stays_within_its_size_budget() -> None:
     words = len((PLUGIN / "skills/inspect/SKILL.md").read_text(encoding="utf-8").split())
-    assert words <= 4450, words
+    assert words <= 3900, words
 
 
 def test_the_investigator_case_file_carries_the_leads_as_a_json_block() -> None:

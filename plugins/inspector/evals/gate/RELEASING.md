@@ -11,7 +11,9 @@ past failures lived.
 2. **`tests/test_doc_commands.py` passes.** It runs the commands the docs show, as written.
 3. **Run-artifact check on a real or acceptance run.** Finish one parallel run (references/parallel.md,
    then verify.md), then:
-   `python3 evals/gate/check_run.py <run folder> --expect <reader ids you started>`
+   `python3 evals/gate/check_run.py <run folder>` (a run the collector planned has `plan/expect.json`; the reader ids,
+   sweeper files and verifier chunks then come from it, and `plan.phases` fails when a phase left its outputs
+   missing. For a run without a plan add `--expect <reader ids you started>`.)
    Exit 0 required: every invariant `pass` (a `skipped` one needs a written reason in the PR). Exit 1 is
    a finding to fix, exit 2 is a wrong invocation. The checker only reads the run folder. If a folder
    names files differently, pass `--override file.json`; do not edit the checker.
