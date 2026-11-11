@@ -374,3 +374,19 @@ def test_identical_exact_duplicates_have_no_variants_and_winner_fields_never_cha
     a, b = _variant_pair()
     final, _, _ = merge_cards.dedupe([a, {**a, "found_by": "2"}])
     assert "merged_variants" not in final[0] and final[0]["impact"] == {"what": "i1"}
+
+
+def test_leads_differing_only_by_an_operator_are_not_merged(tmp_path, capsys) -> None:
+    """R062-02: `<` vs `>` (and `<=`, `==`, `!=`) are different claims; the word-only identity merged them."""
+    ops = ["x < 5", "x > 5", "x <= 5", "x >= 5", "x == 5", "x != 5"]
+    leads = [lead("a.py:10", f"the retry loop stops when attempts {op} limit and drops the last upload") for op in ops]
+    code, out, log, cap = run(tmp_path, capsys, {"1": card(1, *leads)}, "1")
+    assert code == 0 and len(out) == len(ops), "each operator is its own lead"
+    assert all("merged_from" not in x for x in out)
+
+
+def test_exact_duplicates_still_merge_when_only_spacing_and_case_differ(tmp_path, capsys) -> None:
+    a = lead("a.py:10", "stops when attempts < limit  and drops the last upload")
+    b = lead("a.py:10", "Stops when attempts<limit and drops the Last upload.")
+    code, out, log, cap = run(tmp_path, capsys, {"1": card(1, a, b)}, "1")
+    assert code == 0 and len(out) == 1 and out[0]["merged_from"] == ["a.py:10"]

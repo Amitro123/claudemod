@@ -244,7 +244,9 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
             if doc["docs_checker"]["needed"]:
                 L += ["The docs-checker returns text, not a file: use its answers as references/verify.md step 3 says."]
         else:
-            L += ["No lead to verify: start no verifier and say so in the report."]
+            L += ["No lead to verify: start no verifier and say so in the report. Still, no agent, write the two files the run folder needs:",
+                  f"1. {c.script('merge_verdicts.py')} --leads \"{c.run}/leads.json\" --out \"{c.run}/merged.json\"",
+                  f"2. {c.script('handoff.py')} --cards \"{c.run}/merged.json\" --out \"{c.run}/open-bugs.md\""]
         L += ["Present only verified leads as findings (references/verify.md). The pattern board and the case file are step 6 of SKILL.md.", ""]
     return "\n".join(L)
 

@@ -418,3 +418,19 @@ def test_unknown_where_still_fails(tmp_path):
     merged[0]["where"] = "nowhere.py:9"
     w(run / "merged.json", merged)
     assert "merged.matches_leads" in failing(run_check(run)[1])
+
+
+def test_suffixed_verdict_is_not_an_orphan(tmp_path):
+    """A verdict carries the ` [lead N]` suffix of its lead; verdicts.no_orphans compares on the base `where`."""
+    run = _suffix_run(tmp_path)
+    w(run / "verdicts-1.json", [{"where": "src/b.py:12 [lead 0]", "verdict": "REAL"},
+                                {"where": "src/b.py:12 [lead 1]", "verdict": "REAL"},
+                                {"where": "c.py:1", "verdict": "REAL"}])
+    rep = run_check(run, "--expect", "1")[1]
+    assert status(rep)["verdicts.no_orphans"] == "pass", rep
+
+
+def test_suffixed_verdict_with_no_matching_lead_is_still_an_orphan(tmp_path):
+    run = _suffix_run(tmp_path)
+    w(run / "verdicts-1.json", [{"where": "nowhere.py:9 [lead 0]", "verdict": "REAL"}])
+    assert status(run_check(run, "--expect", "1")[1])["verdicts.no_orphans"] == "fail"

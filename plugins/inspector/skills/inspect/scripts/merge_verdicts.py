@@ -4,10 +4,15 @@
     python merge_verdicts.py --leads leads.json --verdicts v1.json [v2.json ...]
                              [--out merged.json] [--drop-not-real]
 
+`--verdicts` may be left out only when leads.json is an empty array (a run with no lead to verify): the
+output is then `[]`, so the run folder still holds the merged.json the release gate requires.
+
 Each lead gains `verdict` (REAL | REAL-LOW | NOT REAL | UNVERIFIABLE, or `unverified` when no
 verdict exists), `verified_by`, `false_claims`; the verifier's corrected labels replace the lead's
 (the originals stay under `original_category` / `original_reach`); the verifier's `unverifiable`
-parts are appended to `not_verified`. Exit 2 on invalid JSON, a verdict matching no lead, two leads with the same `where`, or two
+parts are appended to `not_verified`. Two leads that share a `where` are refused; give each a distinct suffix
+` [lead N]` (a space, `[lead `, the number, `]`) on the `where` of each of them, in the verdict as well; the release gate
+(`evals/gate/check_run.py`) compares leads, verdicts and merged leads on the `where` without that suffix. Exit 2 on invalid JSON, a verdict matching no lead, two leads with the same `where`, or two
 different verdicts for one `where` (identical duplicates are fine).
 """
 from __future__ import annotations
@@ -47,7 +52,7 @@ def merge(leads: list[dict], verdicts: list[dict]) -> tuple[list[dict], int]:
     dup = sorted(w for w, n in seen.items() if n > 1)
     if dup:
         raise ValueError("two leads share the same where: " + ", ".join(dup)
-                         + "; make `where` unique (for example add a line range or a suffix)")
+                         + "; make `where` unique (for example add a line range or a suffix like ` [lead 2]`)")
     by_where: dict[str, dict] = {}
     for v in verdicts:
         w = str(v.get("where"))
@@ -94,14 +99,16 @@ def merge(leads: list[dict], verdicts: list[dict]) -> tuple[list[dict], int]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--leads", required=True)
-    ap.add_argument("--verdicts", required=True, nargs="+", action="extend",
-                    help="verdict files; every occurrence of the flag counts")
+    ap.add_argument("--verdicts", nargs="*", action="extend", default=[],
+                    help="verdict files; every occurrence of the flag counts (may be omitted only when leads.json is empty)")
     ap.add_argument("--out")
     ap.add_argument("--drop-not-real", action="store_true")
     a = ap.parse_args(argv)
     try:
         leads = load_array(a.leads, "leads")
         leadsio.validate_leads(leads, "leads")
+        if leads and not a.verdicts:
+            raise ValueError("--verdicts is required when leads.json has leads")
         verdicts = []
         for p in a.verdicts:
             one = load_array(p, "verdicts")
