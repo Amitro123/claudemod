@@ -54,7 +54,7 @@ next to that project, and pass its path on the command line. Synthetic example:
 
 An item is covered when at least one lead matches one of its `paths_any` substrings (against the
 lead's `where`) AND one of its `words_any` keywords (against the lead's `what`, `breaks`, `change`,
-`test`), case-insensitive, and the same lead satisfies both. `severity` is optional and only echoed.
+`test`; never the `where`, so a file name alone cannot supply the keyword), case-insensitive, and the same lead satisfies both. `severity` is optional and only echoed.
 
 ## Comparing versions
 

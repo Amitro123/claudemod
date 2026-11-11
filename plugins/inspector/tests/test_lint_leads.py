@@ -131,4 +131,37 @@ def test_l9_quiet_when_executed_read_only_or_not_verified_or_no_query() -> None:
 def test_l9_probe_that_only_reads_the_code_still_warns() -> None:
     bad = with_(CLEAN, change=QUERY_CHANGE, change_status="verified", probe="src/a.py:1 read")
     assert [s for r, s, _ in L.lint(bad) if r == "L9"] == ["warn"]
-    assert "not executed" in [m for r, _, m in L.lint(bad) if r == "L9"][0]
+    assert "no evidence" in [m for r, _, m in L.lint(bad) if r == "L9"][0]
+
+
+def l9(**kw) -> bool:
+    return "L9" in rules(with_(CLEAN, change="SELECT id FROM events", change_status="verified", **kw))
+
+
+def test_l9_negated_or_future_probe_still_warns() -> None:
+    for probe in ("Query was not executed; read-only access unavailable.",
+                  "Run this read-only query after deployment.",
+                  "read-only query could not be executed, no access",
+                  "To be run read-only; it will return rows.",
+                  "ran read-only before the deploy: 3 rows",
+                  "read-only run cannot be done here"):
+        assert l9(probe=probe), probe
+
+
+def test_l9_completed_read_only_run_with_observed_result_passes() -> None:
+    assert not l9(probe="Executed read-only query; returned 12 rows.")
+    assert not l9(probe="ran the query read-only: 3 rows")
+    assert l9(probe="Executed read-only query.")  # a run with no observed result is not evidence
+
+
+def test_l9_structured_query_run_is_accepted() -> None:
+    ok = {"mode": "read-only", "status": "executed", "observed": "12 rows, newest 2026-11-01"}
+    assert not l9(query_run=ok)
+    for bad in ({**ok, "status": "not executed"}, {**ok, "mode": "write"}, {**ok, "observed": ""},
+                {**ok, "observed": "could not read the result"}, "executed", {"status": "executed"}):
+        assert l9(query_run=bad), bad
+
+
+def test_l9_absent_evidence_warns() -> None:
+    assert l9()
+    assert l9(probe="")

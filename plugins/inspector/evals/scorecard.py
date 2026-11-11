@@ -21,7 +21,7 @@ from pathlib import Path
 VERDICTS = ("REAL", "REAL-LOW", "UNVERIFIABLE", "unverified", "NOT REAL")
 CONFIRMED = ("REAL", "REAL-LOW")
 PLUGIN_JSON = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
-TEXT_FIELDS = ("what", "breaks", "change", "test", "where")
+TEXT_FIELDS = ("what", "breaks", "change", "test")  # content only; `where` is matched separately as the path
 
 
 def load_json(path: str):

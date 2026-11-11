@@ -117,3 +117,24 @@ def _pj(tmp_path, version) -> Path:
     p = tmp_path / "plugin.json"
     p.write_text(json.dumps({"version": version}), encoding="utf-8")
     return p
+
+
+RETRY_GOLD = [{"id": "G1", "title": "retry counter never resets", "paths_any": ["src/retry.py"], "words_any": ["retry"]}]
+
+
+def test_filename_keyword_does_not_cover_an_unrelated_lead() -> None:
+    unrelated = lead("src/retry.py:10", "REAL", what="log message has incorrect timestamp")
+    r = scorecard.score_gold([unrelated], RETRY_GOLD)
+    assert (r["covered"], r["recall"]) == (0, 0.0)
+
+
+def test_lead_whose_content_mentions_the_failure_covers_the_item() -> None:
+    real = lead("src/retry.py:10", "REAL", what="the retry counter is never reset after success")
+    assert scorecard.score_gold([real], RETRY_GOLD)["recall"] == 1.0
+    assert scorecard.score_gold([lead("src/retry.py:10", "NOT REAL", what="retry counter never reset")], RETRY_GOLD)["covered"] == 0
+
+
+def test_readme_says_where_is_not_a_content_field() -> None:
+    assert "where" not in scorecard.TEXT_FIELDS
+    text = (Path(__file__).parent.parent / "evals" / "README-scorecard.md").read_text(encoding="utf-8")
+    assert "never the `where`" in text
