@@ -509,3 +509,36 @@ def test_production_yes_outranks_a_higher_level_lead_of_unknown_state(monkeypatc
     _, out, _ = run(monkeypatch, capsys, leads)
     assert [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l] == [
         "r.py:1", "y.py:1", "u.py:1", "n.py:1"], "within yes, level still orders; unknown or no never beat yes"
+
+
+def _banner_lead(where: str, verdict: str | None = None) -> dict:
+    d = {"where": where, "what": f"claim at {where}", "level": "read", "probe": "p"}
+    if verdict:
+        d["verdict"] = verdict
+    return d
+
+
+def test_banner_absent_when_every_lead_has_a_verdict(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, [_banner_lead("a.py:1", "REAL"), _banner_lead("b.py:2", "REAL-LOW")])
+    assert "UNVERIFIED" not in out and out.startswith("# ")
+
+
+def test_banner_first_line_with_exact_counts_when_some_unverified(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, [_banner_lead("a.py:1", "REAL"), _banner_lead("b.py:2"), _banner_lead("c.py:3")])
+    assert out.splitlines()[0] == ("UNVERIFIED: 2 of 3 leads were not checked by an independent verifier; "
+                                   "treat them as candidates, not findings.")
+
+
+def test_banner_counts_all_when_none_verified(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, [_banner_lead("a.py:1"), _banner_lead("b.py:2")])
+    assert out.splitlines()[0].startswith("UNVERIFIED: 2 of 2 leads were not checked")
+
+
+def test_banner_counts_rejected_as_verified(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, [_banner_lead("a.py:1", "NOT REAL"), _banner_lead("b.py:2")])
+    assert out.splitlines()[0].startswith("UNVERIFIED: 1 of 2 leads were not checked")
+
+
+def test_no_banner_for_empty_input(monkeypatch, capsys) -> None:
+    _, out, _ = run(monkeypatch, capsys, [])
+    assert "UNVERIFIED" not in out and "no leads" in out

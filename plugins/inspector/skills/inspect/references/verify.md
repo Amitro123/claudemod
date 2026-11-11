@@ -3,6 +3,8 @@
 The investigator and the case-readers find leads; they also grade their own work. This flow adds
 two checkers that did not write the leads. Run it before the leads go to anyone who will act.
 
+**Required.** Verification is a required step before leads are presented as findings. Skipping it means saying so in the first line of the report; `handoff.py` also puts an `UNVERIFIED: N of M ...` banner first when any lead has no verdict. Start `inspector:verifier` by type (references/parallel.md).
+
 1. **Chunk.** Take the open leads as a JSON array (the investigator's block, or the cards'
    `complete.siblings`). Split them into chunks of at most 8, keeping `where` exactly as written.
 2. **Verify, in parallel.** Start one `verifier` per chunk. Give each the repository path, the ref
@@ -32,7 +34,7 @@ python3 "<skill_root>/scripts/merge_verdicts.py" --leads leads.json \
    are listed apart under "Rejected by the verifier", never in the action table (drop them
    entirely with `--drop-not-real`, or `--drop` each one). `UNVERIFIABLE`
    leads are handed off marked as such, with `would settle: ...`; the verifier's evidence prints as `verifier: ...`. `REAL-LOW` goes with its
-   corrected labels.
+   corrected labels. If any lead has no verdict, the handoff's first line is `UNVERIFIED: N of M leads were not checked by an independent verifier; treat them as candidates, not findings.` (no banner when all have verdicts; NOT REAL leads count as verified).
 
 ## What it is not
 

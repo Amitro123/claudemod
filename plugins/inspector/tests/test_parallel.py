@@ -52,3 +52,17 @@ def test_main_conversation_orchestrates_rule_is_pinned() -> None:
         assert "cannot start agents" in t, f
     assert "main conversation orchestrates" in " ".join(_t("skills/inspect/SKILL.md").split())
     assert "Do not collapse the run into one worker" in _t("skills/inspect/references/parallel.md")
+
+
+def test_verification_is_required_and_own_agent_types_are_used() -> None:
+    skill = " ".join(_t("skills/inspect/SKILL.md").split())
+    assert "Verification is required before leads are presented as findings" in skill
+    assert "first line" in skill and "the plugin's own agent types" in skill
+    par = " ".join(_t("skills/inspect/references/parallel.md").split())
+    for t in ("inspector:case-reader", "inspector:sweeper", "inspector:verifier", "inspector:docs-checker"):
+        assert t in par, t
+    assert "names another worker type does not apply" in par
+    assert "say so in the report's first line" in par and "read the agent file at the plugin path first" in par
+    ver = " ".join(_t("skills/inspect/references/verify.md").split())
+    assert "required step before leads are presented as findings" in ver and "first line of the report" in ver
+    assert "UNVERIFIED: N of M" in ver
