@@ -91,7 +91,7 @@ def merge(leads: list[dict], verdicts: list[dict], probe_only: list[str] | None 
         check = v.get("probe_check")
         if isinstance(check, dict) and check:
             m["verifier_probe_check"] = check
-        if "probe_file" in lead and m["verdict"].upper() in ("REAL", "REAL-LOW") \
+        if lead.get("probe_file") is not None and m["verdict"].upper() in ("REAL", "REAL-LOW") \
                 and not (isinstance(check, dict) and str(check.get("independent") or "").strip()):
             if isinstance(check, dict) and check:
                 m["verdict_basis"] = PROBE_ONLY_BASIS

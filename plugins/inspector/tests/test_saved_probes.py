@@ -206,6 +206,32 @@ def test_summary_counts_keep_verdicts_but_say_how_many_lack_an_independent_check
     assert scorecard.flatten(row)["confirmed_not_independent"] == 1
 
 
+def test_probe_file_null_is_no_saved_probe_like_an_omitted_one_while_malformed_metadata_is_still_named(tmp_path, capsys) -> None:
+    """PR #122 review: `"probe_file": null` was counted as a saved probe without an independent check."""
+    run = copy_run(tmp_path)
+    card = json.loads((run / "cards" / "2.json").read_text(encoding="utf-8"))
+    assert "probe_file" not in card["complete"]["siblings"][0]
+    out = {}
+    for name, extra in (("omitted", {}), ("null", {"probe_file": None})):
+        card["complete"]["siblings"][0] = {k: v for k, v in card["complete"]["siblings"][0].items() if k != "probe_file"} | extra
+        (run / "cards" / "2.json").write_text(json.dumps(card), encoding="utf-8")
+        code, leads, cap = merged_leads(run, capsys, expect="2")
+        assert code == 0, name
+        lead = leads["src/retry.py:12"]
+        assert "probe_file_problems" not in lead, name
+        assert "## Saved probes" not in (run / "dedupe.md").read_text(encoding="utf-8") and "saved probes" not in cap.out, name
+        _, m = verdicts(run, [{"where": "src/retry.py:12", "verdict": "REAL", "evidence": "read retry.py:10-14"}])
+        err = capsys.readouterr().err
+        merged = m["src/retry.py:12"]
+        assert "verdict_basis" not in merged and "independent check" not in err, name
+        text, _ = handoff.build(list(m.values()), {}, set(), {}, "t", [])
+        assert "[verdict: REAL]" in text and "without a recorded independent check" not in text and "probe file" not in text, name
+        out[name] = {k: v for k, v in merged.items() if k != "probe_file"}
+    assert out["null"] == out["omitted"]
+    for bad in ("", {}, "probes/1-1.py"):
+        assert leadsio.probe_file_problems({"where": "a.py:1", "probe_file": bad}, str(run), SHA), bad
+
+
 def test_handoff_gives_no_run_command_for_a_probe_with_a_problem(tmp_path, capsys) -> None:
     run = copy_run(tmp_path)
     merged_leads(run, capsys)

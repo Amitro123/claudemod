@@ -578,3 +578,52 @@ def test_no_leads_plan_produces_the_artifacts_the_release_gate_requires(tmp_path
         assert p.returncode == 0, c + p.stderr
     assert json.loads((run / "merged.json").read_text(encoding="utf-8")) == []
     assert "no leads" in (run / "open-bugs.md").read_text(encoding="utf-8")
+
+
+def plan_files(run: Path) -> dict:
+    return {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in sorted((run / "plan").iterdir())}
+
+
+def age(path: Path, seconds: float) -> None:
+    import os
+    import time
+    t = time.time() - seconds
+    os.utime(path, (t, t))
+
+
+def test_planning_verify_again_with_the_same_leads_leaves_the_plan_and_finished_verdicts_as_they_are(tmp_path) -> None:
+    """PR #122 review: a re-plan rewrote every chunk, so every finished verdict read as older than its chunk."""
+    run = make_run(tmp_path, 1, [lead(1)])
+    assert plan(run, "--phase", "verify")[0] == 0
+    for p in (run / "plan").iterdir():
+        age(p, 60)
+    (run / "verdicts-1.json").write_text(json.dumps([{"where": lead(1)["where"], "verdict": "REAL"}]))
+    age(run / "verdicts-1.json", 30)
+    before = plan_files(run)
+    # merge_cards.py writes leads.json again with the same content: newer, not different.
+    (run / "leads.json").write_bytes((run / "leads.json").read_bytes())
+    code, out, _ = plan(run, "--status")
+    assert "plan it again" not in out and "verify: done." in out, out
+    assert plan(run, "--phase", "verify")[0] == 0
+    assert plan_files(run) == before, "an unchanged re-plan rewrote generated files"
+    code, out, _ = plan(run, "--status")
+    assert "verify: done." in out and "older than plan/chunk-1.json" not in out and "plan it again" not in out, out
+
+
+def test_a_changed_chunk_still_needs_its_verifier_again_and_an_obsolete_chunk_is_removed(tmp_path) -> None:
+    run = make_run(tmp_path, 1, [lead(i) for i in range(1, 10)])
+    assert plan(run, "--phase", "verify")[0] == 0
+    assert (run / "plan" / "chunk-2.json").is_file() and (run / "plan" / "verifier-2.prompt.md").is_file()
+    for p in (run / "plan").iterdir():
+        age(p, 60)
+    for k, rng in ((1, range(1, 9)), (2, range(9, 10))):
+        (run / f"verdicts-{k}.json").write_text(json.dumps([{"where": lead(i)["where"], "verdict": "REAL"} for i in rng]))
+        age(run / f"verdicts-{k}.json", 30)
+    (run / "leads.json").write_text(json.dumps([lead(1, what="lead 1, worded again")]), encoding="utf-8")
+    code, out, _ = plan(run, "--status")
+    assert "plan.py --phase verify: planned before leads.json last changed; plan it again" in out, out
+    assert plan(run, "--phase", "verify")[0] == 0
+    assert not (run / "plan" / "chunk-2.json").exists() and not (run / "plan" / "verifier-2.prompt.md").exists()
+    code, out, _ = plan(run, "--status")
+    assert code == 1 and "verdicts-1.json older than plan/chunk-1.json (the chunk was planned again)" in out, out
+    assert "plan it again" not in out, out

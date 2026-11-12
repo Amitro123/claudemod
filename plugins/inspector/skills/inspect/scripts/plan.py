@@ -26,6 +26,7 @@ Exit 0 ok, 1 (`--status` only) agents left to start, 2 invalid input (nothing is
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -270,6 +271,7 @@ def expect_doc(c: Ctx, phases: list[dict], verify: dict | None) -> dict:
         d["phases"].extend(verify["phases"])
         d["verifier_chunks"] = verify["chunks"]
         d["docs_checker"] = verify["docs"]
+        d["leads_sha256"] = verify["leads_sha256"]  # --status compares leads.json by content, not by its time
     return d
 
 
@@ -350,7 +352,8 @@ def build_verify(c: Ctx, files: dict) -> dict:
     if qs:
         files["docs-checker.prompt.md"] = docs_prompt(qs)
         dispatch.append(("inspector:docs-checker", "docs-checker.prompt.md", []))
-    return {"phases": waves("verify", dispatch), "chunks": meta, "docs": {"needed": bool(qs), "questions": len(qs)}}
+    return {"phases": waves("verify", dispatch), "chunks": meta, "docs": {"needed": bool(qs), "questions": len(qs)},
+            "leads_sha256": file_sha256(lp)}
 
 
 def earlier_settings(run: str) -> tuple[list[str], bool]:
@@ -443,6 +446,9 @@ def write_all(run: str, files: dict[str, str]) -> None:
         target = os.path.join(d, name)
         if os.path.islink(target) or os.path.dirname(os.path.realpath(target)) != os.path.realpath(d):
             raise Invalid(f"{name}: refusing to write through a link or outside plan/")
+        # A file already as planned keeps its time: --status reads a verdict older than its chunk as stale.
+        if os.path.isfile(target) and file_bytes(target) == text.encode("utf-8"):
+            continue
         with open(target, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
     for name in os.listdir(d):
@@ -458,6 +464,15 @@ VERDICT_RE = re.compile(r"^verdicts-(\d+)\.json$")
 def mtime(run: str, rel: str) -> float | None:
     p = os.path.join(run, *rel.split("/"))
     return os.path.getmtime(p) if os.path.isfile(p) else None
+
+
+def file_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def file_sha256(path: str) -> str | None:
+    return hashlib.sha256(file_bytes(path)).hexdigest() if os.path.isfile(path) else None
 
 
 def card_state(data, n: int, labels: list[str]) -> str:
@@ -520,7 +535,10 @@ def script_steps(run: str, exp: dict) -> list[str]:
     if not any(p.get("name") == "verify" for p in exp["phases"]):
         return steps + ["plan.py --phase verify: not planned yet", "merge_verdicts.py, handoff.py: after the verifiers"]
     planned = mtime(run, "plan/expect.json")
-    if leads is not None and planned is not None and planned < leads:
+    # merge_cards.py writes leads.json on every run: the content it was planned from decides; a plan
+    # made before that was recorded falls back to the files' times.
+    if leads is not None and (exp["leads_sha256"] != file_sha256(os.path.join(run, "leads.json")) if exp.get("leads_sha256")
+                              else planned is not None and planned < leads):
         steps.append("plan.py --phase verify: planned before leads.json last changed; plan it again")
     merged = mtime(run, "merged.json")
     inputs = [t for t in [leads, *(mtime(run, c.get("verdicts", "")) for c in exp.get("verifier_chunks") or [])] if t]

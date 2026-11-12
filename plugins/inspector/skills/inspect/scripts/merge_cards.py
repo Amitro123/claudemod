@@ -298,7 +298,7 @@ def check_probes(raw: list[dict], run_dir: str, ref: str | None) -> list[int]:
     """Indices of the leads with a saved probe; each faulty one gets `probe_file_problems`. Nothing is dropped or relevelled."""
     saved = []
     for i, lead in enumerate(raw):
-        if "probe_file" not in lead:
+        if lead.get("probe_file") is None:  # omitted or null: no saved probe
             continue
         saved.append(i)
         problems = leadsio.probe_file_problems(lead, run_dir, ref)
