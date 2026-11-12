@@ -37,7 +37,7 @@ def _bad_const(name):
 
 
 def load_json(path: str):
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         return json.loads(f.read(), parse_constant=_bad_const)
 
 
@@ -247,7 +247,7 @@ def _inputs(r: Run):
         return res("skipped", "needs input files, a dedupe log with a raw count and leads.json")
     total = sum(len(v) for v in ins.values())
     # supply: leads.json winners plus the losers recorded in merged_from
-    supply = Counter(r.where(x) for x in leads if isinstance(x, dict))
+    supply = Counter(LEAD_SUFFIX.sub("", r.where(x)) for x in leads if isinstance(x, dict))  # merge_cards suffixes shared wheres
     for x in leads:
         if isinstance(x, dict) and isinstance(x.get(r.f("merged_from")), list):
             supply.update(str(w) for w in x[r.f("merged_from")])
@@ -283,7 +283,7 @@ def _source(r: Run):
         if not isinstance(x, dict):
             bad.append("non-object lead")
             continue
-        origin = {r.where(x)} | {str(w) for w in (x.get(r.f("merged_from")) or [])}
+        origin = {LEAD_SUFFIX.sub("", r.where(x))} | {str(w) for w in (x.get(r.f("merged_from")) or [])}
         by = str(x.get(fb))
         if not (origin & known) or (fb in x and by not in ok_by):
             bad.append(r.where(x))
@@ -466,15 +466,18 @@ def _phases(r: Run):
     if "verify" not in names:
         problems.append("no verify phase was planned (plan.py --phase verify was not run): verification is required")
     for ph in plan["phases"]:
-        absent, broken = [], []
+        absent, broken, stubs = [], [], []
         for o in ph["outputs"]:
             pth = os.path.join(r.folder, *o.split("/"))
             if not os.path.isfile(pth):
                 absent.append(o)
             elif o.endswith(".json"):
                 try:
-                    if not isinstance(load_json(pth), (dict, list)):
+                    data = load_json(pth)
+                    if not isinstance(data, (dict, list)):
                         broken.append(o)
+                    elif o.startswith("cards/") and isinstance(data, dict) and data.get("status") == "in-progress":
+                        stubs.append(o)
                 except (OSError, ValueError):
                     broken.append(o)
             elif os.path.getsize(pth) == 0:
@@ -483,6 +486,9 @@ def _phases(r: Run):
             problems.append(f"phase {ph['name']!r} skipped or unfinished: missing {short(absent, 8)} (planned {ph['min_agents']} agents)")
         if broken:
             problems.append(f"phase {ph['name']!r}: invalid or empty {short(broken, 8)}")
+        if stubs:
+            problems.append(f"phase {ph['name']!r} unfinished: stub cards (the reader stopped) {short(stubs, 8)}; "
+                            "resume them (plan.py --status) or report the run as partial")
     if problems:
         return res("fail", "; ".join(problems))
     n = sum(ph["min_agents"] for ph in plan["phases"])

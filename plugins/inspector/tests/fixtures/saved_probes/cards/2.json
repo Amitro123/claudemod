@@ -1,0 +1,21 @@
+{
+  "case": "#2",
+  "unit": "#2",
+  "complete": {
+    "siblings": [
+      {
+        "where": "src/retry.py:12",
+        "what": "the retry counter never resets after a success",
+        "breaks": "P2",
+        "level": "read",
+        "category": "broken-flow",
+        "reach": "conditional",
+        "probe": "read src/retry.py:10-14: count is set once, never reset",
+        "impact": {"what": "later uploads give up early", "level": "read", "source": "src/retry.py:20"},
+        "change": "reset the counter on success",
+        "test": "two uploads, the first retried: the second gets all its retries"
+      }
+    ],
+    "checked_clear": []
+  }
+}

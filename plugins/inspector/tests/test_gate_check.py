@@ -119,6 +119,14 @@ def test_invalid_card_fails(tmp_path):
     assert "artifacts.valid_json" in failing(run_check(run)[1])
 
 
+def test_agent_files_with_a_utf8_bom_pass(tmp_path):
+    run = build(tmp_path)
+    for p in (run / "cards" / "1.json", run / "sweep-1.json", run / "verdicts-1.json"):
+        p.write_bytes(b"\xef\xbb\xbf" + p.read_bytes())
+    code, rep, _ = run_check(run)
+    assert code == 0 and rep["ok"], rep
+
+
 def test_nan_is_not_strict_json(tmp_path):
     run = build(tmp_path)
     w(run / "sweep-2.json", '[{"where": "d.py:1", "what": NaN}]')
@@ -308,6 +316,17 @@ def test_the_plan_replaces_the_command_line(tmp_path):
     run = add_plan(build(tmp_path))
     p = subprocess.run([sys.executable, str(CHECK), str(run), "--expect", "7,8"], capture_output=True, text=True)
     assert p.returncode == 0, p.stdout[-400:]
+
+
+def test_a_stub_card_left_in_the_run_fails_the_plan_check(tmp_path):
+    """A stopped reader's stub is partial work: the gate must not call that phase finished."""
+    run = add_plan(build(tmp_path))
+    card = json.loads((run / "cards" / "2.json").read_text())
+    w(run / "cards" / "2.json", {**card, "status": "in-progress"})
+    code, rep, _ = run_plan_check(run)
+    assert code == 1 and "plan.phases" in failing(rep)
+    ev = next(i for i in rep["invariants"] if i["id"] == "plan.phases")["evidence"]
+    assert "stub cards" in ev and "cards/2.json" in ev and "cards/1.json" not in ev
 
 
 def test_skipped_verifier_phase_fails(tmp_path):

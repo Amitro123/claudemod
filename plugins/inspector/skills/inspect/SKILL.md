@@ -195,8 +195,10 @@ investigated". The case file says how many of each.
   describes fixes (a README or changelog entry) isn't a fix.
 
 **Order.** The collector applies it and lists the result as "Cases to work, in order"; work that
-list. Change it only where you corrected a fix verdict (step 2): drop a unit that isn't a fix,
-and put one you found in its place. Two of a budget of 8 or more (one of 4-7) go to fixes picked
+list. Change it only where you corrected a fix verdict (step 2): drop a unit that isn't a fix
+with `python3 "<skill_root>/scripts/plan.py" --run <out> --drop '#N'` (repeat the flag; it rewrites the
+RUN PLAN, so read plan.md again), and list a fix the verdict missed under "Not investigated", or collect
+it in a run of its own (`--unit '#N'`). Two of a budget of 8 or more (one of 4-7) go to fixes picked
 at random from those the order below doesn't reach, as a check on its bias. The rest are taken in
 this order:
 
@@ -207,9 +209,10 @@ this order:
 
 The rest are worked from their titles only (*inferred*).
 
-**Who does the work.** The RUN PLAN the collector printed decides from the case count: 1 or 2
-cases, one `investigator`; 3 or more, a brief-writer, a `case-reader` per case and three
-`sweeper`s, then the verifiers (references/parallel.md). You don't read the diffs yourself: on a
+**Who does the work.** The RUN PLAN the collector printed decides from the case count: up to 6
+cases, one `investigator`; 7 or more, a brief-writer, `case-reader`s (3 cases each) and three
+`sweeper`s in waves of 4, then the verifiers (references/parallel.md). An agent
+stopped: `plan.py --status` names what to restart. You don't read the diffs yourself: on a
 measured backtest one briefed worker in a clean context found more of the later-fixed bugs than
 the main conversation reading alone, at a tenth of the main context. Without the Agent tool or
 these agent types, do the work yourself; the method is in `<skill_root>/../../agents/case-reader.md`.

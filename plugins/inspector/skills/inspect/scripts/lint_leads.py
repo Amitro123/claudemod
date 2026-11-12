@@ -96,7 +96,8 @@ def rule_l3(s: dict) -> list[Finding]:
 
 
 def rule_l4(s: dict) -> list[Finding]:
-    if level_of(s) in VERIFIED_LEVELS and not text(s.get("probe")):
+    saved = s.get("probe_file")
+    if level_of(s) in VERIFIED_LEVELS and not text(s.get("probe")) and not (isinstance(saved, dict) and text(saved.get("path"))):
         return [("L4", "warn", f"level {level_of(s)} but no probe; give the input and output, command, or path:line read")]
     return []
 

@@ -51,6 +51,8 @@ import {
   couldNotStart,
   ranChecks,
   leftOut,
+  historyArgs,
+  historyLeaks,
   waitsOnPerson,
   modelOf,
   modelsFor,
@@ -461,11 +463,19 @@ async function onBuilt($: EngineInterface) {
   if (!(await baseHolds($))) return
   // The base may have just moved (the person named the branch the work is on).
   const base = (await read($, run))?.base ?? r.base
-  // What the builder committed itself never went through the filter above.
-  const committed = await git($, ['diff', '--name-only', '--diff-filter=A', '-z', base, 'HEAD'], r.worktree)
-  const leaked = committed.exitCode === 0 ? committed.stdout.split('\0').filter(p => p && neverCommit(p)) : []
+  // What the builder committed itself never went through the filter above. Every commit since the
+  // base is pushed, so one it added and later deleted or renamed counts too.
+  const history = await git($, historyArgs(base), r.worktree)
+  let leaked: ReturnType<typeof historyLeaks> = []
+  try {
+    if (history.exitCode !== 0) throw new Error(tailOf(`${history.stdout}\n${history.stderr}`, 2))
+    leaked = historyLeaks(history.stdout)
+  } catch (err) {
+    await block($, { on: 'builder' }, `The factory could not read the branch's history for files the factory never commits: ${err instanceof Error ? err.message : String(err)}`)
+    return
+  }
   if (leaked.length) {
-    await block($, { on: 'builder' }, `The builder committed files the factory never commits: ${leftOut(leaked).join(', ')}. Take them out of the branch's history, then retry.`)
+    await block($, { on: 'builder' }, `The builder committed files the factory never commits: ${leaked.map(l => `${l.path} (in ${l.commits.map(c => c.slice(0, 7)).join(', ')})`).join(', ')}. Take them out of the branch's history, then retry.`)
     return
   }
   const stat = await git($, ['diff', '--stat', base, 'HEAD'], r.worktree)

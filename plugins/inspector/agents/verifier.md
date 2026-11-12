@@ -25,6 +25,32 @@ For each lead, work out for yourself first: read the code at the ref and write y
 Only afterwards read the investigator's probe and notes, and compare. If you read theirs first, you
 re-run their reasoning instead of checking it.
 
+## A saved probe
+
+A lead may carry `probe_file`: a script the reader ran, saved in the run folder (`path` is relative
+to it), with the `ref`, `command`, `requires` and `expect`. merge_cards.py has checked only its
+metadata and path (inside `probes/` after links are resolved, the file present, the lead named, the
+ref); nothing has checked what the script does, and nothing stops it doing anything when run. A
+temp copy is not a sandbox: a script run there has your network and file access. So:
+0. A lead with `probe_file_problems` (missing file, a path outside `probes/`, another ref...):
+   do not run its probe; report the problem and check the lead your own way.
+After your own check, and only then:
+1. Read the whole file before running anything. If it reads `.env` or credentials, uses the
+   network, installs, or writes outside its own folder, do not run it; say so.
+2. Check that it exercises the claim: it runs the code at `where` as it is at the ref (compare
+   its copy with `git show <ref>:<path>`), with the lead's trigger, and its `expect` is the failure
+   the lead names.
+3. Run it only from a copy in a temp folder (copy `probes/` there, run `command` from it).
+4. Where its input is the only one that fails, or its copy differs from the ref, add a variation
+   of your own: another input, or the code taken from the ref.
+
+The reader's probe passing does not by itself confirm the lead: a REAL or REAL-LOW needs your own
+check in `probe_check.independent`. That can be your own probe or variation and what it printed, or
+a code-path analysis citing path:line at the ref (the input, the branch taken, the sink); a new probe
+is not required when the code path settles it. Without it, merge_verdicts.py keeps your verdict but
+marks it as not independently checked. A `probe_file_problems` entry is a fact to report, not a
+verdict. No `probe_file`: leave `probe_check` out.
+
 ## For each lead
 
 1. Does the mechanism exist at that ref: the code at `where`, as the lead describes it?
@@ -53,7 +79,9 @@ not thereby verified; a verdict needs evidence you ran or read.
 Write a JSON array to the caller's file, one object per lead in the chunk:
 `[{"where": "<exact where>", "verdict": "REAL", "evidence": "<probe and result, or code read, at path:line>",
 "corrected": {"category": "...", "reach": "...", "test_kind": "..."}, "false_claims": ["..."],
-"unverifiable": ["<what would settle it>"]}]`.
+"unverifiable": ["<what would settle it>"]}]`. For a lead with `probe_file`, add
+`"probe_check": {"read_first": true, "ran": "yes | no: why", "exercises_claim": "yes | no | partly: why",
+"observed": "<what it printed>", "independent": "<your own probe or variation and what it printed, or the code path at path:line>"}`.
 Keep `where` exactly as given: it is the join key. Leave `corrected` empty when the labels hold.
 A lead whose `change` holds a query that you ran read-only: put `"query_run": {"mode": "read-only", "status": "executed", "observed": "<result summary>"}` in `corrected`; if you did not run it, say so in `unverifiable`.
 

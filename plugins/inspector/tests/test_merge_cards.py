@@ -53,9 +53,120 @@ def test_missing_card_exits_2_and_writes_nothing(tmp_path, capsys) -> None:
     assert "card 2: missing" in cap.err and "card 1" not in cap.err
 
 
+def test_stub_card_merges_with_its_leads_capped_at_suspect(tmp_path, capsys) -> None:
+    stub = {**card(2, lead("b.py:9", TEXT_B, level="reproduced"), lead("c.py:3", level="inferred", not_verified="the caller")),
+            "status": "in-progress"}
+    code, leads, log, cap = run(tmp_path, capsys, {"1": card(1, lead("a.py:5")), "2": stub, "3": card(3)}, "1,2,3")
+    assert code == 0
+    by = {x["where"]: x for x in leads}
+    assert by["a.py:5"]["level"] == "read" and "original_level" not in by["a.py:5"]
+    assert by["b.py:9"]["level"] == "suspect" and by["b.py:9"]["original_level"] == "reproduced"
+    assert by["b.py:9"]["not_verified"] == ["the case reader stopped before finishing this case"]
+    assert by["c.py:3"]["level"] == "inferred" and "original_level" not in by["c.py:3"]
+    assert by["c.py:3"]["not_verified"] == ["the caller", "the case reader stopped before finishing this case"]
+    assert "## Unfinished cards" in log and "- card 2" in log and "card 1" not in log.split("## Unfinished cards")[1].split("##")[0]
+    assert "unfinished cards (stubs; leads capped at suspect): 2" in cap.out
+    assert by["b.py:9"]["card_status"] == "in-progress" and "card_status" not in by["a.py:5"]
+
+
+def test_a_stub_lead_stays_partial_through_verification_and_handoff(tmp_path, capsys) -> None:
+    """A verifier's REAL is recorded as a verdict; the level stays the stub's `suspect` and the handoff says partial."""
+    import subprocess
+    scripts = Path(merge_cards.__file__).parent
+    stub = {**card(2, lead("b.py:9", TEXT_B, level="read", probe="read b.py:9")), "status": "in-progress"}
+    code, leads, _, _ = run(tmp_path, capsys, {"1": card(1), "2": stub}, "1,2")
+    assert code == 0
+    (tmp_path / "v.json").write_text(json.dumps([{"where": "b.py:9", "verdict": "REAL", "evidence": "read b.py:9"}]))
+    for argv in (["merge_verdicts.py", "--leads", "leads.json", "--verdicts", "v.json", "--out", "merged.json"],
+                 ["handoff.py", "--cards", "merged.json", "--out", "open-bugs.md"]):
+        p = subprocess.run([sys.executable, str(scripts / argv[0]), *argv[1:]], cwd=tmp_path, capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+    merged = json.loads((tmp_path / "merged.json").read_text(encoding="utf-8"))[0]
+    assert merged["verdict"] == "REAL" and merged["level"] == "suspect" and merged["original_level"] == "read"
+    assert merged["card_status"] == "in-progress" and UNFINISHED_NOTE in merged["not_verified"]
+    row = next(x for x in (tmp_path / "open-bugs.md").read_text(encoding="utf-8").splitlines() if "`b.py:9`" in x)
+    assert row.startswith("| suspect [partial: the case reader stopped; it had read]") and "[verdict: REAL]" in row
+    assert UNFINISHED_NOTE in row
+
+
+UNFINISHED_NOTE = "the case reader stopped before finishing this case"
+
+
+def test_agent_files_with_a_utf8_bom_merge_verify_and_hand_off(tmp_path, capsys) -> None:
+    """Windows PowerShell writes UTF-8 with a BOM; cards, sweeps and verdicts written that way are read as usual."""
+    import subprocess
+    d, paths = setup(tmp_path, {"1": card(1, lead("a.py:5")), "2": card(2)}, {"sweep-1.json": [lead("b.py:1", TEXT_B)]})
+    for p in (d / "1.json", Path(paths[0])):
+        p.write_bytes(b"\xef\xbb\xbf" + p.read_bytes())
+    out, log = tmp_path / "leads.json", tmp_path / "dedupe.md"
+    assert merge_cards.main(["--cards", str(d), "--expect", "1,2", "--sweep", *paths, "--out", str(out), "--log", str(log)]) == 0
+    assert sorted(x["where"] for x in json.loads(out.read_text(encoding="utf-8"))) == ["a.py:5", "b.py:1"]
+    (tmp_path / "v.json").write_bytes(b"\xef\xbb\xbf" + json.dumps([{"where": "a.py:5", "verdict": "REAL"},
+                                                                    {"where": "b.py:1", "verdict": "REAL-LOW"}]).encode())
+    scripts = Path(merge_cards.__file__).parent
+    for argv in (["merge_verdicts.py", "--leads", "leads.json", "--verdicts", "v.json", "--out", "merged.json"],
+                 ["handoff.py", "--cards", "merged.json", "--out", "open-bugs.md"]):
+        p = subprocess.run([sys.executable, str(scripts / argv[0]), *argv[1:]], cwd=tmp_path, capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+    assert sorted(x["verdict"] for x in json.loads((tmp_path / "merged.json").read_text(encoding="utf-8"))) == ["REAL", "REAL-LOW"]
+
+
+def test_kept_leads_sharing_a_where_get_lead_suffixes_that_merge_verdicts_accepts(tmp_path, capsys) -> None:
+    import subprocess
+    code, leads, _, _ = run(tmp_path, capsys, {"1": card(1, lead("a.py:5", TEXT_A)), "2": card(2, lead("a.py:5", TEXT_B), lead("b.py:1"))}, "1,2")
+    assert code == 0
+    assert [x["where"] for x in leads] == ["a.py:5 [lead 1]", "a.py:5 [lead 2]", "b.py:1"]
+    assert leads[0]["possible_duplicate_of"] == ["a.py:5 [lead 2]"] and leads[1]["possible_duplicate_of"] == ["a.py:5 [lead 1]"]
+    (tmp_path / "v.json").write_text(json.dumps([{"where": x["where"], "verdict": "REAL"} for x in leads]))
+    p = subprocess.run([sys.executable, str(Path(merge_cards.__file__).parent / "merge_verdicts.py"), "--leads", "leads.json",
+                        "--verdicts", "v.json", "--out", "merged.json"], cwd=tmp_path, capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert [x["verdict"] for x in json.loads((tmp_path / "merged.json").read_text())] == ["REAL"] * 3
+
+
+def test_an_empty_stub_is_listed_as_unfinished_and_an_empty_card_is_not(tmp_path, capsys) -> None:
+    code, leads, log, cap = run(tmp_path, capsys, {"1": card(1), "2": {**card(2), "status": "in-progress"}}, "1,2")
+    assert code == 0 and leads == []
+    unfinished = log.split("## Unfinished cards")[1].split("\n## ")[0]
+    assert "- card 2" in unfinished and "card 1" not in unfinished
+
+
+def test_a_finished_duplicate_never_inherits_a_stubs_marks(tmp_path, capsys) -> None:
+    stub = {**card(2, lead("a.py:5", level="read")), "status": "in-progress"}
+    code, leads, _, _ = run(tmp_path, capsys, {"1": card(1, lead("a.py:5", level="read")), "2": stub}, "1,2")
+    assert code == 0 and len(leads) == 1
+    assert leads[0]["found_by"] == "1" and leads[0]["level"] == "read"
+    assert "card_status" not in leads[0] and "original_level" not in leads[0]
+
+
+def test_merging_again_after_a_resume_replaces_the_partial_leads_without_duplicates(tmp_path, capsys) -> None:
+    sib = lead("b.py:9", TEXT_B, level="read")
+    code, first, _, _ = run(tmp_path, capsys, {"1": card(1, lead("a.py:5")), "2": {**card(2, sib), "status": "in-progress"}}, "1,2")
+    assert code == 0 and [x["level"] for x in first] == ["read", "suspect"]
+    again = run(tmp_path, capsys, {"1": card(1, lead("a.py:5")), "2": {**card(2, sib), "status": "in-progress"}}, "1,2")[1]
+    assert again == first, "merging the same cards twice gives the same leads"
+    code, resumed, log, _ = run(tmp_path, capsys, {"2": card(2, sib, lead("c.py:1", TEXT_B))}, "1,2")
+    assert code == 0 and len(resumed) == 3 and len({x["where"] for x in resumed}) == 3
+    assert all("card_status" not in x for x in resumed) and "Unfinished cards" not in log
+
+
 def test_unparsable_card_exits_2_and_writes_nothing(tmp_path, capsys) -> None:
     code, leads, log, cap = run(tmp_path, capsys, {"1": card(1), "2": "{not json"}, "1,2")
     assert code == 2 and leads is None and log is None and "card 2" in cap.err
+
+
+def test_write_failure_keeps_the_previous_leads_and_says_so(tmp_path, capsys, monkeypatch) -> None:
+    d, _ = setup(tmp_path, {"1": card(1, lead("a.py:5"))})
+    out = tmp_path / "leads.json"
+    out.write_text("previous", encoding="utf-8")
+
+    def refuse(src, dst):
+        raise PermissionError(13, "denied", dst)
+    monkeypatch.setattr(merge_cards.os, "replace", refuse)
+    code = merge_cards.main(["--cards", str(d), "--expect", "1", "--out", str(out)])
+    assert code == 1 and "merge_cards.py: not saved" in capsys.readouterr().err
+    assert out.read_text(encoding="utf-8") == "previous"
+    assert [p.name for p in tmp_path.iterdir() if p.is_file()] == ["leads.json"], "no temp file left behind"
 
 
 def test_invalid_sweeper_exits_2(tmp_path, capsys) -> None:

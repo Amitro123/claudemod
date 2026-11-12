@@ -1,0 +1,29 @@
+{
+  "case": "#1",
+  "unit": "#1",
+  "complete": {
+    "siblings": [
+      {
+        "where": "src/size.py:3",
+        "what": "a bold SIZE line is read as no size",
+        "breaks": "P1",
+        "level": "reproduced",
+        "category": "broken-flow",
+        "reach": "default-on",
+        "probe": "parse_size('**SIZE:** large') -> None",
+        "probe_file": {
+          "path": "probes/1-1.py",
+          "leads": ["src/size.py:3"],
+          "ref": "0632e9a",
+          "command": "python3 probes/1-1.py",
+          "requires": "Python 3, no network, no install",
+          "expect": "prints -> None, want 'large' and exits 1"
+        },
+        "impact": {"what": "a large feature stays on the default builder", "level": "read", "source": "src/run.py:9"},
+        "change": "strip emphasis before matching",
+        "test": "parse_size('**SIZE:** large') == 'large'"
+      }
+    ],
+    "checked_clear": []
+  }
+}

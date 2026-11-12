@@ -12,7 +12,12 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import sys
+
+PROBE_DIR = "probes"
+PROBE_KEYS = ("path", "leads", "ref", "command", "requires", "expect")
+LEAD_SUFFIX_RE = re.compile(r" \[lead \d+\]$")
 
 
 class LeadsError(ValueError):
@@ -95,7 +100,7 @@ def read_items(src: str) -> list[dict]:
         for p in paths:
             name = os.path.basename(p)
             try:
-                with open(p, encoding="utf-8") as f:
+                with open(p, encoding="utf-8-sig") as f:
                     data = json.load(f)
             except (OSError, ValueError) as exc:
                 bad.append(f"{name}: invalid JSON or unreadable ({exc})")
@@ -104,6 +109,50 @@ def read_items(src: str) -> list[dict]:
     if bad:
         raise LeadsError("; ".join(bad))
     return items
+
+
+def _inside_probes(run_dir: str, parts: list[str]) -> bool:
+    """The path, with every link resolved, is under `<run>/probes/` (that folder itself not a link elsewhere)."""
+    root = os.path.normcase(os.path.join(os.path.realpath(run_dir), PROBE_DIR))
+    target = os.path.normcase(os.path.realpath(os.path.join(run_dir, *parts)))
+    try:
+        return target != root and os.path.commonpath([root, target]) == root
+    except ValueError:  # another drive on Windows
+        return False
+
+
+def probe_file_problems(lead: dict, run_dir: str, ref: str | None = None) -> list[str]:
+    """What is wrong with a lead's saved probe (`probe_file`); [] when it has none, or when it is sound.
+
+    The file must sit under `<run>/probes/` once links are resolved (no `..`, drive, UNC or `:` stream form) and exist; `leads` must name this lead's `where` (without a ` [lead N]`
+    suffix); `ref`, when the run's ref is known, must be a prefix of it (or it of `ref`). Never raises."""
+    pf = lead.get("probe_file")
+    if pf is None:
+        return []
+    if not isinstance(pf, dict):
+        return [f"probe_file: expected an object with {', '.join(PROBE_KEYS)}"]
+    out = [f"probe_file.{k}: missing or empty" for k in PROBE_KEYS if pf.get(k) in (None, "", [], {})]
+    path = pf.get("path")
+    if isinstance(path, str) and path:
+        parts = path.replace("\\", "/").split("/")
+        if os.path.isabs(path) or path.startswith(("/", "\\")) or ":" in path or ".." in parts \
+                or parts[0] != PROBE_DIR or len(parts) < 2 or not parts[-1]:
+            out.append(f"probe_file.path {path}: not a path under {PROBE_DIR}/ in the run folder")
+        elif not _inside_probes(run_dir, parts):
+            out.append(f"probe_file.path {path}: resolves outside {PROBE_DIR}/ in the run folder (a link?)")
+        elif not os.path.isfile(os.path.join(run_dir, *parts)):
+            out.append(f"probe_file.path {path}: missing from the run folder")
+    names = pf.get("leads")
+    own = LEAD_SUFFIX_RE.sub("", str(lead.get("where") or ""))
+    if names not in (None, "", []):
+        if not isinstance(names, list) or not all(isinstance(x, str) for x in names):
+            out.append("probe_file.leads: expected a list of the leads' `where`")
+        elif own not in {LEAD_SUFFIX_RE.sub("", x) for x in names}:
+            out.append(f"probe_file.leads: does not name this lead ({own})")
+    made_at = pf.get("ref")
+    if ref and isinstance(made_at, str) and made_at and not (ref.startswith(made_at) or made_at.startswith(ref)):
+        out.append(f"probe_file.ref {made_at}: not the run's ref {ref[:12]}")
+    return out
 
 
 def leads_of(items: list[dict]) -> list[dict]:
