@@ -162,6 +162,21 @@ def test_reader_prompt_carries_everything_the_agent_needs(tmp_path) -> None:
         assert needle in s, needle
 
 
+def test_reader_and_verifier_prompts_name_the_saved_probe_folder_and_its_rules(tmp_path) -> None:
+    run = make_run(tmp_path, 7, [lead(1)])
+    assert plan(run)[0] == 0 and plan(run, "--phase", "verify")[0] == 0
+    base = run.as_posix()
+    r = (run / "plan" / "reader-1.prompt.md").read_text(encoding="utf-8")
+    for needle in (f"{base}/probes/", "`probe_file`", "path, leads, ref, command, requires, expect",
+                   "the card files and your probe files"):
+        assert needle in r, needle
+    v = (run / "plan" / "verifier-1.prompt.md").read_text(encoding="utf-8")
+    for needle in (f"Run folder: {base}", "`probe_file.path`", "before you run it", "a copy in a temp folder",
+                   "not a sandbox", "Do not run a probe whose lead has `probe_file_problems`",
+                   "`probe_check`", "does not by itself confirm"):
+        assert needle in v, needle
+
+
 def test_more_than_four_verifiers_come_in_waves_all_named_verify(tmp_path) -> None:
     run = make_run(tmp_path, 2, [lead(i) for i in range(70)])
     assert plan(run, "--phase", "verify")[0] == 0

@@ -107,6 +107,21 @@ def verification_of(s: dict) -> str:
     return out + (f" verifier: {ev}" if ev else "")
 
 
+def probe_file_of(s: dict) -> str:
+    """` probe file: probes/x (run: cmd; expect: y)` plus merge_cards' problems with it; '' for a lead with none."""
+    pf = s.get("probe_file")
+    if not isinstance(pf, dict) or not cell(pf.get("path")):
+        return ""
+    problems = texts(s.get("probe_file_problems"))
+    if problems:
+        return f" probe file: {cell(pf.get('path'))}, not to be run: {'; '.join(problems)}"
+    return f" probe file: {cell(pf.get('path'))} (run: {cell(pf.get('command')) or '-'}; expect: {cell(pf.get('expect')) or '-'})"
+
+
+BASIS_TAG = {"reader probe only": ", on the reader's probe only",
+             "independent check not recorded": ", no independent check recorded"}
+
+
 def rejected_entry(s: dict, where: str) -> str:
     ev = cell(s.get("verifier_evidence")) if isinstance(s.get("verifier_evidence"), (str, int, float)) else ""
     fc = "; ".join(texts(s.get("false_claims")))
@@ -119,6 +134,7 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
           warnings: list[str] | None = None) -> tuple[str, list[str]]:
     errors, rows, rejected = [], [], []
     seen: Counter = Counter()
+    apart = 0  # REAL or REAL-LOW whose lead has a saved probe and no recorded independent check
     warnings = warnings if warnings is not None else []
     for s in leads:
         where = cell(s.get("where"))
@@ -174,14 +190,17 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
                             "name the production evidence that would show harm (a freshness query, a reconciliation, "
                             "a job history); severity cannot be set from code alone")
         verdict = verdict_of(s)
-        shown += f" [verdict: {verdict}]"
+        basis = BASIS_TAG.get(s.get("verdict_basis"), "") if verdict in ("REAL", "REAL-LOW") else ""
+        apart += bool(basis)
+        shown += f" [verdict: {verdict}{basis}]"
         probe = cell(s.get("probe")) if isinstance(s.get("probe"), (str, int, float)) else ""
-        if lvl in ("reproduced", "read") and not probe:
+        saved = probe_file_of(s)
+        if lvl in ("reproduced", "read") and not probe and not saved:
             warnings.append(f"{where}: level {lvl} but no probe; give the exact input and output, the command run, "
                             "or the path:line read (for a claim about an external tool, its --help), or lower the "
                             "level / move the claim to not_verified")
         impact_cell = (f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}{would_settle_of(s)}{verification_of(s)}"
-                       + (f" probe: {probe}" if probe else ""))
+                       + (f" probe: {probe}" if probe else "") + saved)
         rec = cell(s.get("reconcile")) if isinstance(s.get("reconcile"), (str, int, float)) else ""
         if rec:
             impact_cell += f" reconcile: {rec}"
@@ -204,7 +223,9 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
     head = []
     if any(v != "unverified" for v in seen):
         head = [f"Verified: {seen['REAL']} real, {seen['REAL-LOW']} real-low, {seen['UNVERIFIABLE']} unverifiable, "
-                f"{seen['NOT REAL']} not real, {seen['unverified']} unverified", ""]
+                f"{seen['NOT REAL']} not real, {seen['unverified']} unverified"
+                + (f" ({apart} of the {seen['REAL'] + seen['REAL-LOW']} real or real-low without a recorded independent check)"
+                   if apart else ""), ""]
     total = len(rows) + len(rejected)
     banner = []
     if seen["unverified"]:

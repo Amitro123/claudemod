@@ -20,7 +20,10 @@ Kept leads that still share a `where` get the suffix ` [lead N]` (N: their place
 verifiers and merge_verdicts.py can tell them apart; the release gate compares on the `where` without it.
 `--repair-escapes` (opt-in; default is to refuse): a card or sweeper file that fails with an invalid
 backslash escape (a regex class like backslash-s written with one backslash) gets every stray backslash doubled, is re-parsed,
-kept as `<name>.orig` and named in the log. Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 1 not saved (the previous file is kept), 2 invalid input.
+kept as `<name>.orig` and named in the log. A lead's saved probe (`probe_file`, a file under `<run>/probes/`, the run
+being the folder above `--cards`) is checked: a missing file, a path outside `probes/`, a missing field, a `leads` list
+without this lead or a `ref` other than evidence.json's goes to `probe_file_problems` and the log; the lead is kept at its
+level. Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 1 not saved (the previous file is kept), 2 invalid input.
 """
 from __future__ import annotations
 
@@ -281,6 +284,29 @@ def dedupe(raw: list[dict]):
     return [o for _, o in final], merges, possible
 
 
+def run_ref(run_dir: str) -> str | None:
+    """The run's ref from `<run>/evidence.json`, or None when there is none to compare a probe's ref with."""
+    try:
+        with open(os.path.join(run_dir, "evidence.json"), encoding="utf-8-sig") as f:
+            ref = json.load(f).get("ref_sha")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return ref if isinstance(ref, str) and ref else None
+
+
+def check_probes(raw: list[dict], run_dir: str, ref: str | None) -> list[int]:
+    """Indices of the leads with a saved probe; each faulty one gets `probe_file_problems`. Nothing is dropped or relevelled."""
+    saved = []
+    for i, lead in enumerate(raw):
+        if "probe_file" not in lead:
+            continue
+        saved.append(i)
+        problems = leadsio.probe_file_problems(lead, run_dir, ref)
+        if problems:
+            lead["probe_file_problems"] = problems
+    return saved
+
+
 def tally(leads: list[dict], key: str) -> str:
     c = Counter(str(lead.get(key) or "-") for lead in leads)
     return ", ".join(f"{k}: {v}" for k, v in sorted(c.items())) or "none"
@@ -306,6 +332,8 @@ def main(argv=None) -> int:
         raw = load_cards(a.cards, ids, a.repair_escapes, repaired, unfinished) + load_sweeps(a.sweep, a.repair_escapes, repaired)
     except leadsio.LeadsError as exc:
         return die(f"invalid input: {exc}")
+    run_dir = os.path.dirname(os.path.abspath(a.cards))
+    saved = check_probes(raw, run_dir, run_ref(run_dir))
     final, merges, possible = dedupe(raw)
 
     def ref(i: int) -> str:
@@ -319,6 +347,10 @@ def main(argv=None) -> int:
         lines += ["", "## Repaired invalid escapes (original kept as <name>.orig)"] + [f"- {r}" for r in repaired]
     if unfinished:
         lines += ["", "## Unfinished cards (the reader stopped; their leads are at most suspect)"] + [f"- card {u}" for u in unfinished]
+    if saved:
+        lines += ["", "## Saved probes (paths under the run folder; a verifier reads one before it runs it)"]
+        lines += [f"- {ref(i)}: {raw[i]['probe_file'].get('path') if isinstance(raw[i]['probe_file'], dict) else '?'} "
+                  f"({'; '.join(raw[i].get('probe_file_problems') or ['ok'])})" for i in saved]
     unparsed = [ref(i) for i, lead in enumerate(raw) if parse_where(lead.get("where")) is None]
     if unparsed:
         lines += ["", "## Unparsable where (never merged)"] + [f"- {u}" for u in unparsed]
@@ -340,6 +372,9 @@ def main(argv=None) -> int:
         print(f"repaired invalid escapes: {r} (original kept as .orig)")
     if unfinished:
         print(f"unfinished cards (stubs; leads capped at suspect): {', '.join(unfinished)}")
+    if saved:
+        bad = sum(bool(raw[i].get("probe_file_problems")) for i in saved)
+        print(f"saved probes: {len(saved)} ({bad} with a problem; see the log)")
     if possible:
         print(f"possible duplicates: {len(possible)} (see log)")
     for i, s in enumerate(final):

@@ -127,12 +127,13 @@ def build_row(leads, gold=None, metrics=None, label=None, date=None, version=Non
     for l in leads:
         counts[verdict_of(l)] += 1
     confirmed = counts["REAL"] + counts["REAL-LOW"]
+    not_independent = sum(verdict_of(l) in CONFIRMED and bool(l.get("verdict_basis")) for l in leads)
     denom = len(leads) - counts["UNVERIFIABLE"]
     security = [l for l in leads if l.get("category") == "security"]
     clusters = duplicate_clusters(leads)
     return {"version": version if version is not None else plugin_version(), "label": label,
             "date": date or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
-            "leads": len(leads), "verdicts": counts, "confirmed": confirmed,
+            "leads": len(leads), "verdicts": counts, "confirmed": confirmed, "confirmed_not_independent": not_independent,
             "precision": round(confirmed / denom, 3) if denom else None, "unverifiable": counts["UNVERIFIABLE"],
             "not_real": counts["NOT REAL"],
             "security": {"labelled": len(security), "survived": sum(verdict_of(l) in CONFIRMED for l in security)},
@@ -152,7 +153,9 @@ def markdown(row: dict) -> str:
          f"| Leads | {row['leads']} |",
          "| Verdicts | " + ", ".join(f"{v} {c[v]}" for v in VERDICTS) + " |",
          f"| Precision (REAL + REAL-LOW) / (leads - UNVERIFIABLE) | {fmt(row['precision'])} "
-         f"({row['confirmed']} / {row['leads'] - row['unverifiable']}; UNVERIFIABLE {row['unverifiable']} left out) |",
+         f"({row['confirmed']} / {row['leads'] - row['unverifiable']}; UNVERIFIABLE {row['unverifiable']} left out"
+         + (f"; {row['confirmed_not_independent']} of them without a recorded independent check"
+            if row.get("confirmed_not_independent") else "") + ") |",
          f"| NOT REAL | {row['not_real']} |",
          f"| Security-labelled | {row['security']['labelled']}, survived the verifier {row['security']['survived']} |",
          f"| Possible-duplicate clusters | {row['duplicate_clusters']} |"]
@@ -171,7 +174,8 @@ def markdown(row: dict) -> str:
 
 def flatten(row: dict) -> dict:
     flat = {"version": row.get("version"), "date": row.get("date"), "label": row.get("label"), "leads": row.get("leads"),
-            "precision": row.get("precision"), "unverifiable": row.get("unverifiable"), "not_real": row.get("not_real"),
+            "precision": row.get("precision"), "confirmed_not_independent": row.get("confirmed_not_independent"),
+            "unverifiable": row.get("unverifiable"), "not_real": row.get("not_real"),
             "security_labelled": (row.get("security") or {}).get("labelled"),
             "security_survived": (row.get("security") or {}).get("survived"),
             "duplicate_clusters": row.get("duplicate_clusters"),

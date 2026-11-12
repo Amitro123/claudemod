@@ -135,7 +135,11 @@ def reader_prompt(c: Ctx, ids: list[int]) -> str:
               "add each lead to it as you confirm one. When the case is done, replace the stub with the finished card (no `status`).",
               "Write each card as strict JSON (a backslash inside a string is doubled) to its card file first, "
               "then reply with the card only" + (" (a JSON array of your cards, in order)." if many else "."),
-              "Change no file in the repository; the card files are the only files you write.", ""]
+              f"A probe you ran that can be run again (a script on a copy of the code): save it as {c.run}/probes/<case>-<k>.<ext> "
+              "(<case> is the case number above) and give each lead it reproduces `probe_file` with path, leads, ref, command, "
+              "requires, expect: the path relative to the run folder, the `where` of each lead it covers, the ref, the command "
+              "as run from the run folder, what it needs, and what it prints when the lead holds. Keep `probe` as well.",
+              "Change no file in the repository; the card files and your probe files are the only files you write.", ""]
     return "\n".join(lines)
 
 
@@ -176,6 +180,10 @@ def verifier_prompt(c: Ctx, k: int, wheres: list[str]) -> str:
         f"Repository: {c.repo}. Ref: {c.ref} (read code only at that ref).",
         f"Leads: {c.plan}/chunk-{k}.json, the whole file is your chunk. Its `where` values, exactly:",
         json.dumps(wheres, ensure_ascii=False), f"Verdict file: {c.run}/verdicts-{k}.json.",
+        f"Run folder: {c.run}; a lead's `probe_file.path` (the reader's saved probe) is relative to it. Do not run a "
+        "probe whose lead has `probe_file_problems`. Read a saved probe whole before you run it, run it only from a copy in "
+        "a temp folder (not a sandbox: it keeps your network and file access), and report what you did in `probe_check`; "
+        "the reader's probe passing does not by itself confirm the lead.",
         f"Keep each `where` exactly as given. {EVIDENCE}", ""])
 
 

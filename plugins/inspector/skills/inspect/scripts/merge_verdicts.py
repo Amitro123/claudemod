@@ -10,7 +10,12 @@ output is then `[]`, so the run folder still holds the merged.json the release g
 Each lead gains `verdict` (REAL | REAL-LOW | NOT REAL | UNVERIFIABLE, or `unverified` when no
 verdict exists), `verified_by`, `false_claims`; the verifier's corrected labels replace the lead's
 (the originals stay under `original_category` / `original_reach`); the verifier's `unverifiable`
-parts are appended to `not_verified`. Two leads that share a `where` are refused; give each a distinct suffix
+parts are appended to `not_verified`. A verdict's `probe_check` (what the verifier did with the reader's saved
+probe) is kept as `verifier_probe_check`. A lead with a saved probe (`probe_file`) whose REAL or REAL-LOW has no
+`probe_check.independent` (the verifier's own probe, a variation, or a code-path analysis citing path:line at the ref)
+keeps its verdict but gets `verdict_basis`: `"reader probe only"` when a `probe_check` was given, `"independent check
+not recorded"` when none was; plus a `not_verified` line and a warning. handoff.py and evals/scorecard.py count these
+apart: a reader's probe that passes does not by itself confirm a lead. Two leads that share a `where` are refused; give each a distinct suffix
 ` [lead N]` (a space, `[lead `, the number, `]`) on the `where` of each of them, in the verdict as well; the release gate
 (`evals/gate/check_run.py`) compares leads, verdicts and merged leads on the `where` without that suffix. Exit 2 on invalid JSON, a verdict matching no lead, two leads with the same `where`, or two
 different verdicts for one `where` (identical duplicates are fine).
@@ -25,6 +30,11 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import leadsio  # noqa: E402
+
+
+PROBE_ONLY_BASIS, NOT_RECORDED_BASIS = "reader probe only", "independent check not recorded"
+PROBE_ONLY = "the verdict rests on the reader's saved probe alone: no independent check by the verifier"
+NOT_RECORDED = "the verifier recorded no check of the reader's saved probe and no independent check (probe_check)"
 
 
 def load_array(path: str, what: str) -> list:
@@ -44,7 +54,8 @@ def as_list(v: object) -> list:
     return list(v) if isinstance(v, list) else [v]
 
 
-def merge(leads: list[dict], verdicts: list[dict]) -> tuple[list[dict], int]:
+def merge(leads: list[dict], verdicts: list[dict], probe_only: list[str] | None = None) -> tuple[list[dict], int]:
+    probe_only = probe_only if probe_only is not None else []
     seen: dict[str, int] = {}
     for x in leads:
         w = str(x.get("where"))
@@ -77,6 +88,19 @@ def merge(leads: list[dict], verdicts: list[dict]) -> tuple[list[dict], int]:
         m["false_claims"] = as_list(v.get("false_claims"))
         if v.get("evidence"):
             m["verifier_evidence"] = v["evidence"]
+        check = v.get("probe_check")
+        if isinstance(check, dict) and check:
+            m["verifier_probe_check"] = check
+        if "probe_file" in lead and m["verdict"].upper() in ("REAL", "REAL-LOW") \
+                and not (isinstance(check, dict) and str(check.get("independent") or "").strip()):
+            if isinstance(check, dict) and check:
+                m["verdict_basis"] = PROBE_ONLY_BASIS
+                probe_only.append(f"{lead.get('where')}: {m['verdict']} rests on the reader's saved probe alone; "
+                                  "the verifier recorded no independent check (probe_check.independent)")
+            else:
+                m["verdict_basis"] = NOT_RECORDED_BASIS
+                probe_only.append(f"{lead.get('where')}: {m['verdict']} has no recorded independent check: the lead has a "
+                                  "saved probe and the verdict no probe_check")
         changed = False
         for k, val in (v.get("corrected") or {}).items():
             if val in (None, ""):
@@ -87,7 +111,8 @@ def merge(leads: list[dict], verdicts: list[dict]) -> tuple[list[dict], int]:
             m[k] = val
         relabelled += changed
         have = as_list(m.get("not_verified"))
-        extra = [e for e in as_list(v.get("unverifiable")) if e not in have]
+        basis_note = {PROBE_ONLY_BASIS: [PROBE_ONLY], NOT_RECORDED_BASIS: [NOT_RECORDED]}.get(m.get("verdict_basis"), [])
+        extra = [e for e in as_list(v.get("unverifiable")) + basis_note if e not in have]
         if as_list(v.get("unverifiable")):
             m["verifier_unverifiable"] = as_list(v.get("unverifiable"))
         if extra:
@@ -114,10 +139,13 @@ def main(argv: list[str] | None = None) -> int:
             one = load_array(p, "verdicts")
             print(f"verdicts file {p}: {len(one)} verdicts", file=sys.stderr)
             verdicts += one
-        merged, relabelled = merge(leads, verdicts)
+        probe_only: list[str] = []
+        merged, relabelled = merge(leads, verdicts, probe_only)
     except ValueError as e:
         print(f"merge_verdicts: {e}", file=sys.stderr)
         return 2
+    for w in probe_only:
+        print(f"merge_verdicts: warning: {w}", file=sys.stderr)
     counts = Counter(m["verdict"] for m in merged)
     if a.drop_not_real:
         merged = [m for m in merged if m["verdict"].upper() != "NOT REAL"]

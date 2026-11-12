@@ -1,8 +1,8 @@
 # Where the run folder lives
 
 The run folder holds everything a run writes and reads: `evidence.json`, `evidence.md`, `cases/`, `plan/`
-(the RUN PLAN and every agent's prompt), and what the agents write (`brief.md`, `cards/`, `sweep-<k>.json`,
-`verdicts-<k>.json`). The agents write their own files, so the folder has to be somewhere their Write tool
+(the RUN PLAN and every agent's prompt), and what the agents write (`brief.md`, `cards/`, `probes/` (the readers'
+saved probes, named by a lead's `probe_file`), `sweep-<k>.json`, `verdicts-<k>.json`). The agents write their own files, so the folder has to be somewhere their Write tool
 is allowed without asking.
 
 **Default: `<working tree>/.inspector-run/<time>/`**, with `.inspector-run/.gitignore` holding `*`, so `git status`

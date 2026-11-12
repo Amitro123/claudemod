@@ -1,0 +1,29 @@
+{
+  "case": "#3",
+  "unit": "#3",
+  "complete": {
+    "siblings": [
+      {
+        "where": "src/redact.py:7",
+        "what": "SECRET_KEY= is not redacted",
+        "breaks": "P3",
+        "level": "reproduced",
+        "category": "hardening",
+        "reach": "default-on",
+        "probe": "redact('SECRET_KEY=abc') -> unchanged",
+        "probe_file": {
+          "path": "probes/3-1.py",
+          "leads": ["src/redact.py:7"],
+          "ref": "0632e9a",
+          "command": "python3 probes/3-1.py",
+          "requires": "Python 3",
+          "expect": "prints SECRET_KEY=abc unchanged"
+        },
+        "impact": {"what": "the value reaches the notes file", "level": "read", "source": "src/hooks.py:4"},
+        "change": "match *SECRET* names",
+        "test": "redact('SECRET_KEY=abc') hides abc"
+      }
+    ],
+    "checked_clear": []
+  }
+}
