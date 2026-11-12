@@ -186,6 +186,54 @@ export function forbiddenCommand(command: string): string {
   return ''
 }
 
+// A review's agents work in the person's own checkout, uncommitted work included: on top of the
+// above, a command that changes its files, its index or its branch is refused (a stray git stash or
+// git checkout -- . loses work that was never committed). Writes under /tmp (a probe the skeptic
+// runs) and to /dev/null stay allowed. The same guard against a mistake, not a boundary.
+const CHANGES_CHECKOUT: { re: RegExp; what: string }[] = [
+  { re: /^git\s+(checkout|switch|restore|reset|stash|clean|commit|merge|rebase|cherry-pick|revert|am|apply|rm|mv|add|pull|worktree|update-index|update-ref)(?=\s|$)/, what: 'changing the checkout with git' },
+  { re: /^git\s+branch\b.*\s-(-delete|-move|-force|[dDmMfc])(?=\s|$)/, what: 'changing the checkout with git' },
+  { re: /^(sed|perl|ruby)\s+(.*\s)?(-[A-Za-z]*i\S*|--in-place\S*)(\s|$)/, what: 'editing a file in place' },
+  { re: /^(npm|pnpm|yarn|bun)\s+(install|i|ci|add|remove|rm|uninstall|update|up|upgrade|link)(?=\s|$)/, what: 'changing installed dependencies' },
+  { re: /^(truncate|shred)(?=\s|$)/, what: 'changing a file' },
+]
+const TMP_ARG = /^(\/tmp\/|\/dev\/null$)/
+// rm, rmdir, mv, cp, tee, touch, chmod, chown, ln, mkdir and dd of=: allowed only when what they write is under /tmp.
+const WRITERS = /^(rm|rmdir|mv|cp|tee|touch|chmod|chown|ln|mkdir)$/
+function writesCheckout(cmd: string): boolean {
+  const [w, ...args] = cmd.split(/\s+/)
+  const paths = args.filter(a => !a.startsWith('-'))
+  // cp and ln write only their last path (the others are read); the rest write every path they name.
+  if (w === 'cp' || w === 'ln') return !paths.length || !TMP_ARG.test(paths.at(-1)!)
+  if (WRITERS.test(w!)) return !paths.length || paths.some(p => !TMP_ARG.test(p))
+  if (w === 'dd') return args.some(a => a.startsWith('of=') && !TMP_ARG.test(a.slice(3)))
+  return false
+}
+// A redirect (> or >>) to a file outside /tmp; 2>&1, >&2 and /dev/null are not writes. Looked for in
+// the line and in the strings a shell's -c or eval runs, as commandsIn reads them.
+const REDIRECT = /(?:^|[\s\d])>>?\s*(?!&)(\S+)/g
+function redirectsOutside(line: string, depth = 0): boolean {
+  if (depth < 2) {
+    for (const m of line.matchAll(/\b(?:bash|sh|zsh|dash|ksh|fish|pwsh|powershell)(?:\.exe)?\s+(?:-\w+\s+)*-(?:c|Command)\s+(['"])((?:(?!\1)[^\\]|\\.)*)\1|\beval\s+(['"])((?:(?!\3)[^\\]|\\.)*)\3/gi)) {
+      if (redirectsOutside(m[2] ?? m[4] ?? '', depth + 1)) return true
+    }
+  }
+  return [...line.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, '""').matchAll(REDIRECT)].some(m => !TMP_ARG.test(m[1]!))
+}
+
+// Why a review's agent may not run this command in the person's checkout, or '' when it may.
+export function forbiddenInReview(command: string): string {
+  const always = forbiddenCommand(command)
+  if (always) return always
+  if (redirectsOutside(command)) return 'writing a file in the checkout'
+  for (const cmd of commandsIn(command)) {
+    const hit = CHANGES_CHECKOUT.find(f => f.re.test(cmd))
+    if (hit) return hit.what
+    if (writesCheckout(cmd)) return 'changing a file in the checkout'
+  }
+  return ''
+}
+
 // MCP tools that change a remote (a push, a PR, a branch, a release, a deploy): never a run agent's job.
 const REMOTE_WRITE = /^mcp__.+__(?:.*(?:push|merge|pull_request|create_branch|delete_branch|create_or_update_file|delete_file|create_repository|fork|release|deploy|publish|create_tag))/i
 // A tool that only reads (get_, list_, search_, _read) is left alone.

@@ -53,6 +53,7 @@ import {
   leftOut,
   historyArgs,
   historyLeaks,
+  stagedAddsArgs,
   waitsOnPerson,
   modelOf,
   modelsFor,
@@ -77,7 +78,7 @@ import {
   progressNote,
   resumePrompt,
 } from './flow'
-import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, forbiddenTool, routeReview } from './route'
+import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from './route'
 import { FACTORY_START_TOOL, factoryArgs, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, parsePlanResultArgs, toolText } from './texts'
 
 const run = atom({ plugin: 'factory', key: 'run' } as const, null as Run | null)
@@ -446,7 +447,7 @@ async function onBuilt($: EngineInterface) {
     let out = await git($, ['add', '-u'], r.worktree)
     if (out.exitCode === 0 && fresh.length) out = await git($, ['add', '--', ...fresh], r.worktree)
     // A new file the builder staged itself (git add .env) is in the index, not untracked: unstaged too.
-    const added = out.exitCode === 0 ? await git($, ['diff', '--cached', '--name-only', '--diff-filter=A', '-z'], r.worktree) : null
+    const added = out.exitCode === 0 ? await git($, stagedAddsArgs, r.worktree) : null
     const sneaked = added?.exitCode === 0 ? added.stdout.split('\0').filter(p => p && neverCommit(p)) : []
     if (sneaked.length) {
       out = await git($, ['reset', '-q', '--', ...sneaked], r.worktree)
@@ -807,8 +808,10 @@ async function onReview($: EngineInterface, role: Reviewer, agentId: string, ans
   const onSecurity = disputed.some(x => x.role === 'security')
   const next = await patch($, cur => ({ ...cur, disputed, note: `a skeptic checks ${disputed.length} finding${disputed.length === 1 ? '' : 's'}`, models: { ...cur.models, skeptic: onSecurity ? 'opus' : 'sonnet' } }))
   if (next && !(await spawnRole($, 'skeptic', skepticPrompt(next, disputed)))) {
-    // No skeptic could start: the findings go to the builder as they are.
-    await patch($, cur => ({ ...cur, phase: 'review', blocked: null }))
+    // No skeptic could start: the findings go to the builder as they are. Only from the stop that
+    // failed start made: a run stopped meanwhile (spawnRole refuses a run that isn't live) stays stopped.
+    const back = await patch($, cur => (cur.phase === 'needs-human' && cur.blocked?.on === 'start' && cur.blocked.role === 'skeptic' ? { ...cur, phase: 'review', blocked: null } : cur))
+    if (back?.phase !== 'review') return
     return r.kind === 'review' ? finishReview($) : startBuild($, openFindings(changes), [])
   }
 }
@@ -1004,12 +1007,16 @@ async function prOpened($: EngineInterface, url: string): Promise<string> {
 // The PR is only requested here (L3): it reads as opened once the main Claude reports its link (the
 // control tool's pr-opened). A feature that says not to push gets the commands, for the person.
 async function finish($: EngineInterface, reason: string) {
+  let moved = false
   const r = await patch($, cur => {
+    // Queued behind the approval: a run stopped meanwhile stays stopped, and no PR is asked for.
+    if (!isLive(cur.phase)) return cur
+    moved = true
     const handed = forbidsPush(cur.feature)
     const note = `${reason || 'approved'}. ${handed ? 'The PR commands are handed to you: the feature says not to push' : 'PR requested from Claude'}`
     return { ...moveTo(cur, 'done', note), pr: { state: handed ? 'handed' : 'requested' }, steps: { ...cur.steps, approver: { ...cur.steps.approver, state: 'pass' } } }
   })
-  if (!r) return
+  if (!r || !moved) return
   await recordStats($)
   void $.prompt.submit({ text: prPrompt(r, reason) }).catch(() => {
     $.ui.toast(`Approved. Open a PR from ${r.branch} yourself; the prompt could not be sent.`)
@@ -1444,6 +1451,12 @@ export const register: Register = (on, options) => {
         // The count is the stats' only: a write that fails never turns the refusal into a pass.
         await patch($, cur => bump(cur, s => ({ ...s, guardRefused: s.guardRefused + 1 }))).catch(() => null)
         return { deny: "A factory review changes no file: report what you found, and Claude fixes it." }
+      }
+      // Nor through the shell: git stash, git checkout -- ., sed -i, a redirect into a file.
+      const inReview = r?.agents[e.agentId] && r.kind === 'review' && (e.tool === 'Bash' || e.tool === 'PowerShell') ? forbiddenInReview(String((e as unknown as { command?: unknown }).command ?? '')) : ''
+      if (inReview) {
+        await patch($, cur => bump(cur, s => ({ ...s, guardRefused: s.guardRefused + 1 }))).catch(() => null)
+        return { deny: `A factory review changes nothing in your checkout (${inReview}): read and run read-only commands, write scratch files under /tmp, and report what you found.` }
       }
       // Pushing, publishing, deploying or deleting outside the worktree is never a run agent's job.
       // A guard that fails refuses the call, for the run's agents only.

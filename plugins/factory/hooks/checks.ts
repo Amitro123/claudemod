@@ -288,11 +288,13 @@ export async function detectProjectChecks(io: ChecksIO, root: string, opts: Dete
       // Which directories: the root, one level down, the touched ones; python tests are found deeper.
       const touchedDirs = new Set<string>()
       for (const f of opts.touched ?? []) {
+        // From the top down, up to the first ignored or hidden folder: a file in plugins/x/.claude-plugin/
+        // still touches plugins/x and plugins (from the bottom up, that folder used to drop them all).
         const parts = norm(f).split('/').slice(0, -1)
-        for (let i = parts.length; i >= 1; i--) {
-          const dir = parts.slice(0, i).join('/')
-          if (parts.slice(0, i).some(p => IGNORED_DIRS.has(p) || p.startsWith('.'))) break
-          touchedDirs.add(dir)
+        for (let i = 1; i <= parts.length; i++) {
+          const p = parts[i - 1]!
+          if (IGNORED_DIRS.has(p) || p.startsWith('.')) break
+          touchedDirs.add(parts.slice(0, i).join('/'))
         }
       }
       const listings = new Map<string, { name: string; isDir: boolean }[]>()
