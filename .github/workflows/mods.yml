@@ -17,3 +17,16 @@ jobs:
       # the tests pass on the new version.
       - run: npm i -g @anthropic-ai/claude-code@2.1.312
       - run: claude plugin test plugins/${{ matrix.mod }}
+  # The factory's branch-history scan for never-commit files, against real git in disposable
+  # repositories: `claude plugin test` can't start a process. Its own job, so it runs whatever the
+  # factory's kit tests do. Node 22.12+ (type stripping behind the flag, ES module detection on by
+  # default); git 2.31+ (--diff-merges).
+  factory-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: git --version
+      - run: node --experimental-strip-types --test plugins/factory/tests/history.real-git.mjs

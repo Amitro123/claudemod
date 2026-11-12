@@ -488,7 +488,7 @@ claude --plugin-dir plugins/<mod>   # an interactive session; once the mod loads
 tsc -p plugins/<mod>
 ```
 
-Run each mod's tests with `claude plugin test plugins/<mod>`; they don't need the types folder, nor credentials. CI runs them for every mod.
+Run each mod's tests with `claude plugin test plugins/<mod>`; they don't need the types folder, nor credentials. CI runs them for every mod. The factory's history scan is also tested against real git, which the test kit can't start: `node --experimental-strip-types --test plugins/factory/tests/history.real-git.mjs` from the repository root (Node 22.12+, git 2.31+), run in CI as its own job.
 
 The tests check the code; the evals in `plugins/<mod>/evals/` check what the model does with it (does it flag a bug it passes, call the plan tool for a goal, hand a factory request to the start tool, log a fix to memory). Each case runs with the plugin and without it, and reports the difference. They are real model calls, so they aren't in CI:
 

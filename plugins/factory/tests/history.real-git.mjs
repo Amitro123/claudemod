@@ -1,7 +1,8 @@
 // The branch-history scan for files the factory never commits, against real git in disposable
 // repositories. `claude plugin test` can't start a process, so this runs in plain Node:
 //   node --experimental-strip-types --test plugins/factory/tests/history.real-git.mjs
-// (Node 22.6+; the flag is not needed from Node 23.6.)
+// Node 22.12+ (type stripping behind the flag, ES module detection on by default) and git 2.31+
+// (--diff-merges). CI runs it as the factory-history job in .github/workflows/mods.yml.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
