@@ -571,37 +571,8 @@ export function lastLines(text: string, n: number): string {
   return text.split('\n').map(l => l.trim()).filter(Boolean).slice(-n).join(' ').slice(0, 300)
 }
 
-// What never goes into a commit, even where the project's .gitignore misses it: installed dependencies
-// and credentials. Narrow on purpose: a match the builder committed stops the run. Build output
-// (dist/, build/) isn't on it: a folder of that name can be source (cmd/build/), and one that is
-// output is the .gitignore's to keep out. A sample .env (.env.example) and a key or certificate among
-// test fixtures are files a change may well add.
-const DEPENDENCIES = /(^|\/)(node_modules|\.venv|venv|__pycache__)(\/|$)/
-const ENV_FILE = /(^|\/)\.env(\.[^/]*)?$/
-const SAMPLE_ENV = /(^|\/)\.env\.(example|sample|template|dist)$/i
-const KEY_FILE = /\.(pem|key|p12|pfx)$/i
-const TEST_DIR = /(^|\/)(tests?|__tests__|spec|fixtures|__fixtures__|testdata)\//i
-export const neverCommit = (path: string) =>
-  DEPENDENCIES.test(path) || (ENV_FILE.test(path) && !SAMPLE_ENV.test(path)) || (KEY_FILE.test(path) && !TEST_DIR.test(path))
-
-// The files left out, as a person reads them: a file inside an excluded folder (node_modules/)
-// as that folder, once, so a whole install doesn't list file by file.
-export function leftOut(paths: readonly string[]): string[] {
-  const out: string[] = []
-  for (const p of paths) {
-    const parts = p.split('/')
-    let shown = p
-    for (let i = 1; i < parts.length; i++) {
-      const dir = `${parts.slice(0, i).join('/')}/`
-      if (neverCommit(dir)) {
-        shown = dir
-        break
-      }
-    }
-    if (!out.includes(shown)) out.push(shown)
-  }
-  return out
-}
+// What never goes into a commit (neverCommit, leftOut) and the branch-history scan for it.
+export { historyArgs, historyLeaks, leftOut, neverCommit } from './history'
 
 // The untracked files in `git status --porcelain -z -uall` output: each file on its own (never a
 // folder, which would stage the .env or node_modules inside it), unquoted, non-ASCII names as they

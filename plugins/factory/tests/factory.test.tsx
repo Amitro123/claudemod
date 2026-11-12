@@ -32,7 +32,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[] } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[] } = {}) {
   // Files the install writes in the worktree (`setupMakes`, a lockfile npm install made): untracked from then on.
   const made: string[] = []
   const spawned: Spawned[] = []
@@ -97,7 +97,12 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (cmd === 'git diff abc123 HEAD') return ok('diff --git a/src/mw.ts b/src/mw.ts\n+export const limit = 10\n')
     // New files in the index (`stagedNew`, the builder's own git add), and new files committed since the base.
     if (cmd === 'git diff --cached --name-only --diff-filter=A -z') return ok(stagedNew.join('\0'))
-    if (cmd === 'git diff --name-only --diff-filter=A -z abc123 HEAD') return ok(committedNew.join('\0'))
+    // The branch history's added files, commit by commit (`committedNew`, all in one commit, c1), or a
+    // scan that fails (`historyFails`).
+    if (cmd === 'git log --no-renames --diff-merges=first-parent --diff-filter=A --name-only -z --format=%x00%H abc123..HEAD') {
+      if (historyFails) return { value: { exitCode: 128, stdout: '', stderr: "fatal: bad revision 'abc123..HEAD'" } } as never
+      return ok(committedNew.length ? `\0c1\0\n${committedNew.join('\0')}\0` : '')
+    }
     if (cmd === 'git status --porcelain' || cmd === 'git status --porcelain -uall') return ok(dirty ? ' M src/mw.ts\n?? src/limit/new.ts\n?? node_modules/\n?? .env\n?? certs/server.key\n' : '')
     // -z -uall: each untracked file on its own, NUL-separated, unquoted (a new folder's .env too).
     if (cmd === 'git status --porcelain -z -uall' && !dirty) return ok(made.map(f => `?? ${f}\0`).join(''))
@@ -382,6 +387,13 @@ describe('a run from the feature to the PR', () => {
     await toReviews($)
     expect(w.ran).not.toContain('npm test')
     expect(await bandText($)).toMatch(/committed files the factory never commits: certs\/server\.key/)
+  })
+
+  test('the history scan for committed credentials failing stops the run; it is not read as clean', async ($, on) => {
+    const w = engine(on, { historyFails: true })
+    await toReviews($)
+    expect(w.ran).not.toContain('npm test')
+    expect(await bandText($)).toMatch(/could not read the branch's history for files the factory never commits/)
   })
 
   test("a commit that fails stops the run, for the person to look at", async ($, on) => {

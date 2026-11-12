@@ -1,0 +1,9 @@
+# Factory changelog
+
+Earlier releases are described in the repository README.
+
+## Unreleased
+
+- Fixed: a credential the builder committed and then deleted, or renamed to an ordinary name, passed the check before the checks run and was pushed with the branch, because the check compared only the base and HEAD trees. An ordinary file of the base renamed to `.env` passed too (git reported a rename, not an added file), and so did a file a merge commit added. The check now reads every commit between the base and HEAD (`git log --no-renames --diff-merges=first-parent --diff-filter=A --name-only -z`): a rename counts as a delete and an add with no similarity guess, a merge commit is compared with its first parent, and the merged branch's own commits are read as well. A match stops the run for the person, naming each path and the short ids of the commits that added it. A scan git cannot complete (an unknown base, a git error) now stops the run instead of reading as clean. Nothing is removed or rewritten automatically.
+- Limitation: the check goes by file name, with the same never-commit list as before (`.env` and `.env.*` except samples, `*.pem`, `*.key`, `*.p12` and `*.pfx` outside test folders, installed dependencies). It reads no file contents, so a secret inside an ordinary file is not caught, nor is a credential already in the base and only renamed or deleted on the branch. Commits a merge brings in count as the branch's own, so a credential an upstream branch merged into the work added stops the run too.
+- Tests: `tests/history.real-git.mjs` runs the scan against real git in disposable repositories (`node --experimental-strip-types --test plugins/factory/tests/history.real-git.mjs`; `claude plugin test` cannot start a process). The never-commit rules moved unchanged from `hooks/flow.ts` to `hooks/history.ts`, which has no imports so plain Node can load it; `flow.ts` re-exports them.
