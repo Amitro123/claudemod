@@ -29,7 +29,7 @@ import leadsio  # noqa: E402
 
 def load_array(path: str, what: str) -> list:
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
         raise ValueError(f"{what} {path}: invalid JSON or unreadable ({e})") from e

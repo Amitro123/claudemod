@@ -5,7 +5,7 @@
 
 `--expect` lists the card ids: each must exist as `<folder>/<id>.json` and parse, else exit 2 naming
 them before anything is written. A stub card (`"status": "in-progress"`: its reader stopped) is merged,
-its leads capped at `suspect` (`original_level` kept, `not_verified` says why) and listed in the log. Every lead of each card's `complete.siblings` and of each sweeper
+its leads marked `"card_status": "in-progress"`, capped at `suspect` (`original_level` kept, `not_verified` says why) and listed in the log. Every lead of each card's `complete.siblings` and of each sweeper
 file (an array) is kept field for field, plus `found_by` (card id or `sweeper`). Two leads are merged
 only when they are exact duplicates: the same file and the same set of line ranges in `where`, and the
 same words and comparison operators (`<`, `>`, `<=`, `>=`, `==`, `!=`) in `what` (case, spacing and other punctuation ignored). The stronger level is kept (reproduced >
@@ -16,6 +16,8 @@ fields; both get `possible_duplicate_of` (the other's `where`) and the log lists
 reason (`lines overlap`, `similar wording` at word similarity 0.5 or more, else `within 10 lines`, plus the
 similarity). When exact duplicates differ in other fields, the winner gains the fields it lacks and a
 conflicting value of the loser is recorded under `merged_variants`; nothing is dropped silently.
+Kept leads that still share a `where` get the suffix ` [lead N]` (N: their place in leads.json), so the
+verifiers and merge_verdicts.py can tell them apart; the release gate compares on the `where` without it.
 `--repair-escapes` (opt-in; default is to refuse): a card or sweeper file that fails with an invalid
 backslash escape (a regex class like backslash-s written with one backslash) gets every stray backslash doubled, is re-parsed,
 kept as `<name>.orig` and named in the log. Then the lint_leads checks are printed (they change nothing). Exit 0 ok, 1 not saved (the previous file is kept), 2 invalid input.
@@ -38,7 +40,8 @@ RANK = ("reproduced", "read", "suspect", "inferred")
 WHERE_RE = re.compile(r"^(?P<f>[^\s,]+?):(?P<r>L?\d+(?:\s*-\s*L?\d+)?(?:\s*,\s*L?\d+(?:\s*-\s*L?\d+)?)*)$")
 OVERLAP, SIMILAR, NEARBY = "lines overlap", "similar wording", "within 10 lines"
 SIMILAR_AT = 0.5  # word similarity from which a flagged pair is called "similar wording"
-OWN_KEYS = ("found_by", "also_found_by", "merged_from", "merged_variants", "possible_duplicate_of", "case")
+OWN_KEYS = ("found_by", "also_found_by", "merged_from", "merged_variants", "possible_duplicate_of", "case",
+            "card_status", "original_level")  # a stub's marks stay on its own lead, never copied to a finished one
 WORD_RE = re.compile(r"[a-z0-9_]+")
 IDENT_RE = re.compile(r"[a-z0-9_]+|[<>=!]+")  # identity tokens: words plus comparison operators (`<` and `>` are different claims)
 STUB = "in-progress"  # a card's `status` while its reader is still on the case
@@ -118,7 +121,7 @@ def repair_escapes(path: str, exc: Exception) -> bool:
         return False
     with open(path, "rb") as f:
         raw = f.read()
-    fixed = _ESC_RE.sub(_double_stray, raw.decode("utf-8"))
+    fixed = _ESC_RE.sub(_double_stray, raw.decode("utf-8-sig"))
     try:
         json.loads(fixed)
     except ValueError:
@@ -132,6 +135,7 @@ def repair_escapes(path: str, exc: Exception) -> bool:
 
 def cap_unfinished(lead: dict) -> dict:
     """A lead of a stub card: its reader stopped before checking it to the end, so it is at most `suspect`."""
+    lead["card_status"] = STUB
     if level_rank(lead) < RANK.index("suspect"):
         lead["original_level"], lead["level"] = lead.get("level"), "suspect"
     nv = lead.get("not_verified")
@@ -150,7 +154,7 @@ def load_cards(folder: str, ids: list[str], repair: bool = False, repaired: list
             continue
         if repair and repaired is not None:
             try:
-                with open(p, encoding="utf-8") as f:
+                with open(p, encoding="utf-8-sig") as f:
                     json.load(f)
             except ValueError as exc:
                 if repair_escapes(p, exc):
@@ -178,13 +182,13 @@ def load_sweeps(paths: list[str], repair: bool = False, repaired: list[str] | No
     for p in paths:
         try:
             try:
-                with open(p, encoding="utf-8") as f:
+                with open(p, encoding="utf-8-sig") as f:
                     data = json.load(f)
             except ValueError as exc:
                 if not (repair and repaired is not None and repair_escapes(p, exc)):
                     raise
                 repaired.append(f"sweep ({p})")
-                with open(p, encoding="utf-8") as f:
+                with open(p, encoding="utf-8-sig") as f:
                     data = json.load(f)
         except (OSError, ValueError) as exc:
             raise leadsio.LeadsError(f"{p}: invalid JSON or unreadable ({exc})")
@@ -262,6 +266,11 @@ def dedupe(raw: list[dict]):
                 out["merged_variants"] = variants
         out_of[root] = out
         final.append((min(idxs), out))
+    final.sort(key=lambda t: t[0])
+    seen_where = Counter(str(o.get("where")) for _, o in final)
+    for n, (_, o) in enumerate(final, 1):  # merge_verdicts joins on `where`: two kept leads must not share one
+        if seen_where[str(o.get("where"))] > 1:
+            o["where"] = f"{o.get('where')} [lead {n}]"
     for i, j, _, _ in possible:  # flag each way; never merges or drops anything
         a, b = out_of[find(i)], out_of[find(j)]
         if a is not b:
@@ -269,7 +278,6 @@ def dedupe(raw: list[dict]):
                 refs = x.setdefault("possible_duplicate_of", [])
                 if str(y.get("where")) not in refs:
                     refs.append(str(y.get("where")))
-    final.sort(key=lambda t: t[0])
     return [o for _, o in final], merges, possible
 
 

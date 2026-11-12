@@ -125,7 +125,12 @@ def reader_prompt(c: Ctx, ids: list[int]) -> str:
     lines += [f"- Case: {c.cases[i - 1]} (case {i} of {len(c.cases)}). Dossier: read {c.dossiers[i - 1]}. "
               f"Card: {c.run}/cards/{i}.json." for i in ids]
     lines += [f"At most 25 tool calls per case. {EVIDENCE}",
-              "Before you read a case, write its card file as a stub: "
+              "A card file that already holds a card with no `status` is a finished case: leave it as it is (do not read "
+              "that case again or rewrite its file) and go to the next. A card with `\"status\": \"in-progress\"` is a stopped "
+              "case: work it again, keeping its leads when you confirm them.",
+              ("Work the cases strictly one at a time, in order: start a case by writing its stub, finish its card, and only then "
+               "open the next case's dossier. Write no stub for a case you have not started. " if many else "")
+              + "Start a case by writing its card file as a stub: "
               f'{{"case": "<label>", "unit": "<label>", "status": "{STUB}", "complete": {{"siblings": [], "checked_clear": []}}}}; '
               "add each lead to it as you confirm one. When the case is done, replace the stub with the finished card (no `status`).",
               "Write each card as strict JSON (a backslash inside a string is doubled) to its card file first, "
@@ -180,13 +185,30 @@ def docs_prompt(items: list[tuple[str, str]]) -> str:
 
 
 # ---------------------------------------------------------------- the plan
+AGENTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "agents")
+DEFAULT_MODEL = "sonnet"  # for the general-purpose brief-writer, and an agent file that names none
+
+
+def agent_model(kind: str) -> str:
+    """The `model:` an agent file asks for; hosts may ignore it, so the plan states it on every dispatch."""
+    if not kind.startswith("inspector:"):
+        return DEFAULT_MODEL
+    try:
+        with open(os.path.join(AGENTS_DIR, kind.split(":", 1)[1] + ".md"), encoding="utf-8") as f:
+            head = f.read().split("\n---", 1)[0]
+    except OSError:
+        return DEFAULT_MODEL
+    m = re.search(r"^model:\s*([\w.\-]+)\s*$", head, re.M)
+    return m[1] if m else DEFAULT_MODEL
+
+
 def phase(name: str, dispatch: list[tuple[str, str, list[str]]]) -> dict:
     agents: dict[str, int] = {}
     for kind, _, _ in dispatch:
         agents[kind] = agents.get(kind, 0) + 1
     return {"name": name, "agents": agents, "min_agents": len(dispatch),
             "outputs": [o for _, _, outs in dispatch for o in outs],
-            "dispatch": [{"agent": k, "prompt": p, "outputs": list(outs)} for k, p, outs in dispatch]}
+            "dispatch": [{"agent": k, "model": agent_model(k), "prompt": p, "outputs": list(outs)} for k, p, outs in dispatch]}
 
 
 def waves(name: str, dispatch: list[tuple[str, str, list[str]]]) -> list[dict]:
@@ -229,7 +251,7 @@ def host_questions(leads: list) -> list[tuple[str, str]]:
 def expect_doc(c: Ctx, phases: list[dict], verify: dict | None) -> dict:
     n = len(c.keep)
     d = {"plan_version": 1, "mode": "none" if n == 0 else ("parallel" if c.parallel else "single"), "cases": n,
-         "repo": c.repo, "ref": c.ref, "reader_ids": [str(i) for i in c.keep] if c.parallel else [],
+         "repo": c.repo, "ref": c.ref, "case_labels": list(c.cases), "reader_ids": [str(i) for i in c.keep] if c.parallel else [],
          "sweeper_files": [f"sweep-{k}.json" for k in range(1, len(SWEEPERS) + 1)] if c.parallel else [],
          "phases": list(phases), "verifier_chunks": [], "docs_checker": {"needed": False, "questions": 0}}
     if c.dropped:
@@ -255,6 +277,8 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
         return "\n".join(L + ["No case to work: tell the user the collector found no fix to investigate, and stop. Start no agent.", ""])
     L += ["You are the main conversation: you start every agent below yourself, by its exact type, and do none of their work.",
           "Do not start a general worker in place of a plugin agent type. Each agent writes its own file; never retype its output.",
+          "Start each agent with the model named on its line, passed explicitly: a host may ignore the agent file's own "
+          "`model` and run the agent on your model instead.",
           f"Start all agents of a phase in ONE message (at most {WAVE}; a larger phase comes in waves: start a wave when the files "
           "of the one before exist). Each dispatch is `Read <prompt file> and follow it`.",
           f"If an agent stopped or a file is missing, run {c.script('plan.py')} --run \"{c.run}\" --status: it prints the dispatch "
@@ -272,7 +296,7 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
         L += [f"## Phase {i}: {p['name']}{wave} ({p['min_agents']} agent{'s' if p['min_agents'] != 1 else ''}: {ag})", "", "Start these agents in ONE message:"]
         for d in p["dispatch"]:
             mode = f" (mode: {SWEEPERS[int(d['prompt'][8:-10]) - 1][0]})" if d["prompt"].startswith("sweeper-") else ""
-            L.append(f"- {d['agent']}: `{c.dispatch(d['prompt'])}`{mode}")
+            L.append(f"- {d['agent']} (model: {d['model']}): `{c.dispatch(d['prompt'])}`{mode}")
         L += ["", "Done when these files exist: " + ", ".join(p["outputs"]) + "."]
         if p["name"] == "investigate" and p.get("wave", 1) == p.get("waves", 1):
             steps = []
@@ -333,6 +357,44 @@ def earlier_settings(run: str) -> tuple[list[str], bool]:
     return drops, d.get("per_case") is True
 
 
+def work_files(run: str) -> list[str]:
+    """Files in the run folder that agents or the merge steps wrote (relative, sorted)."""
+    out = []
+    for name in sorted(os.listdir(run)) if os.path.isdir(run) else []:
+        if re.fullmatch(r"(sweep|verdicts)-\d+\.json|leads\.json|merged\.json|open-bugs\.md|brief\.md|dedupe\.md", name):
+            out.append(name)
+    cards = os.path.join(run, "cards")
+    if os.path.isdir(cards):
+        out += [f"cards/{n}" for n in sorted(os.listdir(cards)) if n.endswith(".json")]
+    return out
+
+
+def identity_changes(old: dict, repo: str, ref: str, labels: list[str]) -> list[str]:
+    """What differs between a plan's recorded identity and this one ([] when the work in the folder still fits)."""
+    out = []
+    if old.get("repo") != repo:
+        out.append(f"repository {old.get('repo')} -> {repo}")
+    if old.get("ref") != ref:
+        out.append(f"ref {old.get('ref')} -> {ref}")
+    if "case_labels" in old and old["case_labels"] != labels:
+        out.append(f"cases {', '.join(map(str, old['case_labels'])) or 'none'} -> {', '.join(labels) or 'none'}")
+    return out
+
+
+def check_replan(run: str, c: Ctx) -> None:
+    """Refuse a plan whose repository, ref or case numbering differs from the plan the folder's work was done for."""
+    path = os.path.join(run, "plan", "expect.json")
+    work = work_files(run)
+    if not work or not os.path.isfile(path):
+        return
+    old = load(path)
+    changes = identity_changes(old if isinstance(old, dict) else {}, c.repo, c.ref, c.cases)
+    if changes:
+        raise Invalid(f"the run folder holds work of another plan ({'; '.join(changes)}): {', '.join(work[:6])}"
+                      f"{' ...' if len(work) > 6 else ''}. It would be counted as done for the wrong cases; "
+                      "collect into a new --out folder, or move that work away first")
+
+
 def build(run: str, phase: str = "collect", case_file: str | None = None,
           dropped: list[str] | None = None, per_case: bool = False) -> dict[str, str]:
     """{file name under plan/: text}. Raises Invalid; writes nothing."""
@@ -341,6 +403,7 @@ def build(run: str, phase: str = "collect", case_file: str | None = None,
         dropped = earlier if dropped is None else dropped
         per_case = per_case or earlier_per_case
     c = Ctx(run, case_file, dropped, per_case)
+    check_replan(run, c)
     n = len(c.keep)
     files: dict[str, str] = {}
     if c.parallel:
@@ -380,12 +443,37 @@ def write_all(run: str, files: dict[str, str]) -> None:
             os.remove(target)
 
 
-def output_state(run: str, rel: str) -> str:
-    path = os.path.join(run, rel)
+CARD_RE = re.compile(r"^cards/(\d+)\.json$")
+VERDICT_RE = re.compile(r"^verdicts-(\d+)\.json$")
+
+
+def mtime(run: str, rel: str) -> float | None:
+    p = os.path.join(run, *rel.split("/"))
+    return os.path.getmtime(p) if os.path.isfile(p) else None
+
+
+def card_state(data, n: int, labels: list[str]) -> str:
+    if not isinstance(data, dict):
+        return "not a card (expected one JSON object)"
+    if data.get("status") == STUB:
+        return "a stub (the reader stopped)"
+    named = [x for x in (str(data.get("unit") or "").strip(), (str(data.get("case") or "").split() or [""])[0]) if x]
+    if not named:
+        return "names no case (cannot tell it belongs to this plan)"
+    want = labels[n - 1] if 0 < n <= len(labels) else None
+    same = lambda x: x == want or (SHA_RE.match(x.lower()) and SHA_RE.match(want.lower())  # noqa: E731
+                                   and (x.lower().startswith(want.lower()) or want.lower().startswith(x.lower())))
+    if want and not any(same(x) for x in named):
+        return f"for another case ({named[0]}, expected {want})"
+    return "done"
+
+
+def output_state(run: str, rel: str, labels: list[str] | None = None) -> str:
+    path = os.path.join(run, *rel.split("/"))
     if not os.path.isfile(path):
         return "missing"
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             text = f.read()
     except (OSError, UnicodeDecodeError):
         return "unreadable"
@@ -397,10 +485,47 @@ def output_state(run: str, rel: str) -> str:
         data = json.loads(text)
     except ValueError:
         return "not valid JSON"
-    cards = data if isinstance(data, list) else [data]
-    if any(isinstance(x, dict) and x.get("status") == STUB for x in cards):
-        return "a stub (the reader stopped)"
+    m = CARD_RE.match(rel)
+    if m:
+        return card_state(data, int(m[1]), labels or [])
+    m = VERDICT_RE.match(rel)
+    if m:
+        chunk = f"plan/chunk-{m[1]}.json"
+        planned = mtime(run, chunk)
+        if planned is not None and mtime(run, rel) < planned:
+            return f"older than {chunk} (the chunk was planned again)"
     return "done"
+
+
+def script_steps(run: str, exp: dict) -> list[str]:
+    """The no-agent steps of plan.md whose output is missing or older than its inputs, in order."""
+    if exp.get("mode") == "none":
+        return []
+    steps = []
+    leads = mtime(run, "leads.json")
+    if exp.get("mode") == "parallel":
+        made = [t for p in exp["phases"] if p.get("name") == "investigate" for o in p.get("outputs") or [] if (t := mtime(run, o))]
+        if leads is None:
+            steps.append("merge_cards.py (then crosscheck.py): leads.json missing")
+        elif made and leads < max(made):
+            steps.append("merge_cards.py (then crosscheck.py): leads.json is older than a card or sweep file; merge again")
+    if not any(p.get("name") == "verify" for p in exp["phases"]):
+        return steps + ["plan.py --phase verify: not planned yet", "merge_verdicts.py, handoff.py: after the verifiers"]
+    planned = mtime(run, "plan/expect.json")
+    if leads is not None and planned is not None and planned < leads:
+        steps.append("plan.py --phase verify: planned before leads.json last changed; plan it again")
+    merged = mtime(run, "merged.json")
+    inputs = [t for t in [leads, *(mtime(run, c.get("verdicts", "")) for c in exp.get("verifier_chunks") or [])] if t]
+    if merged is None:
+        steps.append("merge_verdicts.py: merged.json missing")
+    elif inputs and merged < max(inputs):
+        steps.append("merge_verdicts.py: merged.json is older than leads.json or a verdict file; merge again")
+    handoff = mtime(run, "open-bugs.md")
+    if handoff is None:
+        steps.append("handoff.py: open-bugs.md missing")
+    elif merged is not None and handoff < merged:
+        steps.append("handoff.py: open-bugs.md is older than merged.json; write it again")
+    return steps
 
 
 def status(run: str) -> tuple[int, str]:
@@ -408,6 +533,15 @@ def status(run: str) -> tuple[int, str]:
     exp = load(os.path.join(run, "plan", "expect.json"))
     if not isinstance(exp, dict) or not isinstance(exp.get("phases"), list):
         raise Invalid("plan/expect.json: expected an object with `phases`")
+    ev_path = os.path.join(run, "evidence.json")
+    if os.path.isfile(ev_path):
+        ev = load(ev_path)
+        ev = ev if isinstance(ev, dict) else {}
+        changes = identity_changes(exp, str(ev.get("repo_path") or "").replace("\\", "/"), ev.get("ref_sha"), ev.get("cases") or [])
+        if changes:
+            raise Invalid(f"the plan is stale ({'; '.join(changes)}): evidence.json was collected again after it. "
+                          "Nothing in the folder is counted as done; plan again (plan.py --run <run>)")
+    labels = exp.get("case_labels") if isinstance(exp.get("case_labels"), list) else []
     plan_dir = f"{posix(run)}/plan"
     L, left = [], 0
     for i, p in enumerate(exp["phases"], 1):
@@ -420,22 +554,31 @@ def status(run: str) -> tuple[int, str]:
             per_agent = [(d, p.get("outputs") or []) for d in dispatch]
         todo = []
         for d, outs in per_agent:
-            gaps = [f"{o} {s}" for o in outs if (s := output_state(run, o)) != "done"]
+            states = [(o, output_state(run, o, labels)) for o in outs]
+            gaps = [f"{o} {s}" for o, s in states if s != "done"]
             if gaps:
-                todo.append((d, gaps))
+                done = [o for o, s in states if s == "done"]
+                todo.append((d, gaps, done))
         if not todo:
             L.append(f"{head}: done.")
             continue
         left += len(todo)
         L.append(f"{head}: {len(todo)} agent{'s' if len(todo) != 1 else ''} to start again, in ONE message:")
-        for d, gaps in todo:
-            L.append(f"- {d.get('agent')}: `Read {plan_dir}/{d.get('prompt')} and follow it` ({'; '.join(gaps)})")
-    names = [p.get("name") for p in exp["phases"]]
-    if exp.get("mode") != "none" and "verify" not in names:
-        L.append("Verify: not planned yet; when every phase above is done, run the steps after the last investigate phase of plan.md.")
-    if left:
-        L.append(f"{left} agent{'s' if left != 1 else ''} left. Start them in the order above (a later phase needs the files of the one before).")
-    return (1 if left else 0), "\n".join(L) + "\n"
+        for d, gaps, done in todo:
+            keep = f"; finished, leave as is: {', '.join(done)}" if done else ""
+            model = f" (model: {d['model']})" if d.get("model") else ""
+            L.append(f"- {d.get('agent')}{model}: `Read {plan_dir}/{d.get('prompt')} and follow it` (to do: {'; '.join(gaps)}{keep})")
+    steps = script_steps(run, exp)
+    if steps:
+        L.append("Script steps left (no agent; plan.md gives each command, in order; run them after the agents above):")
+        L += [f"- {s}" for s in steps]
+    if not left and not steps:
+        L.append("Complete: every planned agent output and script step is present and current. "
+                 "Next: the release gate, evals/gate/check_run.py on this run folder.")
+    else:
+        L.append(f"Left: {left} agent{'s' if left != 1 else ''} to start again, {len(steps)} script step{'s' if len(steps) != 1 else ''}. "
+                 "Start agents in the order above (a later phase needs the files of the one before).")
+    return (1 if left or steps else 0), "\n".join(L) + "\n"
 
 
 def main(argv=None) -> int:

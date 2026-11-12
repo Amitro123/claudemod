@@ -178,8 +178,9 @@ def test_every_documented_command_runs(ws, capsys) -> None:
         build_workspace(ws, repo=False)  # each command starts from the pristine fixture files
         p = subprocess.run([sys.executable, str(SCRIPTS / script), *args], cwd=cwd, input=stdin, capture_output=True,
                            text=True, encoding="utf-8", timeout=TIMEOUT, env=ENV)
-        ok = (0, 1) if script == "plan.py" and "--status" in args else (0,)  # --status exits 1 while agents are left
-        assert p.returncode in ok, (f"documented command FAILED ({c['file']}): {c['raw']}\nrc={p.returncode}\n"
+        work_left = (script == "plan.py" and "--status" in args and p.returncode == 1  # its answer, not an error
+                     and "\nLeft: " in "\n" + p.stdout and not p.stderr.strip())
+        assert p.returncode == 0 or work_left, (f"documented command FAILED ({c['file']}): {c['raw']}\nrc={p.returncode}\n"
                                    f"{p.stdout[-600:]}\n{p.stderr[-600:]}")
         ran.append(f"{c['file']}: {script} {' '.join(args)[:70]}")
         scripts.add(script)

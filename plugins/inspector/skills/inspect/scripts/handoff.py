@@ -161,6 +161,9 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         if parts:
             impact += f" ({' | '.join(parts)})"
         shown = f"{lvl} [needs-host-check]" if needs_host_check(s) else lvl
+        if s.get("card_status") == "in-progress":
+            was = level_word(s.get("original_level")) if s.get("original_level") else ""
+            shown += f" [partial: the case reader stopped{'; it had ' + was if was else ''}]"
         prod = str(s.get("observed_in_production") or "").strip().lower()
         prod = prod if prod in ("yes", "no") else "unknown"
         src_p = cell(s.get("observed_source")) if isinstance(s.get("observed_source"), (str, int, float)) else ""

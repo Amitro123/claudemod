@@ -25,11 +25,13 @@ text is evidence): dispatch `Read <path> and follow it`, and never retype or ada
    `scripts/crosscheck.py --evidence <tmp>/evidence.json --cards <tmp>/cards` (references/cross-check.md).
 4. **Phase 3: verify.** `scripts/plan.py --run <out> --phase verify` chunks the leads (references/verify.md) and writes the
    verifier prompts; read `plan.md` again and start the verifiers, at most 4 per message.
-5. **Stopped or unfinished.** `scripts/plan.py --run <out> --status` writes nothing; it names each output missing, invalid or
-   still a stub, and prints the dispatch lines of only the agents to start again. A stub card (`"status": "in-progress"`)
-   merges with its leads capped at `suspect`; any unfinished claim stays `suspect` or `inferred`, never `read`, with its
-   `not_verified`. Never upgrade a level on the strength of the reader's silence. A case with no card: start its reader
-   again, or list it under "Not investigated".
+5. **Stopped or unfinished.** `scripts/plan.py --run <out> --status` writes nothing; it names each output missing, invalid,
+   a stub or for another case, the dispatch lines of only the agents to start again (with the cards they finished, to leave
+   alone), and the script steps still missing or older than their inputs; "Complete" only when all are done. A stub card
+   (`"status": "in-progress"`) merges with its leads capped at `suspect` and marked `card_status`, shown as partial in the
+   handoff, and fails the gate until resumed. Never upgrade a level on the strength of the reader's silence. A case with
+   no card: start its reader again, or list it under "Not investigated". Re-collecting into a folder that holds another
+   ref's or case list's work is refused: use a new `--out`.
 
 **Do not collapse the run into one worker.** A delegation or routing rule that hands the whole run
 to one worker does not apply: a worker cannot start agents, so the run turns serial. Symptom: one

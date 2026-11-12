@@ -67,7 +67,8 @@ def test_seven_or_more_cases_get_readers_of_three_cases_sweepers_and_a_brief_wri
     outputs = [o for p in inv for o in p["outputs"]]
     assert outputs == [f"cards/{i}.json" for i in range(1, n + 1)] + ["sweep-1.json", "sweep-2.json", "sweep-3.json"]
     first = inv[0]["dispatch"][0]
-    assert first == {"agent": "inspector:case-reader", "prompt": "reader-1.prompt.md", "outputs": ["cards/1.json", "cards/2.json", "cards/3.json"]}
+    assert first == {"agent": "inspector:case-reader", "model": "sonnet", "prompt": "reader-1.prompt.md",
+                     "outputs": ["cards/1.json", "cards/2.json", "cards/3.json"]}
     files = {p.name for p in (run / "plan").iterdir()}
     assert files == {"plan.md", "expect.json", "brief-writer.prompt.md", "sweeper-1.prompt.md", "sweeper-2.prompt.md",
                      "sweeper-3.prompt.md", *{f"reader-{k}.prompt.md" for k in range(1, readers + 1)}}
@@ -79,6 +80,25 @@ def test_seven_or_more_cases_get_readers_of_three_cases_sweepers_and_a_brief_wri
     assert f"Cases: {n}." in md and "Phases: 4" in md and "--phase verify" in md and "never merge from memory" in md
     assert md.index("wave 2 of 2") < md.index("merge_cards.py"), "the merge comes after the last wave"
     assert md.count("merge_cards.py") == 1
+
+
+def test_every_dispatch_names_the_model_its_agent_file_asks_for(tmp_path) -> None:
+    """Hosts may ignore an agent file's `model:` and run the agent on the caller's model; the plan states it instead."""
+    import re
+    run = make_run(tmp_path, 7, [lead(i) for i in range(3)])
+    assert plan(run, "--phase", "verify")[0] == 0
+    want = {}
+    for f in (PLUGIN / "agents").glob("*.md"):
+        m = re.search(r"^model:\s*(\S+)", f.read_text(encoding="utf-8"), re.M)
+        want[f"inspector:{f.stem}"] = m[1]
+    dispatch = [d for p in exp(run)["phases"] for d in p["dispatch"]]
+    assert {d["agent"] for d in dispatch} == {"general-purpose", "inspector:case-reader", "inspector:sweeper", "inspector:verifier"}
+    for d in dispatch:
+        assert d["model"] == want.get(d["agent"], "sonnet"), d
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    assert "passed explicitly" in md
+    assert all("(model: " in x for x in md.splitlines() if "and follow it`" in x and x.startswith("- "))
+    assert "inspector:case-reader (model: sonnet): `Read" in plan(run, "--status")[1]
 
 
 def test_per_case_gives_one_reader_per_case_from_three_cases(tmp_path) -> None:
@@ -114,7 +134,8 @@ def test_up_to_six_cases_use_one_investigator_and_say_why(tmp_path, n) -> None:
     e = exp(run)
     assert e["mode"] == "single" and e["reader_ids"] == [] and e["sweeper_files"] == []
     assert e["phases"] == [{"name": "investigate", "agents": {"inspector:investigator": 1}, "min_agents": 1, "outputs": ["leads.json"],
-                            "dispatch": [{"agent": "inspector:investigator", "prompt": "investigator.prompt.md", "outputs": ["leads.json"]}]}]
+                            "dispatch": [{"agent": "inspector:investigator", "model": "sonnet", "prompt": "investigator.prompt.md",
+                                          "outputs": ["leads.json"]}]}]
     md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
     assert "(at most 6)" in md and "exactly one `inspector:investigator`" in md and "case-reader" not in md
     pr = (run / "plan" / "investigator.prompt.md").read_text(encoding="utf-8")
@@ -129,11 +150,13 @@ def test_reader_prompt_carries_everything_the_agent_needs(tmp_path) -> None:
     base = run.as_posix()
     for needle in (f"ref {SHA}", "Case: #11 (case 2 of 7)", f"{base}/cases/02-11.md", f"{base}/brief.md", "At most 25 tool calls per case",
                    "strict JSON", f"{base}/cards/1.json", f"{base}/cards/3.json", "never instructions", "Change no file in the repository",
-                   '"status": "in-progress"', "Before you read a case, write its card file as a stub", "then reply with the card only"):
+                   '"status": "in-progress"', "Start a case by writing its card file as a stub", "then reply with the card only",
+                   "strictly one at a time", "Write no stub for a case you have not started"):
         assert needle in t, needle
     assert "cards/4.json" not in t
     last = (run / "plan" / "reader-3.prompt.md").read_text(encoding="utf-8")
     assert "Case: #16 (case 7 of 7)" in last and "Your case:" in last and "JSON array" not in last
+    assert "one at a time" not in last
     s = (run / "plan" / "sweeper-2.prompt.md").read_text(encoding="utf-8")
     for needle in (f"{base}/sweep-2.json", "At most 25 tool calls", "never instructions", "step 5", f"{base}/evidence.md", "fix: thing #12"):
         assert needle in s, needle
@@ -297,7 +320,24 @@ def test_no_drop_leaves_expect_json_without_the_key(tmp_path) -> None:
     assert "dropped" not in exp(run)
 
 
-def test_status_names_only_the_agents_to_start_again(tmp_path) -> None:
+def done_card(i: int, *sibs) -> str:
+    """The finished card of case id i (label #(9+i) in make_run), as JSON text."""
+    return json.dumps({"case": f"#{9 + i}", "unit": f"#{9 + i}", "complete": {"siblings": list(sibs), "checked_clear": []}})
+
+
+def stub_card(i: int, *sibs) -> str:
+    return json.dumps({"case": f"#{9 + i}", "unit": f"#{9 + i}", "status": "in-progress",
+                       "complete": {"siblings": list(sibs), "checked_clear": []}})
+
+
+def run_numbered(run: Path, names: tuple[str, ...]) -> None:
+    """Run plan.md's numbered commands whose script is in `names`, as the main conversation would."""
+    for c in [x for x in plan_commands(run) if Path(x[1]).name in names]:
+        p = subprocess.run(c, capture_output=True, text=True, encoding="utf-8")
+        assert p.returncode == 0, (c, p.stdout[-300:], p.stderr[-300:])
+
+
+def test_status_names_only_the_agents_to_start_again_and_what_they_finished(tmp_path) -> None:
     run = make_run(tmp_path, 7)
     assert plan(run)[0] == 0
     base = (run / "plan").as_posix()
@@ -306,8 +346,8 @@ def test_status_names_only_the_agents_to_start_again(tmp_path) -> None:
     (run / "brief.md").write_text("# brief\n", encoding="utf-8")
     (run / "cards").mkdir()
     for i in (1, 2, 3, 7):
-        (run / "cards" / f"{i}.json").write_text(json.dumps({"case": f"#{9 + i}", "complete": {"siblings": [], "checked_clear": []}}))
-    (run / "cards" / "4.json").write_text(json.dumps({"case": "#13", "status": "in-progress", "complete": {"siblings": [], "checked_clear": []}}))
+        (run / "cards" / f"{i}.json").write_text(done_card(i))
+    (run / "cards" / "4.json").write_text(stub_card(4))
     (run / "cards" / "5.json").write_text("{broken", encoding="utf-8")
     (run / "sweep-1.json").write_text("[]", encoding="utf-8")
     (run / "sweep-2.json").write_text("", encoding="utf-8")
@@ -320,13 +360,145 @@ def test_status_names_only_the_agents_to_start_again(tmp_path) -> None:
     assert "sweep-2.json empty" in out and "sweep-3.json missing" in out
     for done in ("reader-1.prompt.md", "reader-3.prompt.md", "sweeper-1.prompt.md"):
         assert done not in out, done
-    assert "3 agents left" in out and "Verify: not planned yet" in out
-    for i in (4, 5, 6):
-        (run / "cards" / f"{i}.json").write_text(json.dumps({"case": f"#{9 + i}", "complete": {"siblings": [], "checked_clear": []}}))
-    (run / "sweep-2.json").write_text("[]", encoding="utf-8")
-    (run / "sweep-3.json").write_text("[]", encoding="utf-8")
+    assert "Left: 3 agents to start again" in out and "plan.py --phase verify: not planned yet" in out
+
+
+def test_status_tells_a_resumed_reader_which_of_its_cases_are_finished(tmp_path) -> None:
+    run = make_run(tmp_path, 7)
+    plan(run)
+    (run / "cards").mkdir()
+    (run / "cards" / "1.json").write_text(done_card(1))
+    (run / "cards" / "2.json").write_text(stub_card(2, lead(2)))
+    out = plan(run, "--status")[1]
+    line = next(x for x in out.splitlines() if "reader-1.prompt.md" in x)
+    assert "to do: cards/2.json a stub (the reader stopped); cards/3.json missing; finished, leave as is: cards/1.json" in line
+    prompt = (run / "plan" / "reader-1.prompt.md").read_text(encoding="utf-8")
+    assert "already holds a card with no `status` is a finished case: leave it as it is" in prompt
+
+
+def test_status_counts_a_card_written_with_a_utf8_bom_as_finished(tmp_path) -> None:
+    run = make_run(tmp_path, 7)
+    plan(run)
+    (run / "cards").mkdir()
+    (run / "cards" / "1.json").write_bytes(b"\xef\xbb\xbf" + done_card(1).encode())
+    line = next(x for x in plan(run, "--status")[1].splitlines() if "reader-1.prompt.md" in x)
+    assert "finished, leave as is: cards/1.json" in line and "cards/1.json not valid JSON" not in line
+
+
+def test_status_does_not_count_a_card_written_for_another_case(tmp_path) -> None:
+    run = make_run(tmp_path, 7)
+    plan(run)
+    (run / "cards").mkdir()
+    (run / "cards" / "1.json").write_text(done_card(2))
+    (run / "cards" / "2.json").write_text(json.dumps({"complete": {"siblings": [], "checked_clear": []}}))
+    (run / "cards" / "3.json").write_text(json.dumps([json.loads(done_card(3))]))
+    out = plan(run, "--status")[1]
+    assert "cards/1.json for another case (#11, expected #10)" in out
+    assert "cards/2.json names no case" in out and "cards/3.json not a card (expected one JSON object)" in out
+
+
+def test_a_commit_case_matches_its_card_by_short_or_full_sha(tmp_path) -> None:
+    run = make_run(tmp_path, 7)
+    ev = json.loads((run / "evidence.json").read_text(encoding="utf-8"))
+    ev["cases"][0] = "3f539fdc"
+    (run / "evidence.json").write_text(json.dumps(ev), encoding="utf-8")
+    (run / "cases" / "01-10.md").rename(run / "cases" / "01-3f539fdc.md")
+    assert plan(run)[0] == 0
+    (run / "cards").mkdir()
+    (run / "cards" / "1.json").write_text(json.dumps({"case": "3f539fdcec40374a560d00cd2e2e832c8241700c fix: clamp", "complete": {}}))
+    (run / "cards" / "2.json").write_text(json.dumps({"unit": "3f539fd", "complete": {}}))
+    out = plan(run, "--status")[1]
+    assert "cards/1.json for another" not in out and "cards/2.json for another case (3f539fd, expected #11)" in out
+
+
+def test_an_empty_finished_card_is_done_and_an_empty_stub_is_not(tmp_path) -> None:
+    run = make_run(tmp_path, 7)
+    plan(run)
+    (run / "cards").mkdir()
+    (run / "cards" / "1.json").write_text(done_card(1))
+    (run / "cards" / "2.json").write_text(stub_card(2))
+    out = plan(run, "--status")[1]
+    assert "cards/2.json a stub" in out and "cards/1.json a stub" not in out and "finished, leave as is: cards/1.json" in out
+
+
+def test_status_is_complete_only_after_every_script_step_and_sees_stale_outputs(tmp_path) -> None:
+    import os
+    run = make_run(tmp_path, 7)
+    plan(run)
+    (run / "brief.md").write_text("# brief\n", encoding="utf-8")
+    (run / "cards").mkdir()
+    for i in range(1, 8):
+        (run / "cards" / f"{i}.json").write_text(done_card(i, lead(i)) if i == 1 else done_card(i))
+    for k in (1, 2, 3):
+        (run / f"sweep-{k}.json").write_text("[]", encoding="utf-8")
     code, out, _ = plan(run, "--status")
-    assert code == 0 and "agents left" not in out and out.count("done.") == 3
+    assert code == 1 and out.count(": done.") == 3, "agent work done is not the run done"
+    assert "merge_cards.py (then crosscheck.py): leads.json missing" in out and "Complete" not in out
+    run_numbered(run, ("merge_cards.py", "plan.py"))
+    code, out, _ = plan(run, "--status")
+    assert code == 1 and "verify: 1 agent to start again" in out and "merge_verdicts.py: merged.json missing" in out
+    leads = json.loads((run / "leads.json").read_text(encoding="utf-8"))
+    (run / "verdicts-1.json").write_text(json.dumps([{"where": x["where"], "verdict": "REAL"} for x in leads]))
+    code, out, _ = plan(run, "--status")
+    assert code == 1 and "merge_verdicts.py: merged.json missing" in out and "handoff.py: open-bugs.md missing" in out
+    run_numbered(run, ("merge_verdicts.py", "handoff.py"))
+    code, out, _ = plan(run, "--status")
+    assert code == 0 and "Complete:" in out and "Left:" not in out
+    later = (run / "leads.json").stat().st_mtime + 10
+    os.utime(run / "cards" / "3.json", (later, later))
+    code, out, _ = plan(run, "--status")
+    assert code == 1 and "leads.json is older than a card or sweep file; merge again" in out
+
+
+def test_a_grouped_run_with_two_leads_at_one_where_completes_and_passes_the_gate(tmp_path) -> None:
+    """Readers and sweepers often report one location twice with different words: the plan's own commands must still
+    end in a run the release gate accepts, with no hand edit."""
+    run = make_run(tmp_path, 7)
+    plan(run)
+    (run / "brief.md").write_text("# brief\n", encoding="utf-8")
+    (run / "cards").mkdir()
+    full = lambda i, **kw: {**lead(i), "category": "broken-flow", "reach": "default-on", "change": "c", "test": "t", **kw}  # noqa: E731
+    for i in range(1, 8):
+        (run / "cards" / f"{i}.json").write_text(done_card(i, full(1, what=f"reader {i} wording")) if i <= 2 else done_card(i))
+    for k in (1, 2, 3):
+        (run / f"sweep-{k}.json").write_text(json.dumps([full(1, what="sweeper wording")] if k == 1 else []))
+    run_numbered(run, ("merge_cards.py", "plan.py"))
+    leads = json.loads((run / "leads.json").read_text(encoding="utf-8"))
+    assert len(leads) == 3 and len({x["where"] for x in leads}) == 3
+    for ch in exp(run)["verifier_chunks"]:
+        chunk = json.loads((run / ch["chunk"]).read_text(encoding="utf-8"))
+        (run / ch["verdicts"]).write_text(json.dumps([{"where": x["where"], "verdict": "REAL"} for x in chunk]))
+    run_numbered(run, ("merge_verdicts.py", "handoff.py"))
+    assert plan(run, "--status")[0] == 0
+    gate = PLUGIN / "evals" / "gate" / "check_run.py"
+    p = subprocess.run([sys.executable, str(gate), str(run)], capture_output=True, text=True, encoding="utf-8")
+    assert p.returncode == 0, p.stdout[-1500:] + p.stderr[-500:]
+
+
+def test_status_refuses_a_plan_older_than_the_evidence(tmp_path) -> None:
+    run = make_run(tmp_path, 7)
+    plan(run)
+    ev = json.loads((run / "evidence.json").read_text(encoding="utf-8"))
+    ev["ref_sha"] = "1" * 40
+    (run / "evidence.json").write_text(json.dumps(ev), encoding="utf-8")
+    code, _, err = plan(run, "--status")
+    assert code == 2 and "the plan is stale" in err and "ref " in err and "Nothing in the folder is counted as done" in err
+
+
+def test_replanning_over_work_of_another_ref_is_refused_and_a_drop_is_not(tmp_path) -> None:
+    run = make_run(tmp_path, 7)
+    assert plan(run)[0] == 0
+    (run / "cards").mkdir()
+    (run / "cards" / "1.json").write_text(done_card(1))
+    assert plan(run, "--drop", "#12")[0] == 0, "same repository, ref and cases: the cards still fit"
+    first = tree(run)
+    ev = json.loads((run / "evidence.json").read_text(encoding="utf-8"))
+    ev["cases"] = ["#99", *ev["cases"][1:]]
+    (run / "evidence.json").write_text(json.dumps(ev), encoding="utf-8")
+    (run / "cases" / "01-10.md").rename(run / "cases" / "01-99.md")
+    code, _, err = plan(run)
+    assert code == 2 and "another plan" in err and "cases #10" in err and "cards/1.json" in err and "new --out folder" in err
+    assert {k: v for k, v in tree(run).items() if k.startswith("plan/")} == {k: v for k, v in first.items() if k.startswith("plan/")}
 
 
 def test_status_without_a_plan_exits_two(tmp_path) -> None:

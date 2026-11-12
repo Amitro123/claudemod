@@ -95,7 +95,7 @@ def read_items(src: str) -> list[dict]:
         for p in paths:
             name = os.path.basename(p)
             try:
-                with open(p, encoding="utf-8") as f:
+                with open(p, encoding="utf-8-sig") as f:
                     data = json.load(f)
             except (OSError, ValueError) as exc:
                 bad.append(f"{name}: invalid JSON or unreadable ({exc})")
