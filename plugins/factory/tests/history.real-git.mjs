@@ -1,8 +1,10 @@
 // The branch-history scan for files the factory never commits, against real git in disposable
 // repositories. `claude plugin test` can't start a process, so this runs in plain Node:
 //   node --experimental-strip-types --test plugins/factory/tests/history.real-git.mjs
-// Node 22.12+ (type stripping behind the flag, ES module detection on by default) and git 2.31+
-// (--diff-merges). CI runs it as the factory-history job in .github/workflows/mods.yml.
+// Node 22.12+ (type stripping behind the flag, ES module detection on by default), git 2.34+
+// (--diff-merges; SSH commit signing) and ssh-keygen on PATH (the signed-commit test makes a
+// throwaway key; it fails, never skips, without one). CI runs it as the factory-history job in
+// .github/workflows/mods.yml.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -14,8 +16,10 @@ import { historyArgs, historyLeaks } from '../hooks/history.ts'
 
 // Kept from the machine's git config and hooks. File contents are placeholders: the scan reads
 // names, never contents.
-// `inBase`: files the base commit already has.
-function repo(t, inBase = []) {
+// `inBase`: files the base commit already has. `signed`: every commit is signed with a throwaway
+// SSH key and the repository shows signatures in git log (its own config only, as a person's
+// log.showSignature would).
+function repo(t, inBase = [], { signed = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'factory-history-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const work = join(dir, 'work')
@@ -23,7 +27,7 @@ function repo(t, inBase = []) {
   writeFileSync(join(dir, 'gitconfig'), '')
   const env = { ...process.env, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }
   const run = (...args) => {
-    const out = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', `core.hooksPath=${join(dir, 'no-hooks')}`, ...args], { cwd: work, env, encoding: 'utf8' })
+    const out = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...(signed ? [] : ['-c', 'commit.gpgsign=false']), '-c', `core.hooksPath=${join(dir, 'no-hooks')}`, ...args], { cwd: work, env, encoding: 'utf8' })
     return { exitCode: out.status ?? 1, stdout: out.stdout ?? '', stderr: out.stderr ?? '' }
   }
   const git = (...args) => {
@@ -41,6 +45,12 @@ function repo(t, inBase = []) {
     return git('rev-parse', 'HEAD').trim()
   }
   git('init', '-q', '-b', 'main')
+  if (signed) {
+    const key = join(dir, 'signing-key')
+    const made = spawnSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'factory-test', '-f', key], { encoding: 'utf8' })
+    if (made.error || made.status !== 0) throw new Error(`ssh-keygen is needed for the signed-commit test: ${made.error ?? made.stderr}`)
+    for (const [k, v] of [['gpg.format', 'ssh'], ['user.signingkey', `${key}.pub`], ['commit.gpgsign', 'true'], ['log.showSignature', 'true']]) git('config', '--local', k, v)
+  }
   for (const path of ['README.md', ...inBase]) write(path)
   const base = commit('base')
   const scan = () => {
@@ -146,4 +156,46 @@ test('a base git cannot resolve fails the scan instead of reading as clean', t =
   const r = repo(t)
   const out = r.run(...historyArgs('0123456789abcdef0123456789abcdef01234567'))
   assert.notEqual(out.exitCode, 0)
+})
+
+test('signed commits with log.showSignature on: the signature text stays out of the scan', t => {
+  const r = repo(t, [], { signed: true })
+  r.write('src/ok.ts')
+  r.commit('ok')
+  r.write('.env')
+  const added = r.commit('env')
+  // The repository does print signatures in git log, so the scan is tested where it matters.
+  const shown = r.run('log', '--format=%x00%H', '-z', `${r.base}..HEAD`)
+  assert.equal(shown.exitCode, 0)
+  assert.notEqual(shown.stdout.split('\0')[0], '')
+  assert.deepEqual(r.scan(), [{ path: '.env', commits: [added] }])
+})
+
+test('a range with no commits is a clean scan', t => {
+  const r = repo(t)
+  assert.deepEqual(r.scan(), [])
+})
+
+const A = 'a'.repeat(40)
+const B = 'b'.repeat(64)
+
+test('output git did not frame as the scan asks for is refused, never read as clean', () => {
+  for (const [why, out] of [
+    ['text before the first commit (a signature line)', `No signature\n\0${A}\0\n.env\0`],
+    ['text between commits (a signature line)', `\0${A}\0\nok.txt\0No signature\n\0${B}\0\n.env\0`],
+    ['a commit id that is not 40 or 64 hex digits', `\0${'a'.repeat(39)}\0\n.env\0`],
+    ['a commit id in capitals', `\0${A.toUpperCase()}\0\n.env\0`],
+    ['a first path without the newline git puts before it', `\0${A}\0.env\0`],
+    ['output cut short (no closing NUL)', `\0${A}\0\n.env`],
+    ['a commit id with nothing after it', `\0${A}`],
+    ['plain text', 'fatal: something'],
+  ]) assert.throws(() => historyLeaks(out), /not the shape/, why)
+})
+
+test('framed output parses: no commits, a commit with no added file, NUL-separated names as they are', () => {
+  assert.deepEqual(historyLeaks(''), [])
+  assert.deepEqual(historyLeaks(`\0${A}\0`), [])
+  assert.deepEqual(historyLeaks(`\0${A}\0\nsrc/a.ts\0src/b.ts\0\0${B}\0`), [])
+  assert.deepEqual(historyLeaks(`\0${A}\0\n my app/ .env \0my app/.env\0`), [{ path: 'my app/.env', commits: [A] }])
+  assert.deepEqual(historyLeaks(`\0${B}\0\nok.txt\0\0${A}\0\ncerts/server.key\0`), [{ path: 'certs/server.key', commits: [A] }])
 })

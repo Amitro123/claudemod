@@ -466,11 +466,14 @@ async function onBuilt($: EngineInterface) {
   // What the builder committed itself never went through the filter above. Every commit since the
   // base is pushed, so one it added and later deleted or renamed counts too.
   const history = await git($, historyArgs(base), r.worktree)
-  if (history.exitCode !== 0) {
-    await block($, { on: 'builder' }, `The factory could not read the branch's history for files the factory never commits: ${tailOf(`${history.stdout}\n${history.stderr}`, 2)}`)
+  let leaked: ReturnType<typeof historyLeaks> = []
+  try {
+    if (history.exitCode !== 0) throw new Error(tailOf(`${history.stdout}\n${history.stderr}`, 2))
+    leaked = historyLeaks(history.stdout)
+  } catch (err) {
+    await block($, { on: 'builder' }, `The factory could not read the branch's history for files the factory never commits: ${err instanceof Error ? err.message : String(err)}`)
     return
   }
-  const leaked = historyLeaks(history.stdout)
   if (leaked.length) {
     await block($, { on: 'builder' }, `The builder committed files the factory never commits: ${leaked.map(l => `${l.path} (in ${l.commits.map(c => c.slice(0, 7)).join(', ')})`).join(', ')}. Take them out of the branch's history, then retry.`)
     return

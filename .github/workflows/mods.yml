@@ -20,7 +20,8 @@ jobs:
   # The factory's branch-history scan for never-commit files, against real git in disposable
   # repositories: `claude plugin test` can't start a process. Its own job, so it runs whatever the
   # factory's kit tests do. Node 22.12+ (type stripping behind the flag, ES module detection on by
-  # default); git 2.31+ (--diff-merges).
+  # default); git 2.34+ (--diff-merges, SSH commit signing); ssh-keygen for the signed-commit test,
+  # which fails without it (this step names the gap first).
   factory-history:
     runs-on: ubuntu-latest
     steps:
@@ -28,5 +29,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: git --version
+      - run: git --version && command -v ssh-keygen
       - run: node --experimental-strip-types --test plugins/factory/tests/history.real-git.mjs
