@@ -13,7 +13,7 @@ investigation works; the *attribution* window (--history units back from --ref) 
 results are mapped to, so a fix in the work window still sees that its culprit was a fix.
 
 Stdlib only, read-only; no network except `gh` (GitHub enrichment with --github, PR text with --show) when it is
-available. The fix verdict is a heuristic for Claude to confirm by reading
+available, and OpenRouter with --decision-model (a second opinion on units the regex calls no fix; decide.py). The fix verdict is a heuristic for Claude to confirm by reading
 the diff, not a verdict.
 
     python evidence.py [--repo .] [--ref HEAD] [--since REF|YYYY-MM-DD] [--max 200]
@@ -41,6 +41,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # also under `python -I`, which drops the script folder
+import decide  # noqa: E402
 import plan  # noqa: E402
 import snapshot  # noqa: E402
 
@@ -195,6 +196,7 @@ class Unit:
     fix_of_fix: bool = False
     verdict: str = ""             # "removal" (see REMOVAL_RATIO) or "" (no verdict beyond is_fix)
     gh: dict = field(default_factory=dict)    # {labels, closes} from GitHub (gh_enrich); empty when not read
+    model_p: float | None = None  # a decision model's P(fix) (--decision-model); None when not asked
 
     def label(self) -> str:
         return f"#{self.pr}" if self.pr else self.sha[:8]
@@ -714,12 +716,14 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
                 roots: set[str] | None = None, workers: int | None = None,
                 cache_dir: str | None = None, use_cache: bool = True,
                 excludes: list[str] | None = None, github: bool = False, gh_run=None,
-                refresh_github: bool = False, gh_now=None) -> dict:
+                refresh_github: bool = False, gh_now=None, decision_model: str | None = None,
+                decision_cut: float = decide.DEFAULT_CUT, decide_post=None) -> dict:
     """`github`: read each PR of the work window through gh (labels, closing issues; gh_enrich) before blame;
     off by default for library callers. `gh_run`: the gh runner (tests pass a mock). `workers`: git calls in flight (default min(8, cpus)). `cache_dir`/`use_cache`: the blame cache
     (default <git dir>/inspector/cache). `excludes`: pathspecs left out of blame diffs and the copies
     search (default: effective_excludes(path, roots)). `refresh_github`: skip reading the gh cache (still written);
-    `gh_now`: clock for the gh cache's age check (tests)."""
+    `gh_now`: clock for the gh cache's age check (tests). `decision_model`: ask that decision model about every
+    worked unit the regex calls no fix (decision_phase); `decide_post`: its HTTP poster (tests pass a mock)."""
     roots = roots or MONOREPO_ROOTS
     path = snapshot.scope_path(path)       # None, "a/" (one, as before) or ["a/", "b/"] (repeated --path: a union)
     workers = max(1, workers if workers is not None else min(8, os.cpu_count() or 1))
@@ -791,6 +795,9 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
     if github:
         gh_bodies = github_phase(repo, worked, workers, cache_folder, gh_run or gh_runner, gh_warnings,
                                 refresh=refresh_github, now=gh_now)
+    decision_meta = None
+    if decision_model:
+        decision_meta = decision_phase(worked, decision_model, decision_cut, gh_warnings, decide_post)
     jobs = [(u, c) for u in worked if u.is_fix and u.verdict != "removal" for c in u.commits if c.get("is_fix")]
 
     def analyze(job):
@@ -866,6 +873,7 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
                     "roots": sorted(roots), "excludes": list(excludes)}, repo_path=info.toplevel),
         "repo": repo, "ref": ref, "ref_requested": requested_ref, "ref_sha": ref, "since": since,
         "unit": unit, "path": path, "shallow": shallow, "truncated": truncated, "warnings": warnings,
+        **({"decision_model": decision_meta} if decision_meta else {}),
         "units": len(worked), "fixes": len(fixes),
         "fix_of_fix": [u.label() for u in fixes if u.fix_of_fix],
         "multi_component_fixes": [u.label() for u in fixes if "multi-component" in u.tags],
@@ -1124,6 +1132,39 @@ def github_phase(repo: str, worked: list[Unit], workers: int, cache_dir: str | N
 
 
 
+def decision_phase(worked: list[Unit], model: str, cut: float, warnings: list[str], post=None) -> dict:
+    """Ask a decision model about each worked unit the regex calls no fix (code units only: a docs-only or
+    removal unit has nothing to blame). A unit at or over `cut` becomes a fix whose `why` names the model:
+    its level is inferred, the reader confirms it from the diff. A regex fix is never asked and never undone."""
+    asked = [u for u in worked if not u.is_fix and not u.boundary and u.verdict != "removal"
+             and "docs-only" not in u.tags]
+    meta = {"model": model, "cut": cut, "asked": len(asked), "promoted": []}
+    if not asked:
+        return meta
+    with phase("decision"):
+        texts = {u.label(): decide.unit_text(u.label(), u.title, [c["subject"] for c in u.commits], u.files,
+                                             u.version_bumps) for u in asked}
+        probs, m = decide.ask(texts, model, post)
+    meta.update({k: m[k] for k in ("answered", "requests", "seconds", "cost")})
+    if m.get("error"):
+        meta["error"] = m["error"]
+        warnings.append(f"decision model {model}: {m['error']}; "
+                        f"{m['answered']} of {len(asked)} units answered, the rest stay as the regex judged them")
+    for u in asked:
+        p = probs.get(u.label())
+        if p is None:
+            continue
+        u.model_p = round(p, 3)
+        if p >= cut:
+            u.is_fix = True
+            u.why = [f"decision model: p={p:.2f} (inferred)"] + u.why
+            u.tags.append("model-fix")
+            for c in u.commits:
+                c["is_fix"] = not (CHORE.search(c["subject"]) or BUMP.search(c["subject"]))
+            meta["promoted"].append(u.label())
+    return meta
+
+
 GH_REMOTE = re.compile(r"github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
 
 
@@ -1202,6 +1243,7 @@ def unit_json(u: Unit) -> dict:
         "introduced_by": u.introduced_by, "fix_of_fix": u.fix_of_fix,
         **({"verdict": u.verdict} if u.verdict else {}),
         **({"gh": u.gh} if u.gh else {}),
+        **({"model_p": u.model_p} if u.model_p is not None else {}),
     }
 
 
@@ -1503,6 +1545,12 @@ def main(argv=None) -> int:
     ap.add_argument("--prs", type=int, default=10, help="how many merged PRs the GitHub fallback reads (default 10)")
     ap.add_argument("--no-github", action="store_true",
                     help="skip every gh call: no PR labels, linked issues or PR text (default: read them when origin is on GitHub and gh works)")
+    ap.add_argument("--decision-model", nargs="?", const=decide.DEFAULT_MODEL, metavar="MODEL",
+                    help="ask a decision model through OpenRouter about every unit the regex calls no fix; a unit at "
+                         f"or over --decision-cut becomes an inferred fix (default model {decide.DEFAULT_MODEL}; "
+                         "needs OPENROUTER_API_KEY or a proxy that injects it)")
+    ap.add_argument("--decision-cut", type=float, default=decide.DEFAULT_CUT,
+                    help=f"the probability of fix that promotes a unit (default {decide.DEFAULT_CUT})")
     ap.add_argument("--timing", action="store_true", help="print wall time and git call counts per phase to stderr (or INSPECTOR_TIMING=1)")
     ap.add_argument("--dossier", action="store_true", help="with --unit: print that unit's case dossier to stdout and exit (needs no saved run)")
     ap.add_argument("--file", help="with --show or --dossier: print only this file's diff in the unit's fix commits")
@@ -1556,7 +1604,8 @@ def main(argv=None) -> int:
                         a.unit, a.path, MONOREPO_ROOTS | set(a.component_root), a.workers,
                         a.cache_dir, not a.no_cache,
                         effective_excludes(a.path, a.component_root, a.exclude, not a.no_default_excludes),
-                        github=not a.no_github, refresh_github=a.refresh_github)
+                        github=not a.no_github, refresh_github=a.refresh_github,
+                        decision_model=a.decision_model, decision_cut=a.decision_cut)
     except AmbiguousUnit as e:
         print(f"evidence.py: {e}", file=sys.stderr)
         return 2

@@ -96,6 +96,9 @@ The same requests through the same endpoint, `--model typesafe/jev-1.13`. Cut 0.
 - Unlike Gemini Decision 1, code lines help it (tuned split 1.00 / 1.00 with them).
 - The cut was not tuned for it: 0.5 is the default.
 
+In the collector: `evidence.py --decision-model` (skills/inspect/scripts/decide.py) asks jev-1.13
+about the units the regex calls no fix and promotes those at 0.5 or more to inferred fixes.
+
 ## Read the result with this in mind
 
 - **These labels favour the regex.** It was tuned on exactly these 36 units, and scores 1.00
