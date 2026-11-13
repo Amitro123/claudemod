@@ -102,10 +102,6 @@ When it can, it also saves `evidence.json`, `evidence.md` and each dossier in `c
 `--out`, else `.inspector-run/<time>/`). Some sandboxes let no command write anywhere: then it
 says "nothing saved", and the commands are all you need. Never spend calls hunting for a
 writable folder.
-`--decision-model` (opt-in) asks a decision model through OpenRouter about every unit the regex
-calls no fix; a unit it rates at least `--decision-cut` (0.5) is a fix whose why reads
-`decision model: p=… (inferred)`. That is a reason to read the unit, never evidence: confirm it from
-the diff like any other fix verdict. If the call fails, a Warning says so and the regex stands.
 `--budget` is the case budget (12 unless the user set one). Run it once. On a repository with more than about
 1,000 commits, run it in the background with a 10-minute timeout. The summary starts with any
 **Warning** lines. Never open the JSON: for one unit, the **dossier** is one call,
