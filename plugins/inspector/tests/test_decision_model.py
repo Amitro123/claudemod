@@ -112,6 +112,8 @@ def test_off_by_default_and_on_it_feeds_blame(repo):
     assert four["is_fix"] and four["why"][0].startswith("decision model: p=0.90") and four["model_p"] == 0.9
     assert res["fixes"] == base["fixes"] + 1 and res["decision_model"]["promoted"] == ["#4"]
     assert all("model_p" not in u for u in res["timeline"] if u["is_fix"] and u["unit"] != "#4")
+    assert res["snapshot"]["options"]["decision_model"] == "m/x" and res["snapshot"]["options"]["decision_cut"] == 0.5
+    assert "decision_model" not in base["snapshot"]["options"]
 
 
 def test_the_cli_flag_defaults_to_the_measured_model(capsys):
@@ -119,3 +121,20 @@ def test_the_cli_flag_defaults_to_the_measured_model(capsys):
         evidence.main(["--help"])
     out = capsys.readouterr().out
     assert "--decision-model [MODEL]" in out and "--decision-cut" in out and decide.DEFAULT_MODEL in out
+
+
+@pytest.mark.parametrize("reply", [
+    {"answers": {"q0": {"type": "noul", "noul": 0.9}}, "usage": {"cost": "n/a"}},   # odd cost: answers kept
+    {"answers": {"q0": {"type": "noul", "noul": 0.9}}, "usage": "free"},
+])
+def test_an_odd_usage_never_stops_the_run(reply):
+    u = unit(1, "a")
+    meta = evidence.decision_phase([u], "m/x", 0.5, [], lambda *a: reply)
+    assert u.is_fix and meta["cost"] == 0.0 and "error" not in meta
+
+
+@pytest.mark.parametrize("reply", [[], "oops", {"answers": "none"}, {"answers": {"q0": "yes"}}])
+def test_a_reply_of_another_shape_warns_or_is_unanswered_never_raises(reply):
+    u, warnings = unit(1, "a"), []
+    evidence.decision_phase([u], "m/x", 0.5, warnings, lambda *a: reply)
+    assert not u.is_fix and u.model_p is None

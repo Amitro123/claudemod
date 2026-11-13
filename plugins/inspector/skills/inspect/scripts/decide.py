@@ -94,15 +94,21 @@ def ask(texts: dict[str, str], model: str = DEFAULT_MODEL, post=None) -> tuple[d
         t0 = time.monotonic()
         try:
             res = post(DECISIONS_URL, body, {"Authorization": f"Bearer {key}", "Accept": "application/json"})
+            if not isinstance(res, dict):
+                raise ValueError(f"a reply of type {type(res).__name__}, not an object")
             if "error" in res:
                 raise RuntimeError(str(res["error"])[:300])
-        except (OSError, RuntimeError, ValueError) as e:
+            got = parse(res, keys)
+        except (OSError, RuntimeError, ValueError, TypeError, AttributeError) as e:
             meta["error"] = f"{type(e).__name__}: {e}"
             break
         finally:
             meta["seconds"] = round(meta["seconds"] + time.monotonic() - t0, 2)
         meta["requests"] += 1
-        meta["cost"] += float((res.get("usage") or {}).get("cost") or 0)
-        out.update(parse(res, keys))
+        out.update(got)
+        usage = res.get("usage")
+        cost = usage.get("cost") if isinstance(usage, dict) else None
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            meta["cost"] += float(cost)     # a cost of another shape is left out, never fatal
     meta["answered"] = len(out)
     return out, meta

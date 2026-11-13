@@ -870,7 +870,10 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
     return {
         "snapshot": snapshot.metadata(repo, {"since": since, "limit": limit, "max_blame": max_blame,
                     "min_lines": min_lines, "history": history, "unit": unit, "path": path,
-                    "roots": sorted(roots), "excludes": list(excludes)}, repo_path=info.toplevel),
+                    "roots": sorted(roots), "excludes": list(excludes),
+                    # the fix verdicts depend on these: recorded so two runs can be told apart
+                    **({"decision_model": decision_model, "decision_cut": decision_cut} if decision_model else {})},
+                    repo_path=info.toplevel),
         "repo": repo, "ref": ref, "ref_requested": requested_ref, "ref_sha": ref, "since": since,
         "unit": unit, "path": path, "shallow": shallow, "truncated": truncated, "warnings": warnings,
         **({"decision_model": decision_meta} if decision_meta else {}),
