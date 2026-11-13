@@ -65,14 +65,21 @@ def detect_host() -> str:
 MARKER = "<!-- mistake-brain: new entries are inserted immediately below this line -->"
 
 # Values that look like secrets, replaced before text is written into MISTAKES.md (a tracked file) or
-# the pending-candidates file: a token in a URL or flag, a bearer header, GitHub, OpenAI/Anthropic-style
-# and AWS keys. One list for every hook that writes a command or a commit subject.
+# the pending-candidates file: a token in a URL or flag, an Authorization header, curl -u credentials, GitHub,
+# Slack, OpenAI/Anthropic-style and AWS keys. One list for every hook that writes a command or a commit subject.
+# A value: a quoted string whole (a password with a space in it), else up to the next space.
+_VALUE = r"""(?:"[^"]*"?|'[^']*'?|\S+)"""
 _SECRETS = [
     # The keyword alone or at the end of an env-style name (DB_PASSWORD=, GITHUB_TOKEN=): \b can't
     # match after an underscore, so the name's own prefix is part of the match.
-    (re.compile(r"(?i)\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key))(=|:\s*)\S+"), r"\1\2[redacted]"),
-    (re.compile(r"(?i)(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)\S+"), r"\1\2[redacted]"),
+    (re.compile(r"(?i)\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key))(=|:\s*)" + _VALUE), r"\1\2[redacted]"),
+    (re.compile(r"(?i)(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)" + _VALUE), r"\1\2[redacted]"),
+    # An Authorization header whatever its scheme (Bearer, Basic, token, or none): GitHub takes "token <x>".
+    (re.compile(r"(?i)\b(authorization:\s*)(?:(?:bearer|basic|token)\s+)?[^\s\"']+"), r"\1[redacted]"),
     (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [redacted]"),
+    # curl -u user:pass, --user=user:pass: only a value holding a colon, so sudo -u bob and git push -u stay.
+    (re.compile(r"""(?<!\S)(-u|--user)(\s+|=)(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s:"']+:\S+)"""), r"\1\2[redacted]"),
+    (re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), "[redacted]"),          # Slack tokens
     (re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), "[redacted]"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "[redacted]"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[redacted]"),

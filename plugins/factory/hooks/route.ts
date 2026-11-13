@@ -197,16 +197,18 @@ const CHANGES_CHECKOUT: { re: RegExp; what: string }[] = [
   { re: /^(npm|pnpm|yarn|bun)\s+(install|i|ci|add|remove|rm|uninstall|update|up|upgrade|link)(?=\s|$)/, what: 'changing installed dependencies' },
   { re: /^(truncate|shred)(?=\s|$)/, what: 'changing a file' },
 ]
-const TMP_ARG = /^(\/tmp\/|\/dev\/null$)/
+// Under /tmp, or /dev/null. A `..` segment can climb out of /tmp (/tmp/../src/a.ts), so it never counts.
+const underTmp = (p: string): boolean =>
+  p === '/dev/null' || (p.startsWith('/tmp/') && !p.split('/').includes('..'))
 // rm, rmdir, mv, cp, tee, touch, chmod, chown, ln, mkdir and dd of=: allowed only when what they write is under /tmp.
 const WRITERS = /^(rm|rmdir|mv|cp|tee|touch|chmod|chown|ln|mkdir)$/
 function writesCheckout(cmd: string): boolean {
   const [w, ...args] = cmd.split(/\s+/)
   const paths = args.filter(a => !a.startsWith('-'))
   // cp and ln write only their last path (the others are read); the rest write every path they name.
-  if (w === 'cp' || w === 'ln') return !paths.length || !TMP_ARG.test(paths.at(-1)!)
-  if (WRITERS.test(w!)) return !paths.length || paths.some(p => !TMP_ARG.test(p))
-  if (w === 'dd') return args.some(a => a.startsWith('of=') && !TMP_ARG.test(a.slice(3)))
+  if (w === 'cp' || w === 'ln') return !paths.length || !underTmp(paths.at(-1)!)
+  if (WRITERS.test(w!)) return !paths.length || paths.some(p => !underTmp(p))
+  if (w === 'dd') return args.some(a => a.startsWith('of=') && !underTmp(a.slice(3)))
   return false
 }
 // A redirect (> or >>) to a file outside /tmp; 2>&1, >&2 and /dev/null are not writes. Looked for in
@@ -218,7 +220,7 @@ function redirectsOutside(line: string, depth = 0): boolean {
       if (redirectsOutside(m[2] ?? m[4] ?? '', depth + 1)) return true
     }
   }
-  return [...line.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, '""').matchAll(REDIRECT)].some(m => !TMP_ARG.test(m[1]!))
+  return [...line.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, '""').matchAll(REDIRECT)].some(m => !underTmp(m[1]!))
 }
 
 // Why a review's agent may not run this command in the person's checkout, or '' when it may.
