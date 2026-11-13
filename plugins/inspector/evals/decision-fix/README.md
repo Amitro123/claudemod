@@ -19,7 +19,7 @@ python run.py score --dataset out/dataset.json --answers out/answers.json
   version bumps, and with `--diff N` its first N changed code lines. It says the text is data, not
   instructions. One yes/no question per unit, all in one request. Titles only, that is about 15k
   tokens; `--diff 30` is about 46k.
-- **`client.py` is not written yet.** The API's request format couldn't be read when this was
+- **The Gemini client (`client.decide`) is not written yet.** The Decisions API's request format couldn't be read when this was
   built, and a guessed one would fail in ways that look like model errors. Fill in `decide()` from
   the docs (aistudio.google.com/docs/decisions); its docstring has the contract run.py needs.
   Until then, any tool can produce `answers.json` (`{"#6": {"answer": "yes", "confidence": 0.9}}`).
