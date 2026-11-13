@@ -29,10 +29,13 @@ No end-to-end time has been measured since the merge script and the two sweepers
 the bottleneck is a guess.
 
 - Run one live parallel inspection (7+ cases) on a real repository.
-- Phase times come from the run folder at no cost: the mtimes of `brief.md`, each `cards/<n>.json`
-  (stub, then final), `sweep-<k>.json`, `leads.json`, `verdicts-<k>.json`, `open-bugs.md`.
-  A small script (`evals/gate/timeline.py`, to write) prints them as a timeline per phase and per
-  agent, with the critical path.
+- Phase times come from the run folder at no cost: `python evals/gate/timeline.py --run <out>`
+  (`--json` for machine output). It reads `plan/expect.json` for the phases, agents and files, stats
+  `evidence.json`, `brief.md`, each `cards/<n>.json`, `sweep-<k>.json`, `leads.json`, `dedupe.md`,
+  `plan/chunk-<k>.json`, `verdicts-<k>.json`, `merged.json`, `open-bugs.md`, and prints per phase
+  start, end and duration, per agent its file's time from the phase start, the critical path (the
+  slowest agent of each phase) and any planned file that is missing (exit 1). Limit: an mtime is the
+  last write, so a card shows when its reader finished it; the stub's first write is lost.
 - Record tool calls per agent from the transcripts, and how many of each agent's calls went to
   each kind of work (dossier, copies left behind, siblings, probes).
 
