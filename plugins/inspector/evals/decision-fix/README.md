@@ -2,8 +2,10 @@
 
 Does a decision model (Gemini Decision 1, from the Gemini Decisions API) tell bug fixes from
 everything else better than the collector's regex (`evidence.judge`)? Measured on this
-repository's history up to #72, against the hand labels in `tests/golden_labels.py`
-(16 fixes, 20 non-fixes).
+repository's history up to #123, against the hand labels in `tests/golden_labels.py`: up to #72
+(16 fixes, 20 non-fixes, the set the regex was tuned on, split `tuned`) and #73-#123 (20 fixes, 27
+non-fixes, labeled 2026-11-13, split `unseen`). Score reports the regex, the model and both together
+(a fix if either says so), overall and per split.
 
 ```bash
 git fetch --unshallow                       # only in a shallow clone: the labels need history up to #72

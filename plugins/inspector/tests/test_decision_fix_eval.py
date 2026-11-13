@@ -163,3 +163,22 @@ def test_an_answer_that_cannot_be_read_is_left_out_never_a_no(content, want):
 def test_an_openrouter_error_stops_the_run():
     with pytest.raises(RuntimeError, match="OpenRouter: .*no such model"):
         client.openrouter_decide("U", QS, "x/y", post=lambda *a: {"error": {"message": "no such model"}})
+
+
+def test_either_counts_a_fix_when_regex_or_model_says_so_and_splits_score_apart():
+    data = [dict(ds("#1", True, True), split="tuned"), dict(ds("#2", True, False), split="unseen"),
+            dict(ds("#3", True, False), split="unseen"), dict(ds("#4", False, False), split="unseen")]
+    s = run.score(data, {"#1": False, "#2": True, "#3": False, "#4": False})
+    assert (s["regex"]["tp"], s["model"]["tp"], s["either"]["tp"]) == (1, 1, 2)
+    assert s["either"]["fn"] == 1 and s["either"]["fp"] == 0
+    assert s["splits"]["tuned"]["units"] == 1 and s["splits"]["unseen"]["units"] == 3
+    assert s["splits"]["unseen"]["either"]["recall"] == 0.5 and s["splits"]["unseen"]["regex"]["recall"] == 0.0
+    assert "Split unseen" in run.report(s) and "regex or model" in run.report(s)
+
+
+def test_the_later_labels_are_disjoint_from_the_earlier_and_from_each_other():
+    import golden_labels as g
+    early = set(g.FIXES + g.BUMP_ONLY_FIXES + g.NOT_FIXES)
+    later = g.LATER_FIXES + g.LATER_NOT_FIXES
+    assert len(later) == len(set(later)) and not early & set(later)
+    assert all(int(u[1:]) > 72 for u in later)

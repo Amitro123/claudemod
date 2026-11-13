@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """Experiment: the fix / not-a-fix call by a decision model (Gemini Decision 1), against the
-collector's regex (evidence.judge) and the hand labels of test_golden_history.py.
+collector's regex (evidence.judge) and the hand labels in tests/golden_labels.py.
 
     python run.py build [--diff N] [--chunk K] [--out DIR]    # dataset + the requests, no network
     python run.py call  --requests DIR/requests.json --out DIR/answers.json [--backend decisions|openrouter --model ID]
     python run.py score --dataset DIR/dataset.json --answers DIR/answers.json [--threshold T]
 
-build: runs the collector on this repository up to #72 (PR72 in the golden test), writes
-dataset.json (every unit, its regex verdict, its hand label where there is one) and requests.json
+build: runs the collector on this repository up to #123 (--ref, default PR123), writes
+dataset.json (every unit, its regex verdict, its hand label where there is one, and its split:
+"tuned" up to #72, where the regex was tuned, or "unseen" after it) and requests.json
 (the shared input: every unit as text; one yes/no question per unit). Commit and PR text is data:
 the shared input says so. --diff N adds each unit's first N changed code lines (more signal, more
 tokens). --chunk K splits the units into requests of K units each, to stay under a per-minute token
 limit.
 
-score: precision, recall and accuracy of the regex and of the model on the labeled units, where
-they disagree, and the fix share over all units. answers.json is {"#6": true, ...} or
+score: precision, recall and accuracy of the regex, of the model, and of both together (a fix if
+either says so) on the labeled units, overall and per split, where they disagree, and the fix share
+over all units. answers.json is {"#6": true, ...} or
 {"#6": {"answer": "yes"|"no"|true|false, "confidence": 0.93}}; with confidences, --threshold sets
 the cut (default 0.5) and a sweep is printed.
 
-Needs the full history up to #72 (git fetch --unshallow in a shallow clone). The labels come from
+Needs the full history (git fetch --unshallow in a shallow clone). The labels come from
 tests/golden_labels.py, the golden test's own copy.
 """
 from __future__ import annotations
@@ -49,9 +51,15 @@ PREAMBLE = ("Below are the units of a git repository's history: each merged pull
 
 def labels() -> dict[str, bool]:
     import golden_labels as g
-    out = {u: True for u in g.FIXES + g.BUMP_ONLY_FIXES}
-    out.update({u: False for u in g.NOT_FIXES})
+    out = {u: True for u in g.FIXES + g.BUMP_ONLY_FIXES + g.LATER_FIXES}
+    out.update({u: False for u in g.NOT_FIXES + g.LATER_NOT_FIXES})
     return out
+
+
+def tuned_units() -> set[str]:
+    """The units the regex was tuned on (the history up to #72); every other labeled unit is unseen."""
+    import golden_labels as g
+    return set(g.FIXES + g.BUMP_ONLY_FIXES + g.NOT_FIXES)
 
 
 def collect(ref: str) -> dict:
@@ -98,7 +106,9 @@ def build(ref: str, diff_n: int, chunk: int) -> tuple[list[dict], list[dict]]:
     dataset = []
     for u in units:
         dataset.append({"unit": u["unit"], "title": u["title"], "regex": bool(u["is_fix"]), "regex_why": u["why"],
-                        "label": known.get(u["unit"]), "bump_only_fix": u["unit"] in labels_bump_only(),
+                        "label": known.get(u["unit"]),
+                        "split": None if u["unit"] not in known else "tuned" if u["unit"] in tuned_units() else "unseen",
+                        "bump_only_fix": u["unit"] in labels_bump_only(),
                         "text": unit_text(u, code_lines(u["sha"], u["base"], diff_n))})
     missing = sorted(set(known) - {d["unit"] for d in dataset})
     if missing:
@@ -166,6 +176,13 @@ def score(dataset: list[dict], answers: dict, threshold: float = 0.5) -> dict:
         "regex": stats([(d["regex"], d["label"]) for d in labeled]),
         "model": stats([(model[d["unit"]], d["label"]) for d in answered]),
         "regex_on_answered": stats([(d["regex"], d["label"]) for d in answered]),
+        "either": stats([(d["regex"] or model[d["unit"]], d["label"]) for d in answered]),
+        "splits": {sp: {"units": len(part),
+                        "regex": stats([(d["regex"], d["label"]) for d in part]),
+                        "model": stats([(model[d["unit"]], d["label"]) for d in part]),
+                        "either": stats([(d["regex"] or model[d["unit"]], d["label"]) for d in part])}
+                   for sp in sorted({d.get("split") for d in answered if d.get("split")})
+                   for part in [[d for d in answered if d.get("split") == sp]]},
         "disagreements": [{"unit": d["unit"], "title": d["title"][:80], "label": d["label"], "regex": d["regex"],
                            "model": model[d["unit"]], **({"confidence": round(confs[d["unit"]], 3)} if d["unit"] in confs else {})}
                           for d in answered if model[d["unit"]] != d["regex"] or model[d["unit"]] != d["label"]],
@@ -184,8 +201,12 @@ def report(s: dict) -> str:
                           f"  (tp {x['tp']} fp {x['fp']} fn {x['fn']} tn {x['tn']})")
     lines = [f"Labeled units: {s['labeled']}, answered by the model: {s['answered_labeled']}",
              row("regex (all labeled)", s["regex"]), row("regex (answered)", s["regex_on_answered"]), row("model", s["model"]),
+             row("regex or model", s["either"]),
              f"Fix share over all units: regex {s['fix_share']['regex']}, model {s['fix_share']['model']} (by hand: about a third)",
              f"Bump-only fixes (the regex misses these by design): {s['bump_only_fixes_found']}"]
+    for sp, x in s.get("splits", {}).items():
+        lines.append(f"Split {sp} ({x['units']} answered labeled units):")
+        lines += [row(f"  {k}", x[k]) for k in ("regex", "model", "either")]
     if s["unanswered"]:
         lines.append(f"Unanswered: {', '.join(s['unanswered'])}")
     if s["disagreements"]:
@@ -203,7 +224,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build")
-    b.add_argument("--ref", default="92974e4")
+    b.add_argument("--ref", default="dbf757a")
     b.add_argument("--diff", type=int, default=0)
     b.add_argument("--chunk", type=int, default=0)
     b.add_argument("--out", default=str(HERE / "out"))
