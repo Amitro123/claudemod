@@ -28,6 +28,8 @@ Python, if you run it at all, with `PYTHONDONTWRITEBYTECODE=1`.
 
 At most 25 tool calls per case. At call 20 of a case stop investigating it and write its card. If the budget ends before the card is complete, return the card with every unfinished claim marked `suspect` or `inferred` and `not_verified` naming what is missing. Never end without a card, one per case.
 
+**One message, several calls.** Most of your time is the wait for each reply, not the tools: when you know the next reads, searches or `git show`s and none needs another's answer, send them together in one message. Measured 2026-11-13: agents sent one call per turn, about 5 seconds each.
+
 ## How to read
 
 1. Run the dossier's command (or read its file). Then read each function the fix changed, whole, in today's code (by range).

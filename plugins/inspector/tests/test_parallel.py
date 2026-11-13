@@ -95,3 +95,9 @@ def test_generated_prompts_agree_with_the_agent_files_and_the_docs(tmp_path) -> 
     assert '"status": "in-progress"' in reader and '"status": "in-progress"' in reader_agent
     assert "per case" in reader and "per case" in reader_agent
     assert "plan.py" in _t("skills/inspect/references/verify.md") and "plan.py" in _t("skills/inspect/SKILL.md") or "RUN PLAN" in _t("skills/inspect/SKILL.md")
+
+
+def test_readers_sweepers_and_verifiers_are_told_to_send_independent_calls_together():
+    """2026-11-13 transcripts: 96% of agent time was model time, one tool call per turn."""
+    for f in ("agents/case-reader.md", "agents/sweeper.md", "agents/verifier.md"):
+        assert "send them together in one message" in " ".join(_t(f).split()), f

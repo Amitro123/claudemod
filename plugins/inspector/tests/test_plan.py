@@ -641,3 +641,18 @@ def test_a_later_wave_starts_agent_by_agent_as_slots_free_up(tmp_path) -> None:
     assert "do not wait for the whole wave before" in md
     order = [l.split("sweeper-")[1][0] for l in w2.splitlines() if "sweeper-" in l and l.startswith("- ")]
     assert order == ["3", "1", "2"]                   # OUTSIDE-IN, code, docs: longest first
+
+
+def test_readers_are_balanced_by_changed_lines_and_equal_sizes_keep_consecutive_chunks() -> None:
+    """The 2026-11-13 run: consecutive chunks gave reader-1 #123, #122, #120 (2,944 lines, capped), reader-2 869."""
+    w = [1333, 2135, 111, 228, 353, 288, 578, 400, 4676, 169, 73, 3108]
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("plan_module", PLAN)
+    pm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm)
+    groups = pm.balanced(list(range(1, 13)), w, 3)
+    loads = [sum(min(w[i - 1], pm.CASE_LINES_CAP) for i in g) for g in groups]
+    assert len(groups) == 4 and all(len(g) == 3 for g in groups) and sorted(sum(groups, [])) == list(range(1, 13))
+    assert max(loads) - min(loads) < 100
+    assert pm.balanced([1, 2, 3, 4, 5, 6, 7], [0] * 7, 3) == [[1, 2, 3], [4, 5, 6], [7]]
+    assert pm.balanced([1, 2], [5, 900], 3) == [[1, 2]]

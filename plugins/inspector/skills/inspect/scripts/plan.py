@@ -36,6 +36,7 @@ import sys
 CHUNK = 8
 SINGLE_MAX = 6   # up to this many cases, one investigator: measured close to a reader per case, at less cost
 PER_READER = 3   # cases per case reader, unless --per-case
+CASE_LINES_CAP = 1500  # a case's weight when readers are balanced: its changed lines, at most this
 WAVE = 4         # agents started at once; hosts stop wider fan-outs
 STUB = "in-progress"
 SWEEPERS = (("code", "items 1, 2, 4, 6 of its list (siblings, readers, seams, same-role files)"),
@@ -67,6 +68,24 @@ def load(path: str):
         raise Invalid(f"{path}: {str(e)[:100]}")
 
 
+def balanced(ids: list[int], weights: list[int], size: int) -> list[list[int]]:
+    """ids in groups of at most `size`, as many groups as consecutive chunks would make, balanced by weight
+    (a case's changed lines, capped: a dossier shows at most a few hundred). Largest first, each to the
+    lightest group with room. Measured 2026-11-13: consecutive chunks gave one reader the three largest PRs,
+    and it finished a minute after the others. Equal weights (sizes unknown) keep consecutive chunks."""
+    chunks = [ids[i:i + size] for i in range(0, len(ids), size)]
+    w = {i: min(x, CASE_LINES_CAP) for i, x in zip(ids, weights)}
+    if len(chunks) < 2 or len(set(w.values())) < 2:
+        return chunks
+    groups: list[list[int]] = [[] for _ in chunks]
+    load = [0] * len(chunks)
+    for i in sorted(ids, key=lambda i: -w[i]):
+        g = min((k for k in range(len(groups)) if len(groups[k]) < size), key=lambda k: (load[k], len(groups[k]), k))
+        groups[g].append(i)
+        load[g] += w[i]
+    return [sorted(g) for g in sorted(groups, key=min)]
+
+
 class Ctx:
     def __init__(self, run: str, case_file: str | None, dropped: list[str] | None = None, per_case: bool = False):
         if not os.path.isdir(run):
@@ -93,11 +112,12 @@ class Ctx:
         self.per_case = per_case
         self.parallel = n > SINGLE_MAX or (per_case and n >= 3)
         size = 1 if per_case else PER_READER
-        self.groups = [self.keep[i:i + size] for i in range(0, n, size)] if self.parallel else []
-        titles = {}
+        titles, lines = {}, {}
         for u in ev.get("timeline") or []:
             if isinstance(u, dict) and isinstance(u.get("unit"), str):
                 titles[u["unit"]] = one_line(u.get("title", ""))
+                lines[u["unit"]] = sum(int(u.get(k) or 0) for k in ("insertions", "deletions") if isinstance(u.get(k), int))
+        self.groups = balanced(self.keep, [lines.get(cases[i - 1], 0) for i in self.keep], size) if self.parallel else []
         self.titles = [titles.get(c, "") for c in cases]
         self.dossiers = []
         for i, c in enumerate(cases, 1):
