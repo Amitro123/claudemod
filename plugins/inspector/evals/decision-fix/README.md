@@ -2,8 +2,10 @@
 
 Does a decision model (Gemini Decision 1, from the Gemini Decisions API) tell bug fixes from
 everything else better than the collector's regex (`evidence.judge`)? Measured on this
-repository's history up to #72, against the hand labels in `tests/golden_labels.py`
-(16 fixes, 20 non-fixes).
+repository's history up to #123, against the hand labels in `tests/golden_labels.py`: up to #72
+(16 fixes, 20 non-fixes, the set the regex was tuned on, split `tuned`) and #73-#123 (20 fixes, 27
+non-fixes, labeled 2026-11-13, split `unseen`). Score reports the regex, the model and both together
+(a fix if either says so), overall and per split.
 
 ```bash
 git fetch --unshallow                       # only in a shallow clone: the labels need history up to #72
@@ -52,6 +54,50 @@ python run.py score --dataset out/dataset.json --answers out/answers.json
   understands the question, not that it beats the regex. That still needs labels after #72.
 - For this call the model does not save time: the regex is instant. Where a decision model could
   save minutes is a judgement an agent makes today; that is a separate, unmeasured experiment.
+
+## Unseen history (2026-11-13, #73-#123, 47 units the regex was never tuned on)
+
+One request for all 123 units, Gemini Decision 1. Recall on the unseen split (20 fixes):
+
+| | precision | recall | time | cost |
+|---|---|---|---|---|
+| regex | 0.94 | 0.85 | ~0 s | none |
+| model, titles, cut 0.5 | 0.94 | 0.80 | 1.3 s | $0.0065 |
+| model, titles, cut 0.4 | 0.95 | 0.90 | | |
+| regex or model, titles, cut 0.5 | 0.90 | 0.90 | | |
+| regex or model, titles, cut 0.4 | 0.91 | 0.95 | | |
+| model, `--diff 30`, cut 0.5 | 1.00 | 0.70 | 4.5 s | $0.0130 |
+| regex or model, `--diff 30`, cut 0.5 | 0.95 | 0.90 | | |
+
+- The regex misses #82, #96, #101 here (no "fix" in their titles) and takes #85 ("fix evidence").
+  The model at 0.5 finds #82; at 0.4 also #96. Neither finds #101 (0.27).
+- The model and the regex miss different units, so together they find more: 19 of 20 at 0.4, at
+  the cost of one more false positive (#106, 0.48).
+- The cut of 0.4 was picked after seeing these answers. It needs a third set to confirm.
+- Code lines made it worse: the model reads "review fixes" PRs as not fixes once it sees their diffs
+  (#36, #38, #110, #115, #119 fall under 0.5). Titles only is the better input for this question.
+
+## Another decision model: typesafe/jev-1.13 (2026-11-13)
+
+The same requests through the same endpoint, `--model typesafe/jev-1.13`. Cut 0.5.
+
+| | input | all 36 fixes: precision / recall | unseen: precision / recall | time | cost |
+|---|---|---|---|---|---|
+| regex | | 0.97 / 0.86 | 0.94 / 0.85 | ~0 s | none |
+| Gemini Decision 1 | titles | 0.97 / 0.83 | 0.94 / 0.80 | 1.3 s | $0.0065 |
+| jev-1.13 | titles | 0.92 / 0.97 | 0.91 / 1.00 | 0.9 s | $0.0024 |
+| jev-1.13 | `--diff 30` | 0.95 / 1.00 | 0.91 / 1.00 | 1.4 s | $0.0051 |
+| jev-1.13, `--diff 30`, again | `--diff 30` | 0.92 / 1.00 | 0.91 / 1.00 | 1.2 s | $0.0051 |
+
+- jev-1.13 alone finds every fix the regex misses: #82, #96, #101 (unseen), #18, #25 (bump-only),
+  and keeps #6. It rejects #85, the regex's false positive.
+- Its false positives: #106 (0.76) and #121, a release (0.62); the repeat added one more on the
+  tuned split. Answers move between runs (up to 0.13 on one unit), so a unit near the cut can flip.
+- Unlike Gemini Decision 1, code lines help it (tuned split 1.00 / 1.00 with them).
+- The cut was not tuned for it: 0.5 is the default.
+
+In the collector: `evidence.py --decision-model` (skills/inspect/scripts/decide.py) asks jev-1.13
+about the units the regex calls no fix and promotes those at 0.5 or more to inferred fixes.
 
 ## Read the result with this in mind
 
