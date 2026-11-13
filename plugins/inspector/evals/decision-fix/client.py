@@ -27,6 +27,7 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.request
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -82,9 +83,10 @@ def parse_answers(content: str, questions: list[dict]) -> dict[str, dict]:
 DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 DECISION_MODEL = "google/gemini-decision-1"
 FIX_CRITERIA = {
-    "true": "A bug fix: the change repairs behaviour that had already shipped, which users or callers could hit.",
+    "true": ("A bug fix: the change repairs behaviour that had already shipped, which users or callers could hit. "
+             "Fixes from a review of already-merged code count: reviews here run after merge."),
     "false": ("Not a fix of shipped behaviour: a new feature, docs, a refactor, a release or version bump, or a "
-              "fix of work inside the same pull request (lint, review comments, its own tests)."),
+              "commit that only fixes earlier commits of the same unmerged pull request (lint, its own tests)."),
 }
 
 
@@ -139,8 +141,12 @@ def openrouter_decisions(shared_input: str, questions: list[dict], model: str = 
 def _post(url: str, body: dict, headers: dict, timeout: int = 300) -> dict:
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json", **headers})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # The status alone says little (a 401 is a bad key or no access to an alpha endpoint): keep the body.
+        raise RuntimeError(f"{url}: HTTP {e.code} {e.reason}: {e.read().decode('utf-8', 'replace')[:2000]}") from None
 
 
 def openrouter_decide(shared_input: str, questions: list[dict], model: str, post=_post) -> tuple[dict[str, dict], dict]:

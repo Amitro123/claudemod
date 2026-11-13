@@ -37,8 +37,10 @@ sys.path.insert(0, str(PLUGIN / "skills" / "inspect" / "scripts"))
 sys.path.insert(0, str(PLUGIN / "tests"))
 
 QUESTION = ("Unit {unit}: did this change repair behaviour that had already shipped, that is, fix a bug users "
-            "or callers could hit? Answer no for a new feature, docs, a refactor, a release or version bump, "
-            "or a change that only fixes work inside the same pull request (lint, review comments, its own tests).")
+            "or callers could hit? Fixes from a review of code that had already merged count as yes: in this "
+            "repository reviews run after merge, so a later \"review fixes\" or \"follow-up fixes\" change repairs "
+            "shipped code. Answer no for a new feature, docs, a refactor, a release or version bump, or a commit "
+            "that only fixes earlier commits of the same unmerged pull request (lint, its own tests).")
 
 PREAMBLE = ("Below are the units of a git repository's history: each merged pull request or direct commit, with its "
             "title, the subjects of its commits, the files it changed (+added/-deleted lines) and any version bumps. "

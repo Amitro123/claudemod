@@ -35,6 +35,24 @@ python run.py score --dataset out/dataset.json --answers out/answers.json
   the two bump-only fixes (#18, #25, which the regex misses by design) were found, and with
   confidences a threshold sweep.
 
+## First result (2026-11-13, titles only, one request)
+
+| | precision | recall | accuracy | time | cost |
+|---|---|---|---|---|---|
+| regex | 1.00 | 0.88 | 0.94 | ~0 s | none |
+| Gemini Decision 1, first wording | 1.00 | 0.25 | 0.67 | 2.0 s | $0.0036 |
+| Gemini Decision 1, review fixes count | 1.00 | 0.88 | 0.94 | 1.8 s | $0.0041 |
+
+- The first wording told the model to answer no for fixes of "review comments". Here reviews run
+  after merge, so a later "review fixes" PR repairs shipped code, and the labels count it as a fix:
+  10 of the model's 12 misses were such PRs. The question now says so.
+- With that wording the model ties the regex, with different misses: it finds #25 (bump-only),
+  misses #6. Any cut from 0.4 to 0.7 gives the same scores; fix share over all units 0.29 (regex 0.25).
+- The wording was changed after seeing the misses on these same labels, so this shows the model
+  understands the question, not that it beats the regex. That still needs labels after #72.
+- For this call the model does not save time: the regex is instant. Where a decision model could
+  save minutes is a judgement an agent makes today; that is a separate, unmeasured experiment.
+
 ## Read the result with this in mind
 
 - **These labels favour the regex.** It was tuned on exactly these 36 units, and scores 1.00
