@@ -77,6 +77,25 @@ One request for all 123 units, Gemini Decision 1. Recall on the unseen split (20
 - Code lines made it worse: the model reads "review fixes" PRs as not fixes once it sees their diffs
   (#36, #38, #110, #115, #119 fall under 0.5). Titles only is the better input for this question.
 
+## Another decision model: typesafe/jev-1.13 (2026-11-13)
+
+The same requests through the same endpoint, `--model typesafe/jev-1.13`. Cut 0.5.
+
+| | input | all 36 fixes: precision / recall | unseen: precision / recall | time | cost |
+|---|---|---|---|---|---|
+| regex | | 0.97 / 0.86 | 0.94 / 0.85 | ~0 s | none |
+| Gemini Decision 1 | titles | 0.97 / 0.83 | 0.94 / 0.80 | 1.3 s | $0.0065 |
+| jev-1.13 | titles | 0.92 / 0.97 | 0.91 / 1.00 | 0.9 s | $0.0024 |
+| jev-1.13 | `--diff 30` | 0.95 / 1.00 | 0.91 / 1.00 | 1.4 s | $0.0051 |
+| jev-1.13, `--diff 30`, again | `--diff 30` | 0.92 / 1.00 | 0.91 / 1.00 | 1.2 s | $0.0051 |
+
+- jev-1.13 alone finds every fix the regex misses: #82, #96, #101 (unseen), #18, #25 (bump-only),
+  and keeps #6. It rejects #85, the regex's false positive.
+- Its false positives: #106 (0.76) and #121, a release (0.62); the repeat added one more on the
+  tuned split. Answers move between runs (up to 0.13 on one unit), so a unit near the cut can flip.
+- Unlike Gemini Decision 1, code lines help it (tuned split 1.00 / 1.00 with them).
+- The cut was not tuned for it: 0.5 is the default.
+
 ## Read the result with this in mind
 
 - **These labels favour the regex.** It was tuned on exactly these 36 units, and scores 1.00
