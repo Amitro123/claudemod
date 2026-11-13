@@ -43,7 +43,8 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
   const sent: string[] = []
   const toasts: string[] = []
   const written: Record<string, string> = {}
-  // `hold`: that command waits until the test releases it, so the test can act meanwhile.
+  // `hold`: that command waits until the test releases it, so the test can act meanwhile (a trailing * holds
+  // the first command that starts with the rest).
   let release = () => {}
   const held = new Promise<void>(r => (release = r))
   let failing = fails
@@ -88,7 +89,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     const cmd = e.argv.join(' ')
     ran.push(cmd)
     limits[cmd] = (e as { init?: { timeoutMs?: number } }).init?.timeoutMs ?? 0
-    if (cmd === hold) await held
+    if (cmd === hold || (hold.endsWith('*') && cmd.startsWith(hold.slice(0, -1)))) await held
     // A review of the checkout: where the branch left origin's default branch, and the change since it.
     if (cmd === 'git merge-base HEAD origin/HEAD' && mergeBase) return ok(`${mergeBase}\n`)
     if (cmd.startsWith('git diff --quiet ')) return { value: { exitCode: reviewChange ? 1 : 0, stdout: '', stderr: '' } } as never
@@ -669,6 +670,22 @@ describe('the person decides', () => {
     expect(w.spawned.some(s => s.subagentType.endsWith('reviewer'))).toBe(false)
   })
 
+  test('a Stop while the reviews are being routed holds: no reviewer starts, the run stays stopped', async ($, on) => {
+    // startReviews awaits the route's git diff before it moves the run to review (2026-11-13 inspection).
+    const w = engine(on, { hold: 'git diff --name-status -z *' })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await settled()
+    expect(w.ran.some(c => c.startsWith('git diff --name-status -z '))).toBe(true)
+    expect(await command($, 'stop')).toMatch(/^Stopped/)
+    w.release()
+    await settled()
+    expect(w.spawned.some(s => s.subagentType.endsWith('reviewer'))).toBe(false)
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/Phase: stopped/)
+  })
+
   test("a stopped run's agents stay refused after a new run starts", async ($, on) => {
     engine(on)
     await startRun($)
@@ -974,6 +991,9 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
       "sed -i 's/a/b/' src/a.ts", 'perl -pi -e s/a/b/ x', 'npm install', 'pnpm add lodash', 'rm src/a.ts', 'rm -rf build',
       'mv a.ts b.ts', 'cp /tmp/x src/a.ts', 'touch src/new.ts', 'echo x > src/a.ts', 'cat a >> notes.md', 'echo x | tee src/a.ts',
       'bash -c "echo x > src/a.ts"', 'dd if=/dev/zero of=src/a.bin', 'truncate -s 0 src/a.ts', 'git push',
+      // a .. segment climbs out of /tmp (2026-11-13 inspection, reproduced)
+      'echo x > /tmp/../src/a.ts', 'cp a /tmp/../src/a.ts', 'rm /tmp/../src/a.ts', 'dd if=/dev/zero of=/tmp/x/../../src/a.bin',
+      'tee /tmp/../../repo/src/a.ts',
     ]) {
       expect([c, forbiddenInReview(c) !== '']).toEqual([c, true])
     }

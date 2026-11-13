@@ -131,12 +131,15 @@ function serial(job: () => Promise<void>): Promise<void> {
 }
 
 // A move to another phase stamps when it began; a stop to wait keeps where the progress stood.
+// A run that is no longer live (stopped, done) never moves to another phase: a step that awaited
+// something (git, a route, a record) while the person pressed Stop must not undo the Stop.
 async function patch($: EngineInterface, fn: (r: Run) => Run): Promise<Run | null> {
   const t = await $.clock.now()
   return update($, run, cur => {
     if (!cur) return cur
     const next = fn(cur)
     if (next.phase === cur.phase) return next
+    if (!isLive(cur.phase)) return cur
     const held = next.phase === 'needs-human' || next.phase === 'stopped' ? { lastProgress: progressOf(cur) } : {}
     return { ...next, ...held, phaseSince: t }
   })
@@ -416,7 +419,7 @@ async function respec($: EngineInterface, feedback = '') {
 async function startBuild($: EngineInterface, findings: Finding[], failed: Check[], said = '', resume = '') {
   const note = resume ? 'the builder carries on' : said ? 'reworking it as you asked' : failed.length ? 'fixing the checks' : findings.length ? `fixing ${findings.length} finding${findings.length === 1 ? '' : 's'}` : 'building'
   const r = await patch($, cur => ({ ...moveTo(cur, 'build', note), steps: { ...cur.steps, builder: { ...cur.steps.builder, state: 'run' } } }))
-  if (!r) return
+  if (!r || r.phase !== 'build') return
   // A later round goes back to the builder that built it: it keeps what it read and why, and its
   // prompt cache. A message it can't take (gone, refused) starts a new builder with the whole job.
   if (r.builderId) {
@@ -672,7 +675,7 @@ async function runChecks($: EngineInterface) {
     steps: { ...cur.steps, builder: cur.kind === 'review' ? cur.steps.builder : { ...cur.steps.builder, state: 'pass' }, checks: { ...cur.steps.checks, state: 'run' } },
     checkRound: cur.kind === 'review' ? 0 : cur.checkRound + 1,
   }))
-  if (!r) return
+  if (!r || r.phase !== 'checks') return
   const files = await namesIn($, r.worktree)
   const found = await checkCommands($, r)
   const auto = [
@@ -758,7 +761,7 @@ async function startReviews($: EngineInterface) {
       reviews: cur.reviews.map(x => ({ ...x, state: 'run', findings: [], round, agentId: null, understood: undefined, notChecked: undefined })),
     }
   })
-  if (r) await spawnReviewers($, r)
+  if (r?.phase === 'review') await spawnReviewers($, r)
 }
 
 // The reviewers of this round not started yet (all of them, or those a failed start left).
@@ -863,7 +866,7 @@ async function onSkeptic($: EngineInterface, answer: string, why: string) {
 
 async function startApprover($: EngineInterface) {
   const r = await patch($, cur => ({ ...moveTo(cur, 'approve', 'the approver is deciding'), steps: { ...cur.steps, approver: { ...cur.steps.approver, state: 'run' } } }))
-  if (!r) return
+  if (!r || r.phase !== 'approve') return
   const stat = await git($, ['diff', '--stat', r.base, 'HEAD'], r.worktree)
   await spawnRole($, 'approver', approvePrompt(r, stat.exitCode === 0 ? stat.stdout.trim() : ''))
 }
@@ -894,7 +897,8 @@ async function onApprover($: EngineInterface, answer: string, why: string) {
   }
   // The approver is an agent: the PR, outward-facing, waits for the person unless autoPr is on.
   if (autoPr) return finish($, reason)
-  await patch($, r => ({ ...moveTo(r, 'ready', `approved${reason ? `: ${reason}` : ''}. Open the PR when you're ready`), steps: { ...r.steps, approver: { ...r.steps.approver, state: 'pass' } } }))
+  const ready = await patch($, r => ({ ...moveTo(r, 'ready', `approved${reason ? `: ${reason}` : ''}. Open the PR when you're ready`), steps: { ...r.steps, approver: { ...r.steps.approver, state: 'pass' } } }))
+  if (ready?.phase !== 'ready') return
   $.ui.toast('The approver approved the change: Open PR in the factory band, /factory approve, or /factory rework <what to change>')
   void askPr($)
 }

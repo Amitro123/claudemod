@@ -105,6 +105,26 @@ def test_a_secret_in_an_env_style_name_is_redacted():
     assert host_layout.safe_for_markdown("git checkout -- tokens.py") == "git checkout -- tokens.py"
 
 
+def test_auth_headers_curl_credentials_slack_tokens_and_quoted_values_are_redacted():
+    """The 2026-11-13 inspection (REAL, reproduced): these went into MISTAKES.md as typed."""
+    for cmd, secret in [
+        ('curl -H "Authorization: token ghx0abc123secret" https://api.example.com', "ghx0abc123secret"),
+        ("curl -H 'Authorization: abc123secret' https://x", "abc123secret"),
+        ("curl -u alice:s3cretpass https://x", "s3cretpass"),
+        ("curl --user=alice:s3cretpass https://x", "s3cretpass"),
+        ('curl -u "alice:s3cret pass" https://x', "pass"),
+        ("SLACK=xoxb-1234567890-abcdefghij npm test", "xoxb-1234567890"),
+        ('DB_PASSWORD="pass word" git checkout -- .', "word"),
+        ("mytool --password 'two words' run", "words"),
+    ]:
+        out = host_layout.safe_for_markdown(cmd)
+        assert secret not in out, (cmd, out)
+        assert "[redacted]" in out, (cmd, out)
+    for kept in ["git push -u origin main", "sudo -u bob git checkout -- .", "npm test -- --user-agent=x",
+                 "git checkout -- auth.py"]:
+        assert host_layout.safe_for_markdown(kept) == kept
+
+
 def test_an_index_line_with_an_en_dash_is_read_as_brain_ts_reads_it():
     """The open-bugs list, #6: rebuild_index's _LINE took — and - but not –, so rebuild added a second line."""
     import rebuild_index
