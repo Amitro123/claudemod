@@ -42,7 +42,12 @@ export function leftOut(paths: readonly string[]): string[] {
 export const historyArgs = (base: string) =>
   ['log', '--no-show-signature', '--no-renames', '--diff-merges=first-parent', '--diff-filter=A', '--name-only', '-z', '--format=%x00%H', `${base}..HEAD`]
 
-const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
+// The new files in the index, before the factory's own commit: a file the builder staged itself never
+// went through the untracked-file filter. --no-renames for the same reason as the history scan: a
+// staged `git mv config.txt .env` is a rename to git's default diff, and --diff-filter=A misses it.
+export const stagedAddsArgs = ['diff', '--cached', '--no-renames', '--name-only', '--diff-filter=A', '-z']
+
+const COMMIT_ID =/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 const malformed = (why: string) => new Error(`the history scan's output is not the shape it asked git for: ${why}`)
 
 // The never-commit files in historyArgs' output, as leftOut shows them, each with the commits that

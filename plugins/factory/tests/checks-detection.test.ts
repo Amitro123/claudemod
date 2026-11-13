@@ -16,6 +16,16 @@ describe('chk-01 detection (S1-S6, D1)', () => {
     expect(argvs(await run(market))).toEqual([])
   })
 
+  test("a change only to a plugin's .claude-plugin/plugin.json, or a hidden folder deep in a project, still touches the folders above it", async () => {
+    const market = { '.claude-plugin/marketplace.json': '{}', 'plugins/a/.claude-plugin/plugin.json': '{}', 'plugins/a/hooks/x.ts': '' }
+    expect(argvs(await run(market, { touched: ['plugins/a/.claude-plugin/plugin.json'] }))).toEqual(['claude plugin test plugins/a'])
+    // Deeper than the scan (depth 4): found only as a touched folder, and a file in its .cfg/ touches it.
+    const deep = { 'a/b/c/d/go.mod': '', 'a/b/c/d/.cfg/x.json': '' }
+    expect(argvs(await run(deep, { touched: ['a/b/c/d/.cfg/x.json'] }))).toEqual(['go -C a/b/c/d test ./...'])
+    // An ignored folder still stops the walk there: nothing under node_modules/ counts as touched.
+    expect(argvs(await run({ 'node_modules/p/package.json': '{}', 'node_modules/p/go.mod': '' }, { touched: ['node_modules/p/go.mod'] }))).toEqual([])
+  })
+
   test('root node project: test and lint found', async () => {
     const r = await run({ 'package.json': pkg({ test: 'vitest', lint: 'eslint .' }) })
     expect(argvs(r)).toEqual(['npm test', 'npm run lint'])

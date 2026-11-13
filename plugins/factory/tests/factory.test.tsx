@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenTool, routeReview } from '../hooks/route'
+import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
 import { extrasFrom, LENSES } from '../hooks/flow'
 import { parseBuilderTests as builderTestsOf, nextActionsOf, forbidsPush, parseBuilderTests, parseNotChecked, parseUnderstood, summaryOf } from '../hooks/flow'
 import { cleanFeature, couldNotStart, detectChecks, detectSetup, leftOut, neverCommit, slugOf, untrackedOf, modelsFor, parseDecision, parseSize, parseSkills, progressNote, titleOf, parseTasks, parseVerdict, planPrompt, specPrompt, splitChecks } from '../hooks/flow'
@@ -32,7 +32,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[] } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false } = {}) {
   // Files the install writes in the worktree (`setupMakes`, a lockfile npm install made): untracked from then on.
   const made: string[] = []
   const spawned: Spawned[] = []
@@ -66,10 +66,17 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
   })
   on('command.list', () => ({ value: goalRun ? [{ name: 'session-goal', description: 'g', source: 'plugin' }] : [] }) as never)
   // The mod's own spawn arrives in the Agent tool's words (subagent_type).
-  on('agent.spawn', (_, e) => {
+  on('agent.spawn', async (_, e) => {
     const a = e as unknown as { subagentType?: string; subagent_type?: string; prompt: string; description: string; cwd?: string; model?: string }
     const type = a.subagentType ?? a.subagent_type ?? ''
     if (denyType && type.startsWith('factory:')) return { deny: 'unknown agent type' } as never
+    // `holdSkeptic`: the skeptic's start waits until the test releases it, then fails (its general-purpose
+    // fallback too), so the test can act while it is under way.
+    if (holdSkeptic && type === 'factory:skeptic') {
+      await held
+      return { deny: 'no capacity' } as never
+    }
+    if (holdSkeptic && type === 'general-purpose' && a.prompt.includes('You are the skeptic')) return { deny: 'no capacity' } as never
     const id = `a${spawned.length + 1}`
     spawned.push({ id, subagentType: type, prompt: a.prompt, description: a.description, cwd: a.cwd, ...(a.model ? { model: a.model } : {}) })
     return { model: 'm', agentId: id } as never
@@ -96,7 +103,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (cmd.startsWith('git diff --stat')) return ok(' src/mw.ts | 40 +++\n 1 file changed')
     if (cmd === 'git diff abc123 HEAD') return ok('diff --git a/src/mw.ts b/src/mw.ts\n+export const limit = 10\n')
     // New files in the index (`stagedNew`, the builder's own git add), and new files committed since the base.
-    if (cmd === 'git diff --cached --name-only --diff-filter=A -z') return ok(stagedNew.join('\0'))
+    if (cmd === 'git diff --cached --no-renames --name-only --diff-filter=A -z') return ok(stagedNew.join('\0'))
     // The branch history's added files, commit by commit (`committedNew`, all in one commit, c1000…),
     // a scan that fails (`historyFails`), or what the scan prints, as given (`historyOut`).
     if (cmd === 'git log --no-show-signature --no-renames --diff-merges=first-parent --diff-filter=A --name-only -z --format=%x00%H abc123..HEAD') {
@@ -164,6 +171,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
   // goal-run's plan tool, as it answers for a factory plan the person approved.
   on('tool.call', { tool: PLAN }, () => ({ result: keepsGoal ? PLAN_KEPT_FOR_FACTORY : planResult }) as never)
   on('tool.call', { tool: 'Edit' }, () => ({ result: 'edited' }) as never)
+  on('tool.call', { tool: 'Bash' }, () => ({ result: 'ran' }) as never)
   // The engine's question dialog: the next answer, or dismissed when none is left.
   const asked: string[] = []
   on('tool.call', { tool: 'AskUserQuestion' }, async (_, e) => {
@@ -370,6 +378,14 @@ describe('a run from the feature to the PR', () => {
     await command($, 'stop')
     await command($, 'Second feature')
     expect(w.written['/repo/.git/info/exclude']).toBe('.factory/\n')
+  })
+
+  test("the review-only guard leaves a build run's builder alone: it adds and commits in its own worktree", async ($, on) => {
+    engine(on)
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    expect(await $.tool.call({ tool: 'Bash', agentId: 'a2', command: 'git add -A' } as never).then(r => JSON.stringify(r ?? {}))).not.toMatch(/changes nothing/)
   })
 
   test('a credential the builder staged itself is unstaged before the commit, and listed as left out', async ($, on) => {
@@ -951,6 +967,26 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     }
   })
 
+  test("in a review of the person's checkout, a command that changes it is refused; reading and /tmp are not", () => {
+    for (const c of [
+      'git stash', 'git stash -u', 'git checkout -- .', 'git -C /repo restore src/a.ts', 'git reset --hard', 'git clean -fd', 'git add -A',
+      'git commit -m x', 'git switch main', 'git branch -D old', 'cd /repo && git stash', 'bash -c "git checkout ."',
+      "sed -i 's/a/b/' src/a.ts", 'perl -pi -e s/a/b/ x', 'npm install', 'pnpm add lodash', 'rm src/a.ts', 'rm -rf build',
+      'mv a.ts b.ts', 'cp /tmp/x src/a.ts', 'touch src/new.ts', 'echo x > src/a.ts', 'cat a >> notes.md', 'echo x | tee src/a.ts',
+      'bash -c "echo x > src/a.ts"', 'dd if=/dev/zero of=src/a.bin', 'truncate -s 0 src/a.ts', 'git push',
+    ]) {
+      expect([c, forbiddenInReview(c) !== '']).toEqual([c, true])
+    }
+    for (const c of [
+      'git diff', 'git status --porcelain', 'git log --oneline -5', 'git show HEAD:src/a.ts', 'git branch --list', 'git blame src/a.ts',
+      'npm test', 'python -m pytest -q', 'grep -rn "x > y" src', 'cat src/a.ts 2>/dev/null', 'npm test 2>&1', 'node a.js >/dev/null',
+      'echo probe > /tmp/p.py', 'cp src/a.ts /tmp/a.ts', 'mkdir /tmp/probe', 'rm /tmp/probe/p.py', "sed -n '1,5p' src/a.ts", 'tee /tmp/out.txt',
+      'git commit-graph verify', 'echo "git stash"',
+    ]) {
+      expect([c, forbiddenInReview(c)]).toEqual([c, ''])
+    }
+  })
+
   test('wrappers, paths, subshells, git options and a shell\'s -c string are seen through (code review 2, F1)', () => {
     for (const c of [
       'git -c foo=bar push', 'git --no-pager push', '/usr/bin/git push', 'env git push', 'env -i HOME=/x git push',
@@ -1081,6 +1117,40 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     await answer($, 'a3', PASS)
     await answer($, 'a4', CHANGES)
     expect(w.spawned.some(a => a.subagentType === 'factory:skeptic')).toBe(false)
+  })
+
+  test("a skeptic that can't start sends the findings to the builder as they are", async ($, on) => {
+    const w = engine(on, { holdSkeptic: true })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', CHANGES)
+    w.release()
+    await settled()
+    expect(w.sends.at(-1)?.text ?? last(w).prompt).toContain('Retry-After is in ms, not seconds')
+    expect(await bandText($)).not.toMatch(/stopped/)
+  })
+
+  test("a Stop while the skeptic is starting holds, even when the skeptic then fails to start", async ($, on) => {
+    const w = engine(on, { holdSkeptic: true })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', CHANGES)
+    const sendsBefore = w.sends.length
+    const builders = () => w.spawned.filter(a => a.subagentType === 'factory:builder').length
+    const before = builders()
+    expect(await command($, 'stop')).toMatch(/^Stopped/)
+    w.release()
+    await settled()
+    // The failed start used to put the run back in review and send the findings to a builder.
+    expect(builders()).toBe(before)
+    expect(w.sends.length).toBe(sendsBefore)
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/Phase: stopped/)
   })
 })
 
@@ -2174,6 +2244,10 @@ describe('/factory review: the reviewers alone, on the change in your checkout',
     expect(w.spawned[1]!.cwd).toBe('/repo')
     // A review's agent can't edit the person's checkout.
     expect(await $.tool.call({ tool: 'Edit', agentId: 'a2', file_path: '/repo/src/mw.ts' } as never).then(r => JSON.stringify(r))).toMatch(/A factory review changes no file/)
+    // Nor through the shell; reading through it goes on.
+    expect(await $.tool.call({ tool: 'Bash', agentId: 'a2', command: 'git stash' } as never).then(r => JSON.stringify(r))).toMatch(/changes nothing in your checkout \(changing the checkout with git\)/)
+    expect(await $.tool.call({ tool: 'Bash', agentId: 'a1', command: "sed -i 's/a/b/' src/mw.ts" } as never).then(r => JSON.stringify(r))).toMatch(/editing a file in place/)
+    expect(await $.tool.call({ tool: 'Bash', agentId: 'a2', command: 'git diff def999' } as never).then(r => JSON.stringify(r ?? {}))).not.toMatch(/changes nothing/)
     await answer($, 'a1', PASS)
     await answer($, 'a2', 'VERDICT: CHANGES\nFINDINGS:\n- [major] src/mw.ts:3 the token is read from the query string, so it lands in logs')
     // The skeptic first; what stands goes back to the main Claude, with no builder or approver.

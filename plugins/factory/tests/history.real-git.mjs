@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { historyArgs, historyLeaks } from '../hooks/history.ts'
+import { historyArgs, historyLeaks, neverCommit, stagedAddsArgs } from '../hooks/history.ts'
 
 // Kept from the machine's git config and hooks. File contents are placeholders: the scan reads
 // names, never contents.
@@ -60,6 +60,19 @@ function repo(t, inBase = [], { signed = false } = {}) {
   }
   return { base, git, run, write, commit, scan }
 }
+
+// The check before the factory's own commit: new files in the index that the builder staged itself.
+test('a file the builder staged as a rename to .env (git mv) is a new file to the staged check, not a rename', t => {
+  const r = repo(t, ['config.txt', 'notes.md'])
+  r.git('mv', 'config.txt', '.env')
+  r.git('mv', 'notes.md', 'docs.md')
+  const staged = r.git(...stagedAddsArgs).split('\0').filter(Boolean)
+  assert.deepEqual(staged.sort(), ['.env', 'docs.md'])
+  assert.deepEqual(staged.filter(neverCommit), ['.env'])
+  // Without --no-renames, git's rename detection calls both renames and --diff-filter=A sees neither.
+  const withoutFlag = stagedAddsArgs.filter(a => a !== '--no-renames')
+  assert.equal(r.git(...withoutFlag), '')
+})
 
 test('a .env added and then deleted: the net diff is empty, the history still has it', t => {
   const r = repo(t)

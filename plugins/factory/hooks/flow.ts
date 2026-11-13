@@ -572,7 +572,7 @@ export function lastLines(text: string, n: number): string {
 }
 
 // What never goes into a commit (neverCommit, leftOut) and the branch-history scan for it.
-export { historyArgs, historyLeaks, leftOut, neverCommit } from './history'
+export { historyArgs, historyLeaks, leftOut, neverCommit, stagedAddsArgs } from './history'
 
 // The untracked files in `git status --porcelain -z -uall` output: each file on its own (never a
 // folder, which would stage the .env or node_modules inside it), unquoted, non-ASCII names as they
