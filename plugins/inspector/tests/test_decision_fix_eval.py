@@ -81,9 +81,50 @@ QS = [{"id": "#1", "type": "yes_no", "text": "Unit #1: a fix?"}, {"id": "#2", "t
       {"id": "e9eb7b50", "type": "yes_no", "text": "Unit e9eb7b50: a fix?"}]
 
 
-def test_the_gemini_client_says_it_is_not_written_yet():
-    with pytest.raises(NotImplementedError, match="aistudio.google.com/docs/decisions"):
+def test_the_gemini_client_says_it_is_not_written_and_names_the_decisions_backend():
+    with pytest.raises(NotImplementedError, match="--backend decisions"):
         client.decide("x", QS)
+
+
+# The Decisions API's shapes as @openrouter/sdk 1.5.100 defines them (models/decisionsrequest.js,
+# decisionsnoulquestion.js, decisionsresponse.js); the request body below passed that SDK's own schema.
+def test_decisions_sends_one_noul_question_per_unit_under_plain_keys(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k-test")
+    sent = {}
+
+    def post(url, body, headers):
+        sent.update(url=url, body=body, headers=headers)
+        return {"model": "google/gemini-decision-1", "provider": "Google",
+                "usage": {"input_tokens": 15000, "output_tokens": 0, "cost": 0.0015},
+                "answers": {"q0": {"type": "noul", "noul": 0.91, "confidence": 0.8}, "q1": {"type": "noul", "noul": 0.2},
+                            "q2": {"type": "refusal"}}}
+
+    answers, meta = client.openrouter_decisions("UNITS", QS, post=post)
+    assert sent["url"] == "https://openrouter.ai/api/alpha/decisions"
+    assert sent["headers"]["Authorization"] == "Bearer k-test"
+    body = sent["body"]
+    assert body["model"] == "google/gemini-decision-1" and body["state"] == "UNITS"
+    assert list(body["questions"]) == ["q0", "q1", "q2"]
+    q0 = body["questions"]["q0"]
+    assert q0["type"] == "noul" and q0["instructions"] == "Unit #1: a fix?" and set(q0["criteria"]) == {"true", "false"}
+    # noul is P(yes): a yes from 0.5, its confidence the probability of the answer given; a refusal is unanswered
+    assert answers == {"#1": {"answer": "yes", "confidence": 0.91, "p_yes": 0.91, "api_confidence": 0.8},
+                       "#2": {"answer": "no", "confidence": 0.8, "p_yes": 0.2}}
+    assert meta["refusals"] == 1 and meta["usage"]["cost"] == 0.0015 and meta["provider"] == "Google"
+    # what score reads back is the same P(yes)
+    assert run.as_answer(answers["#2"]) == (False, pytest.approx(0.2))
+
+
+@pytest.mark.parametrize("answer", [{"type": "noul", "noul": 1.5}, {"type": "noul", "noul": True}, {"type": "noul"},
+                                    {"type": "choice", "choice": "a"}, "yes", None])
+def test_a_decision_of_another_shape_is_left_out(answer):
+    got, refusals = client.parse_decisions({"answers": {"q0": answer, "q9": {"type": "noul", "noul": 0.9}}}, {"q0": "#1"})
+    assert got == {} and refusals == 0                    # q9 is no question that was asked
+
+
+def test_a_decisions_error_stops_the_run():
+    with pytest.raises(RuntimeError, match="OpenRouter decisions: .*insufficient credits"):
+        client.openrouter_decisions("U", QS, post=lambda *a: {"error": {"message": "insufficient credits"}})
 
 
 def test_openrouter_sends_the_units_as_data_and_every_question_once(monkeypatch):

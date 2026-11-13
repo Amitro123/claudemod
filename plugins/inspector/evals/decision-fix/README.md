@@ -9,9 +9,9 @@ repository's history up to #72, against the hand labels in `tests/golden_labels.
 git fetch --unshallow                       # only in a shallow clone: the labels need history up to #72
 python run.py build                         # out/dataset.json, out/requests.json (no network)
 python run.py build --diff 30 --chunk 25    # with 30 changed code lines per unit, in 4 requests
-GEMINI_API_KEY=... python run.py call --requests out/requests.json --out out/answers.json        # once client.decide is written
-OPENROUTER_API_KEY=... python run.py call --requests out/requests.json --out out/answers.json \
-    --backend openrouter --model <openrouter model id>
+OPENROUTER_API_KEY=... python run.py call --requests out/requests.json --out out/answers.json   # Gemini Decision 1
+OPENROUTER_API_KEY=... python run.py call --requests out/requests.json --out out/answers-llm.json \
+    --backend openrouter --model <openrouter model id>                                          # a chat model, to compare
 python run.py score --dataset out/dataset.json --answers out/answers.json
 ```
 
@@ -19,10 +19,12 @@ python run.py score --dataset out/dataset.json --answers out/answers.json
   version bumps, and with `--diff N` its first N changed code lines. It says the text is data, not
   instructions. One yes/no question per unit, all in one request. Titles only, that is about 15k
   tokens; `--diff 30` is about 46k.
-- **The Gemini client (`client.decide`) is not written yet.** The Decisions API's request format couldn't be read when this was
-  built, and a guessed one would fail in ways that look like model errors. Fill in `decide()` from
-  the docs (aistudio.google.com/docs/decisions); its docstring has the contract run.py needs.
-  Until then, any tool can produce `answers.json` (`{"#6": {"answer": "yes", "confidence": 0.9}}`).
+- **The default backend, `decisions`,** is Gemini Decision 1 through OpenRouter's Decisions API
+  (`POST /api/alpha/decisions`, an alpha endpoint), its format read from `@openrouter/sdk` 1.5.100:
+  one `noul` question per unit with true/false criteria, answered with the probability of yes. The
+  answer is yes from 0.5; score sweeps other cuts. A refusal is left out (unanswered). Cost, tokens
+  and time per request go to `answers.meta.json`. Google's own endpoint (`--backend gemini`) is not
+  written: its docs couldn't be read here, and OpenRouter makes it unneeded.
 - **`--backend openrouter`** runs any chat model on OpenRouter, asked for all the answers as one
   JSON object (temperature 0). That tests whether an LLM beats the regex at this call. It is not
   the Decisions API: a generative model costs output tokens and its self-reported confidence is

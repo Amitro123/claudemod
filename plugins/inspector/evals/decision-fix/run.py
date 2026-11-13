@@ -3,7 +3,7 @@
 collector's regex (evidence.judge) and the hand labels of test_golden_history.py.
 
     python run.py build [--diff N] [--chunk K] [--out DIR]    # dataset + the requests, no network
-    python run.py call  --requests DIR/requests.json --out DIR/answers.json [--backend openrouter --model ID]
+    python run.py call  --requests DIR/requests.json --out DIR/answers.json [--backend decisions|openrouter --model ID]
     python run.py score --dataset DIR/dataset.json --answers DIR/answers.json [--threshold T]
 
 build: runs the collector on this repository up to #72 (PR72 in the golden test), writes
@@ -208,8 +208,11 @@ def main(argv=None) -> int:
     c = sub.add_parser("call")
     c.add_argument("--requests", required=True)
     c.add_argument("--out", required=True)
-    c.add_argument("--backend", choices=["gemini", "openrouter"], default="gemini")
-    c.add_argument("--model", help="the OpenRouter model id (required with --backend openrouter)")
+    c.add_argument("--backend", choices=["decisions", "openrouter", "gemini"], default="decisions",
+                   help="decisions: Gemini Decision 1 through OpenRouter (default); openrouter: a chat model; "
+                        "gemini: Google's API directly (not written)")
+    c.add_argument("--model", help="the OpenRouter model id: required with openrouter; with decisions, "
+                                    "default google/gemini-decision-1")
     s = sub.add_parser("score")
     s.add_argument("--dataset", required=True)
     s.add_argument("--answers", required=True)
@@ -235,7 +238,10 @@ def main(argv=None) -> int:
         answers: dict = {}
         meta: list[dict] = []
         for r in requests:
-            if a.backend == "openrouter":
+            if a.backend == "decisions":
+                got, m = client.openrouter_decisions(r["input"], r["questions"], a.model or client.DECISION_MODEL)
+                meta.append(m)
+            elif a.backend == "openrouter":
                 got, m = client.openrouter_decide(r["input"], r["questions"], a.model)
                 meta.append(m)
             else:
@@ -246,8 +252,11 @@ def main(argv=None) -> int:
         print(f"{len(answers)} of {asked} questions answered, written to {a.out}")
         if meta:
             Path(a.out).with_suffix(".meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-            print(f"{sum(m['seconds'] for m in meta):.1f}s over {len(meta)} request(s); usage per request in "
-                  f"{Path(a.out).with_suffix('.meta.json')}")
+            cost = sum((m.get("usage") or {}).get("cost") or 0 for m in meta)
+            refused = sum(m.get("refusals", 0) for m in meta)
+            print(f"{sum(m['seconds'] for m in meta):.1f}s over {len(meta)} request(s)"
+                  + (f", ${cost:.4f}" if cost else "") + (f", {refused} refused" if refused else "")
+                  + f"; usage per request in {Path(a.out).with_suffix('.meta.json')}")
         return 0
     dataset = json.loads(Path(a.dataset).read_text(encoding="utf-8"))
     answers = json.loads(Path(a.answers).read_text(encoding="utf-8"))
