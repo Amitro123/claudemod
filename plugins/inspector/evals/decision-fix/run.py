@@ -3,7 +3,7 @@
 collector's regex (evidence.judge) and the hand labels of test_golden_history.py.
 
     python run.py build [--diff N] [--chunk K] [--out DIR]    # dataset + the requests, no network
-    python run.py call  --requests DIR/requests.json --out DIR/answers.json   # needs client.py filled in
+    python run.py call  --requests DIR/requests.json --out DIR/answers.json [--backend openrouter --model ID]
     python run.py score --dataset DIR/dataset.json --answers DIR/answers.json [--threshold T]
 
 build: runs the collector on this repository up to #72 (PR72 in the golden test), writes
@@ -208,6 +208,8 @@ def main(argv=None) -> int:
     c = sub.add_parser("call")
     c.add_argument("--requests", required=True)
     c.add_argument("--out", required=True)
+    c.add_argument("--backend", choices=["gemini", "openrouter"], default="gemini")
+    c.add_argument("--model", help="the OpenRouter model id (required with --backend openrouter)")
     s = sub.add_parser("score")
     s.add_argument("--dataset", required=True)
     s.add_argument("--answers", required=True)
@@ -225,13 +227,27 @@ def main(argv=None) -> int:
               f"{chars} characters of shared input (about {chars // 4} tokens). Written to {a.out}/")
         return 0
     if a.cmd == "call":
+        sys.path.insert(0, str(HERE))
         import client
+        if a.backend == "openrouter" and not a.model:
+            ap.error("--backend openrouter needs --model")
         requests = json.loads(Path(a.requests).read_text(encoding="utf-8"))
         answers: dict = {}
+        meta: list[dict] = []
         for r in requests:
-            answers.update(client.decide(r["input"], r["questions"]))
+            if a.backend == "openrouter":
+                got, m = client.openrouter_decide(r["input"], r["questions"], a.model)
+                meta.append(m)
+            else:
+                got = client.decide(r["input"], r["questions"])
+            answers.update(got)
         Path(a.out).write_text(json.dumps(answers, indent=2) + "\n", encoding="utf-8")
-        print(f"{len(answers)} answers written to {a.out}")
+        asked = sum(len(r["questions"]) for r in requests)
+        print(f"{len(answers)} of {asked} questions answered, written to {a.out}")
+        if meta:
+            Path(a.out).with_suffix(".meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+            print(f"{sum(m['seconds'] for m in meta):.1f}s over {len(meta)} request(s); usage per request in "
+                  f"{Path(a.out).with_suffix('.meta.json')}")
         return 0
     dataset = json.loads(Path(a.dataset).read_text(encoding="utf-8"))
     answers = json.loads(Path(a.answers).read_text(encoding="utf-8"))

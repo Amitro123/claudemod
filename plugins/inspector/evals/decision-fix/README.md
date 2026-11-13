@@ -9,7 +9,9 @@ repository's history up to #72, against the hand labels in `tests/golden_labels.
 git fetch --unshallow                       # only in a shallow clone: the labels need history up to #72
 python run.py build                         # out/dataset.json, out/requests.json (no network)
 python run.py build --diff 30 --chunk 25    # with 30 changed code lines per unit, in 4 requests
-GEMINI_API_KEY=... python run.py call --requests out/requests.json --out out/answers.json
+GEMINI_API_KEY=... python run.py call --requests out/requests.json --out out/answers.json        # once client.decide is written
+OPENROUTER_API_KEY=... python run.py call --requests out/requests.json --out out/answers.json \
+    --backend openrouter --model <openrouter model id>
 python run.py score --dataset out/dataset.json --answers out/answers.json
 ```
 
@@ -21,6 +23,11 @@ python run.py score --dataset out/dataset.json --answers out/answers.json
   built, and a guessed one would fail in ways that look like model errors. Fill in `decide()` from
   the docs (aistudio.google.com/docs/decisions); its docstring has the contract run.py needs.
   Until then, any tool can produce `answers.json` (`{"#6": {"answer": "yes", "confidence": 0.9}}`).
+- **`--backend openrouter`** runs any chat model on OpenRouter, asked for all the answers as one
+  JSON object (temperature 0). That tests whether an LLM beats the regex at this call. It is not
+  the Decisions API: a generative model costs output tokens and its self-reported confidence is
+  poorly calibrated. Time and token usage per request go to `answers.meta.json`. A question with
+  no readable answer is left out and scored as unanswered, never as a no.
 - **What score prints:** precision, recall and accuracy for the regex and the model, every unit
   where they differ from each other or from the label, the fix share over all 76 units, whether
   the two bump-only fixes (#18, #25, which the regex misses by design) were found, and with

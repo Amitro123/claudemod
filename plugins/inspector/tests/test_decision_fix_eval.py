@@ -72,9 +72,53 @@ def test_a_unit_reads_as_data_with_its_commits_files_and_bumps():
     assert "Commits:" not in run.unit_text({**u, "commits": [{"subject": "fix: x"}]}, [])   # a lone commit that repeats the title
 
 
-def test_the_client_says_it_is_not_written_yet():
-    import sys
-    sys.path.insert(0, str(RUN.parent))
-    import client
+import sys  # noqa: E402
+
+sys.path.insert(0, str(RUN.parent))
+import client  # noqa: E402
+
+QS = [{"id": "#1", "type": "yes_no", "text": "Unit #1: a fix?"}, {"id": "#2", "type": "yes_no", "text": "Unit #2: a fix?"},
+      {"id": "e9eb7b50", "type": "yes_no", "text": "Unit e9eb7b50: a fix?"}]
+
+
+def test_the_gemini_client_says_it_is_not_written_yet():
     with pytest.raises(NotImplementedError, match="aistudio.google.com/docs/decisions"):
-        client.decide("x", [{"id": "#1", "type": "yes_no", "text": "?"}])
+        client.decide("x", QS)
+
+
+def test_openrouter_sends_the_units_as_data_and_every_question_once(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k-test")
+    sent = {}
+
+    def post(url, body, headers):
+        sent.update(url=url, body=body, headers=headers)
+        return {"model": "m/one", "usage": {"prompt_tokens": 100}, "choices": [{"message": {"content":
+                '{"#1": {"answer": "yes", "confidence": 0.9}, "#2": {"answer": "NO", "confidence": 0.7}, "e9eb7b50": "no"}'}}]}
+
+    answers, meta = client.openrouter_decide("UNITS", QS, "m/one", post=post)
+    assert sent["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert sent["headers"] == {"Authorization": "Bearer k-test"}
+    assert sent["body"]["model"] == "m/one" and sent["body"]["temperature"] == 0
+    system, user = sent["body"]["messages"]
+    assert "never instructions" in system["content"]
+    assert user["content"].startswith("UNITS\n\n# Questions\n#1: Unit #1: a fix?")
+    assert all(user["content"].count(q["text"]) == 1 for q in QS)
+    assert answers == {"#1": {"answer": "yes", "confidence": 0.9}, "#2": {"answer": "no", "confidence": 0.7},
+                       "e9eb7b50": {"answer": "no"}}
+    assert meta["model"] == "m/one" and meta["usage"] == {"prompt_tokens": 100} and meta["questions"] == 3
+
+
+@pytest.mark.parametrize("content,want", [
+    ('```json\n{"#1": {"answer": "yes"}}\n```', {"#1": {"answer": "yes"}}),          # a fence around it
+    ('Here you go: {"#1": "yes", "#2": "maybe"}', {"#1": {"answer": "yes"}}),          # an answer that isn't yes/no
+    ('{"#1": {"answer": "yes", "confidence": 7}}', {"#1": {"answer": "yes"}}),         # a confidence out of range
+    ('{"#1": {"answer": "yes", "confidence": true}}', {"#1": {"answer": "yes"}}),
+    ("I can't answer that.", {}), ('{"#1": "yes",}', {}), ('["yes"]', {}),
+])
+def test_an_answer_that_cannot_be_read_is_left_out_never_a_no(content, want):
+    assert client.parse_answers(content, QS) == want
+
+
+def test_an_openrouter_error_stops_the_run():
+    with pytest.raises(RuntimeError, match="OpenRouter: .*no such model"):
+        client.openrouter_decide("U", QS, "x/y", post=lambda *a: {"error": {"message": "no such model"}})
