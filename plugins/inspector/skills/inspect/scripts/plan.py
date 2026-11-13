@@ -8,8 +8,9 @@
 `<run>/plan/`: `plan.md` (what the main conversation does, phase by phase), one prompt file per agent
 and `expect.json` (the agents and output files each phase must leave; check_run.py reads it).
 Up to 6 cases: one `investigator`. From 7: a brief-writer, case readers of up to 3 cases each
-(`--per-case`: one per case, and from 3 cases) and three sweepers. A phase starts at most 4 agents at
-once; a larger one is split into waves, each started when the one before has left its files.
+(`--per-case`: one per case, and from 3 cases) and three sweepers. At most 4 agents run at
+once; a larger phase is split into waves. A later wave's agents start one by one, each as soon as an agent before it has
+left its files (a slot is free), so the slowest agent of a wave does not hold the next wave back.
 `--status` writes nothing: per phase and wave it names the outputs that are missing, invalid or still
 a reader's stub card, and prints the dispatch lines of only the agents to start again (exit 0 when
 nothing is left, 1 when something is).
@@ -239,7 +240,10 @@ def phases_collect(c: Ctx) -> list[dict]:
         return [phase("investigate", [("inspector:investigator", "investigator.prompt.md", ["leads.json"])])]
     readers = [("inspector:case-reader", f"reader-{k}.prompt.md", [f"cards/{i}.json" for i in g])
                for k, g in enumerate(c.groups, 1)]
-    sweeps = [("inspector:sweeper", f"sweeper-{k}.prompt.md", [f"sweep-{k}.json"]) for k in range(1, len(SWEEPERS) + 1)]
+    # Longest first (measured 2026-11-13: OUTSIDE-IN 2m29s, code 2m09s, docs 1m10s): started as slots free up,
+    # the long ones should take the first free slots.
+    order = [k for k in (3, 1, 2) if k <= len(SWEEPERS)] + [k for k in range(4, len(SWEEPERS) + 1)]
+    sweeps = [("inspector:sweeper", f"sweeper-{k}.prompt.md", [f"sweep-{k}.json"]) for k in order]
     return [phase("brief", [("general-purpose", "brief-writer.prompt.md", ["brief.md"])])] + waves("investigate", readers + sweeps)
 
 
@@ -289,8 +293,9 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
           "Do not start a general worker in place of a plugin agent type. Each agent writes its own file; never retype its output.",
           "Start each agent with the model named on its line, passed explicitly: a host may ignore the agent file's own "
           "`model` and run the agent on your model instead.",
-          f"Start all agents of a phase in ONE message (at most {WAVE}; a larger phase comes in waves: start a wave when the files "
-          "of the one before exist). Each dispatch is `Read <prompt file> and follow it`.",
+          f"At most {WAVE} agents run at once. Start the agents of a phase, or of a first wave, in ONE message. A later wave's "
+          "agents start one at a time, in the order listed, each as soon as an agent before it has written its files: do not wait "
+          "for the whole wave before. Each dispatch is `Read <prompt file> and follow it`.",
           f"If an agent stopped or a file is missing, run {c.script('plan.py')} --run \"{c.run}\" --status: it prints the dispatch "
           "lines of only the agents to start again. A stub card (`\"status\": \"in-progress\"`) is partial work; the merge keeps it.", ""]
     if not c.parallel:
@@ -303,7 +308,9 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
     for i, p in enumerate(ph, 1):
         ag = ", ".join(f"{k} x {v}" for k, v in p["agents"].items())
         wave = f", wave {p['wave']} of {p['waves']}" if "wave" in p else ""
-        L += [f"## Phase {i}: {p['name']}{wave} ({p['min_agents']} agent{'s' if p['min_agents'] != 1 else ''}: {ag})", "", "Start these agents in ONE message:"]
+        start = ("Start each of these, in this order, as soon as an agent before it has written its files "
+                 f"(at most {WAVE} running):" if p.get("wave", 1) > 1 else "Start these agents in ONE message:")
+        L += [f"## Phase {i}: {p['name']}{wave} ({p['min_agents']} agent{'s' if p['min_agents'] != 1 else ''}: {ag})", "", start]
         for d in p["dispatch"]:
             mode = f" (mode: {SWEEPERS[int(d['prompt'][8:-10]) - 1][0]})" if d["prompt"].startswith("sweeper-") else ""
             L.append(f"- {d['agent']} (model: {d['model']}): `{c.dispatch(d['prompt'])}`{mode}")

@@ -65,7 +65,8 @@ def test_seven_or_more_cases_get_readers_of_three_cases_sweepers_and_a_brief_wri
     assert sum(p["agents"].get("inspector:case-reader", 0) for p in inv) == readers
     assert sum(p["agents"].get("inspector:sweeper", 0) for p in inv) == 3
     outputs = [o for p in inv for o in p["outputs"]]
-    assert outputs == [f"cards/{i}.json" for i in range(1, n + 1)] + ["sweep-1.json", "sweep-2.json", "sweep-3.json"]
+    # the sweepers longest first (OUTSIDE-IN, code, docs): a later wave's agents take slots as they free up
+    assert outputs == [f"cards/{i}.json" for i in range(1, n + 1)] + ["sweep-3.json", "sweep-1.json", "sweep-2.json"]
     first = inv[0]["dispatch"][0]
     assert first == {"agent": "inspector:case-reader", "model": "sonnet", "prompt": "reader-1.prompt.md",
                      "outputs": ["cards/1.json", "cards/2.json", "cards/3.json"]}
@@ -627,3 +628,16 @@ def test_a_changed_chunk_still_needs_its_verifier_again_and_an_obsolete_chunk_is
     code, out, _ = plan(run, "--status")
     assert code == 1 and "verdicts-1.json older than plan/chunk-1.json (the chunk was planned again)" in out, out
     assert "plan it again" not in out, out
+
+
+def test_a_later_wave_starts_agent_by_agent_as_slots_free_up(tmp_path) -> None:
+    """Measured 2026-11-13: the sweepers waited 1m29s for the slowest reader while three slots were free."""
+    run = make_run(tmp_path, 12)
+    assert plan(run)[0] == 0
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    w1, w2 = md.split("wave 1 of 2", 1)[1].split("wave 2 of 2", 1)
+    assert "Start these agents in ONE message:" in w1
+    assert "Start each of these, in this order, as soon as an agent before it has written its files (at most 4 running):" in w2
+    assert "do not wait for the whole wave before" in md
+    order = [l.split("sweeper-")[1][0] for l in w2.splitlines() if "sweeper-" in l and l.startswith("- ")]
+    assert order == ["3", "1", "2"]                   # OUTSIDE-IN, code, docs: longest first
