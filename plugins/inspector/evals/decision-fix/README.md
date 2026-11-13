@@ -55,6 +55,28 @@ python run.py score --dataset out/dataset.json --answers out/answers.json
 - For this call the model does not save time: the regex is instant. Where a decision model could
   save minutes is a judgement an agent makes today; that is a separate, unmeasured experiment.
 
+## Unseen history (2026-11-13, #73-#123, 47 units the regex was never tuned on)
+
+One request for all 123 units, Gemini Decision 1. Recall on the unseen split (20 fixes):
+
+| | precision | recall | time | cost |
+|---|---|---|---|---|
+| regex | 0.94 | 0.85 | ~0 s | none |
+| model, titles, cut 0.5 | 0.94 | 0.80 | 1.3 s | $0.0065 |
+| model, titles, cut 0.4 | 0.95 | 0.90 | | |
+| regex or model, titles, cut 0.5 | 0.90 | 0.90 | | |
+| regex or model, titles, cut 0.4 | 0.91 | 0.95 | | |
+| model, `--diff 30`, cut 0.5 | 1.00 | 0.70 | 4.5 s | $0.0130 |
+| regex or model, `--diff 30`, cut 0.5 | 0.95 | 0.90 | | |
+
+- The regex misses #82, #96, #101 here (no "fix" in their titles) and takes #85 ("fix evidence").
+  The model at 0.5 finds #82; at 0.4 also #96. Neither finds #101 (0.27).
+- The model and the regex miss different units, so together they find more: 19 of 20 at 0.4, at
+  the cost of one more false positive (#106, 0.48).
+- The cut of 0.4 was picked after seeing these answers. It needs a third set to confirm.
+- Code lines made it worse: the model reads "review fixes" PRs as not fixes once it sees their diffs
+  (#36, #38, #110, #115, #119 fall under 0.5). Titles only is the better input for this question.
+
 ## Read the result with this in mind
 
 - **These labels favour the regex.** It was tuned on exactly these 36 units, and scores 1.00
