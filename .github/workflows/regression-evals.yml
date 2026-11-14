@@ -1,0 +1,134 @@
+name: regression evals (paid)
+
+# Manual-only: these cases call the model API and cost money.
+# Requires the ANTHROPIC_API_KEY secret (or your provider's auth env vars).
+# See docs/EVALS.md for setup instructions.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: 'Runs per case (default 3)'
+        required: false
+        default: '3'
+      plugin:
+        description: 'Plugin to test: inspector, factory, or both'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - inspector
+          - factory
+      max_cost:
+        description: 'Max cost USD per case'
+        required: false
+        default: '8'
+
+jobs:
+  inspector-regression:
+    if: inputs.plugin == 'inspector' || inputs.plugin == 'both'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm i -g @anthropic-ai/claude-code@2.1.312
+      - run: apt-get update && apt-get install -y bubblewrap socat
+        if: runner.os == 'Linux'
+
+      - name: Run key inspector case (backtest-01)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd plugins/inspector
+          mkdir -p evals/results
+          claude plugin eval . \
+            --case 'backtest-01*' \
+            --runs "${{ inputs.runs }}" \
+            -j 4 \
+            --max-cost-usd "${{ inputs.max_cost }}" \
+            --ablation none \
+            --scaffold --no-publish --trust-plugin \
+            --json evals/results/out-backtest-01.json \
+            --allow-tools Bash Write Agent \
+            > evals/results/log-backtest-01.txt 2>&1 || true
+          echo "--- log ---"
+          cat evals/results/log-backtest-01.txt || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspector-regression-results
+          path: plugins/inspector/evals/results/
+
+  factory-regression:
+    if: inputs.plugin == 'factory' || inputs.plugin == 'both'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm i -g @anthropic-ai/claude-code@2.1.312
+      - run: apt-get update && apt-get install -y bubblewrap socat
+        if: runner.os == 'Linux'
+
+      - name: Run key factory cases (appr-04, plan-01, spec-01)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cd plugins/factory
+          mkdir -p evals/results
+          for case_id in appr-04 plan-01 spec-01; do
+            echo "=== $case_id"
+            claude plugin eval . \
+              --case "${case_id}*" \
+              --runs "${{ inputs.runs }}" \
+              --max-cost-usd "${{ inputs.max_cost }}" \
+              --ablation with-without \
+              --scaffold --no-publish --trust-plugin \
+              --threshold 0.7 \
+              --json "evals/results/out-${case_id}.json" \
+              --allow-tools Bash Edit Write \
+              > "evals/results/log-${case_id}.txt" 2>&1 || true
+            echo "exit $?  (log: evals/results/log-${case_id}.txt)"
+          done
+
+      - name: Print summary
+        if: always()
+        run: |
+          cd plugins/factory
+          python3 - evals/results appr-04 plan-01 spec-01 <<'PYEOF'
+          import json, os, sys
+          out, ids = sys.argv[1], sys.argv[2:]
+          print("\n%-52s %6s %6s %6s %6s" % ("case", "WITH", "W/OUT", "delta", "pass"))
+          for i in ids:
+              p = os.path.join(out, "out-%s.json" % i)
+              if not os.path.exists(p):
+                  print("%-52s no-json" % i); continue
+              try:
+                  d = json.load(open(p))
+              except Exception:
+                  print("%-52s bad-json" % i); continue
+              for c in d.get("cases", []):
+                  a = c.get("aggregates", {})
+                  f = lambda k: ("%.2f" % a[k]) if isinstance(a.get(k), (int, float)) else "-"
+                  print("%-52s %6s %6s %6s %6s" % (c.get("name", i), f("score"), f("scoreWithout"), f("delta"), f("passRate")))
+          PYEOF
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: factory-regression-results
+          path: plugins/factory/evals/results/
