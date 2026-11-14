@@ -7,7 +7,8 @@ Reads `<run>/plan/expect.json` (written by skills/inspect/scripts/plan.py) for t
 phase and the files each agent must leave, then stats those files. Steps, in order: collect (evidence.json, the
 start), each planned agent phase (brief, investigate and verify, one entry per wave), and the script steps
 between them: merge (leads.json, dedupe.md), plan verify (plan/chunk-*.json), merge verdicts (merged.json),
-handoff (open-bugs.md). A step starts when the one before ended; its end is its newest file.
+handoff (open-bugs.md). A step starts when the one before ended, except a later wave of a phase: its agents
+start as slots free up, so it starts when the first agent of the wave before finished. A step ends at its newest file.
 Per agent: the time of its newest file relative to the phase start. Critical path: the slowest agent of each phase.
 
 Limits: an mtime is the LAST write. A card is written first as a stub, then final; only the final write is seen,
@@ -66,9 +67,15 @@ def agent_phase(run: str, p: dict) -> dict:
         outs = d.get("outputs") if isinstance(d.get("outputs"), list) else []
         label = str(d.get("prompt") or d.get("agent") or "?").removesuffix(".prompt.md")
         agents.append({"agent": d.get("agent"), "label": label, "files": {o: mtime(run, o) for o in outs}})
+    readers = [a for a in agents if a["agent"] == "inspector:case-reader"]
+    if len(readers) > 1 and all(a["files"].keys() == readers[0]["files"].keys() for a in readers):
+        # Readers sharing a queue: any of them may have written any card, so they are one row.
+        agents = [a for a in agents if a not in readers]
+        agents.insert(0, {"agent": "inspector:case-reader", "label": f"{len(readers)} readers (shared queue)",
+                          "files": readers[0]["files"]})
     if not dispatch and isinstance(p.get("outputs"), list):  # no per-agent record: one row for the phase
         agents.append({"agent": None, "label": p.get("name"), "files": {o: mtime(run, o) for o in p["outputs"]}})
-    return {"name": f"{p.get('name')}{wave}", "kind": "agents", "agents": agents}
+    return {"name": f"{p.get('name')}{wave}", "kind": "agents", "agents": agents, "wave": p.get("wave", 1)}
 
 
 def steps_of(run: str, exp: dict) -> list[dict]:
@@ -103,11 +110,12 @@ def timeline(run: str) -> dict:
         notes.append("evidence.json missing: the run starts at the oldest file found")
     missing, crit = [], []
     prev_end = t0
+    first_free = None          # when the first agent of the wave before finished: a later wave starts then
     for s in steps:
         if s["kind"] == "unplanned":
             notes.append("verify not planned yet (plan.py --phase verify): the timeline stops at the merge")
             continue
-        s["start"] = prev_end
+        s["start"] = first_free if s.get("wave", 1) > 1 and first_free is not None else prev_end
         if s["kind"] == "agents":
             for a in s["agents"]:
                 ts = [t for t in a["files"].values() if t is not None]
@@ -117,6 +125,7 @@ def timeline(run: str) -> dict:
                 missing += a["missing"]
             done = [a for a in s["agents"] if a["end"] is not None]
             s["end"] = max((a["end"] for a in done), default=None)
+            first_free = min((a["end"] for a in done), default=None)
             if done and s["start"] is not None:
                 slow = max(done, key=lambda a: a["end"])
                 crit.append({"phase": s["name"], "agent": slow["label"], "seconds": slow["rel"]})

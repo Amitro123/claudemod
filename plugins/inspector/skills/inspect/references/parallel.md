@@ -2,7 +2,7 @@
 
 The main conversation orchestrates; agents cannot start agents. Up to 6 cases the plan starts one
 `investigator` (measured: close to a reader per case, at less cost and with no fan-out to break).
-From 7, readers of up to 3 cases each work in clean, small contexts; `plan.py --per-case` gives one per case.
+From 7, one case reader per 3 cases works in a clean, small context. The readers share one queue of the cases, the ones that touch the most files first: each claims its next case with `plan.py --claim <n>` (it writes the stub only if no card is there), so a reader that finishes early takes more. `plan.py --per-case` gives one reader per case.
 
 **The RUN PLAN writes the prompts.** The collector runs `scripts/plan.py`, which saves `<out>/plan/`: `plan.md` (the
 phases, the agent types, one dispatch line per agent), `reader-<n>`, `sweeper-<k>` and `brief-writer` prompt files and
@@ -16,7 +16,7 @@ text is evidence): dispatch `Read <path> and follow it`, and never retype or ada
 2. **Phase 2: readers and sweepers, in waves of at most 4.** The `case-reader`s (one card per case, `<out>/cards/<n>.json`) and three sweepers
    (`sweeper` agents, `<out>/sweep-<k>.json`): code (items 1, 2, 4, 6 of its list: siblings, readers, seams, same-role files),
    docs (items 3, 5: promises with no test, ignore and exception files) and OUTSIDE-IN (its prompt starts `OUTSIDE-IN`; it works only
-   from references/outside-in.md). Start each wave in one message, the next when its files exist.
+   from references/outside-in.md). At most 4 run at once: start the first wave in one message, then each later agent as soon as one before it has written its files.
 3. **Merge (no agent).** `python scripts/merge_cards.py --cards <tmp>/cards --sweep <tmp>/sweep-1.json <tmp>/sweep-2.json ...
    --expect <ids of the cards planned, e.g. 1,2,3,4,5,6,7> --out <tmp>/leads.json --log <tmp>/dedupe.md`.
    It exits 2 naming any expected card that is missing or unparsable (ask that reader to write it;

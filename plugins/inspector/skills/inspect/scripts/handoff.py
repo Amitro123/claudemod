@@ -215,10 +215,15 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
         kind = kind if kind in ("behavioral", "text-pin", "manual") else "unknown"
         test = f"{cell(s.get('test'))} [test: {kind}]" + (" [weak: pins text only]" if kind == "text-pin" else "")
         reach = reach_of(s)
+        flow = 0 if str(s.get("category") or "").strip().lower() == "broken-flow" else 1
         rows.append((RANK.get(lvl, 0), 0 if prod == "yes" else 1, REACH_ORDER.get(reach.lower().split(":")[0].strip(), 2),
-                     VERDICTS.index(verdict), verdict, f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
+                     VERDICTS.index(verdict), verdict, flow, f"| {shown} | `{where}` | {cell(s.get('what'))}{note} | {impact_cell} | "
                                          f"{cell(s.get('breaks'))} | {change} | {test} | {cell(s.get('case'))} | {reach} |"))
-    rows.sort(key=lambda r: (r[1], -r[0], r[2], r[3]))  # seen in production first, then level, reach, verdict
+    # Seen in production first, then the verifier's verdict (REAL before REAL-LOW), then a broken flow before
+    # hardening and the rest, then level, then reach. Measured 2026-11-14 on 58 verified leads: the reader's
+    # `broken-flow` found 6 of the 10 REAL at precision 0.55; a decision model asked "REAL or REAL-LOW?" did worse
+    # (docs/2026-11-14-severity-by-decision-model.md), so the order uses the labels the leads already carry.
+    rows.sort(key=lambda r: (r[1], r[3], r[5], -r[0], r[2]))
     seen.update(r[4] for r in rows)
     head = []
     if any(v != "unverified" for v in seen):

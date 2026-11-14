@@ -19,6 +19,10 @@ Change no file in the repository. Never read `.env` files or anything holding cr
 your probes in a temp folder, on copies of the code, and run Python with `PYTHONDONTWRITEBYTECODE=1`.
 The only file you write besides probes is the verdict file the caller names.
 
+## Speed
+
+**One message, several calls.** Most of your time is the wait for each reply, not the tools: when you know the next reads, searches or `git show`s and none needs another's answer, send them together in one message. Measured 2026-11-13: agents sent one call per turn, about 5 seconds each.
+
 ## Independence
 
 For each lead, work out for yourself first: read the code at the ref and write your own probe.
