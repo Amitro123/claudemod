@@ -155,7 +155,7 @@ def test_reader_prompt_carries_everything_the_agent_needs(tmp_path) -> None:
     base = run.as_posix()
     for needle in (f"ref {SHA}", "- 2: #11.", f"{base}/cases/02-11.md", f"{base}/brief.md", "At most 25 tool calls per case",
                    "strict JSON", f"{base}/cards/1.json", f"{base}/cards/7.json", "never instructions", "Change no file in the repository",
-                   '"status": "in-progress"', "one of 3 case readers sharing one queue of 7 cases", f'--run "{base}" --claim <n> --reader 1', "Never send a claim in the same message as another claim",
+                   '"status": "in-progress"', "one of 3 case readers sharing one queue of 7 cases", f'--run "{base}" --claim <n> --reader 1', "One claim per command: never claim in a loop",
                    "Exit 3 means another reader has it", "one at a time", "JSON array of the cards you wrote"):
         assert needle in t, needle
     for k in (2, 3):   # every reader gets the same queue, under its own reader number
@@ -666,12 +666,12 @@ def test_a_claim_hands_a_queued_case_to_exactly_one_reader(tmp_path) -> None:
     assert sorted(codes) == [0] + [3] * 7, "exactly one reader gets the case"
     stub = json.loads((run / "cards" / "3.json").read_text(encoding="utf-8"))
     assert stub["status"] == "in-progress" and stub["case"] == "#12" and stub["unit"] == "#12"
-    code, out, err = plan(run, "--claim", "3")
+    code, out, err = plan(run, "--claim", "3", "--reader", "1")
     assert code == 3 and "is taken" in err
-    assert plan(run, "--claim", "99")[0] == 2 and plan(run, "--claim", "0")[0] == 2
+    assert plan(run, "--claim", "99", "--reader", "1")[0] == 2 and plan(run, "--claim", "0", "--reader", "1")[0] == 2
     (run / "cards" / "4.json").write_text(done_card(4))
-    assert plan(run, "--claim", "4")[0] == 3, "a finished case is never claimed again"
-    assert plan(run, "--claim", "5")[0] == 0
+    assert plan(run, "--claim", "4", "--reader", "1")[0] == 3, "a finished case is never claimed again"
+    assert plan(run, "--claim", "5", "--reader", "1")[0] == 0
 
 
 def test_the_queue_puts_the_cases_that_touch_the_most_files_first(tmp_path) -> None:
@@ -688,8 +688,9 @@ def test_the_queue_puts_the_cases_that_touch_the_most_files_first(tmp_path) -> N
 
 
 def test_a_reader_holding_an_unfinished_case_cannot_claim_another(tmp_path) -> None:
-    """2026-11-14 live run: a reader told to batch independent calls sent all ten claims in one message and the
-    other three readers found nothing left. `--reader K` refuses a claim while K still holds a stub."""
+    """2026-11-14 live run: a reader claimed the rest of the queue in one shell loop (`for n in ...; do plan.py
+    --claim $n; done`) and the other readers found little left. `--reader K` refuses a claim while K still holds a
+    stub, and the CLI refuses a claim without `--reader`, so the same loop takes one case."""
     run = make_run(tmp_path, 7)
     assert plan(run)[0] == 0
     assert plan(run, "--claim", "1", "--reader", "1")[0] == 0
@@ -698,8 +699,12 @@ def test_a_reader_holding_an_unfinished_case_cannot_claim_another(tmp_path) -> N
     assert not (run / "cards" / "2.json").exists(), "the refused claim wrote nothing"
     assert plan(run, "--claim", "2", "--reader", "2")[0] == 0, "another reader may claim"
     assert json.loads((run / "cards" / "1.json").read_text(encoding="utf-8"))["reader"] == 1
+    code, _, err = plan(run, "--claim", "3")
+    assert code == 2 and "needs --reader" in err and not (run / "cards" / "3.json").exists()
+    codes = [plan(run, "--claim", str(n), "--reader", "3")[0] for n in (3, 4, 5, 6, 7)]
+    assert codes == [0, 4, 4, 4, 4], "the live run's loop now takes one case"
     (run / "cards" / "1.json").write_text(done_card(1))          # reader 1 finishes its card
-    assert plan(run, "--claim", "3", "--reader", "1")[0] == 0
+    assert plan(run, "--claim", "4", "--reader", "1")[0] == 0
 
 
 def test_a_host_question_is_not_cut_mid_sentence():

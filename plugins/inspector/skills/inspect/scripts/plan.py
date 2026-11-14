@@ -162,8 +162,9 @@ def queue_reader_prompt(c: Ctx, k: int) -> str:
     lines += [f"You are reader {k}. Take cases from the queue in order, one at a time. Before you open a case's dossier, claim it: run `{claim}`. "
               "Exit 0 means the case is yours: the command wrote its stub card (`\"status\": \"in-progress\"`). Exit 3 means another reader has it, or it is "
               "done: go to the next case. Exit 4 means you still hold an unfinished case: finish its card first. Stop when no case is left to claim.",
-              "Claim one case, finish its card, then claim the next. Never send a claim in the same message as another claim: "
-              "claims are not independent calls, and a reader that takes several cases at once leaves the other readers idle.",
+              "Claim one case, finish its card, then claim the next. One claim per command: never claim in a loop or in the same "
+              "message as another claim. Claims are not independent calls, and a reader that takes several cases at once "
+              "leaves the other readers idle.",
               "If your dispatch line hands you a card file (`first finish cards/<n>.json`), that case is yours already: do not "
               "claim it. Finish it first: a stub keeps its leads when you confirm them; a file that is not this case's card "
               "is replaced.",
@@ -198,7 +199,7 @@ def held_by(run: str, reader: int) -> list[str]:
 def claim(run: str, n: int, reader: int | None = None) -> tuple[int, str]:
     """Create cards/<n>.json as a stub, only if no file is there (O_EXCL): the one atomic step that hands a queued
     case to exactly one reader. With `reader`, a reader that still holds an unfinished stub is refused: measured
-    2026-11-14, a reader told to batch independent calls sent all ten claims at once and left three readers idle.
+    2026-11-14, a reader claimed the rest of the queue in one shell loop and left the other readers idle. The CLI requires it.
     0 claimed, 3 taken or done, 4 this reader holds an unfinished case, 2 not a case of this plan."""
     exp = load(os.path.join(run, "plan", "expect.json"))
     labels = exp.get("case_labels") if isinstance(exp, dict) else None
@@ -736,12 +737,16 @@ def main(argv=None) -> int:
     ap.add_argument("--case-file", help="where an investigator writes the case file (default <run>/case-file.md)")
     ap.add_argument("--drop", action="append", help="a case label to leave out, e.g. '#73' (repeatable)")
     ap.add_argument("--per-case", action="store_true", help="one case reader per case (from 3 cases) instead of the lean default")
-    ap.add_argument("--reader", type=int, metavar="K", help="with --claim: the claiming reader; refused while it holds an unfinished case")
+    ap.add_argument("--reader", type=int, metavar="K", help="required with --claim: the claiming reader; refused while it holds an unfinished case")
     ap.add_argument("--claim", type=int, metavar="N", help="a case reader's claim on queued case N: writes its stub card "
                     "only if none exists (exit 0 claimed, 3 taken)")
     ap.add_argument("--status", action="store_true", help="write nothing; say which planned outputs are missing and what to start again")
     a = ap.parse_args(argv)
     if a.claim is not None:
+        if a.reader is None:
+            # Without a reader number the hold check can't run, and a loop could take the whole queue again.
+            print("plan.py: --claim needs --reader K (the reader number in your prompt)", file=sys.stderr)
+            return 2
         try:
             code, text = claim(a.run, a.claim, a.reader)
         except (Invalid, OSError) as e:
