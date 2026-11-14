@@ -130,3 +130,32 @@ def test_missing_file_errors(tmp_path):
     )
     assert result.returncode == 1
     assert "not found" in result.stderr
+
+
+def _run(path: Path, *extra: str):
+    import subprocess, sys as _sys
+    return subprocess.run([_sys.executable, str(SCRIPTS_DIR / "compose_mistakes.py"), str(path), "--max-lines", "5", *extra],
+                          capture_output=True, text=True)
+
+
+def test_an_archive_in_a_missing_folder_is_created_and_no_entry_is_lost(tmp_path):
+    """2026-11-13 inspection (REAL, reproduced): --archive nodir/a.md rewrote MISTAKES.md first, then failed to
+    write the archive, so the moved entries were in neither file."""
+    entries = "".join(_entry(f"2026-01-0{i} 10:00", f"e{i}", "routed") for i in range(1, 6))
+    path = _write(tmp_path, entries)
+    result = _run(path, "--archive", str(tmp_path / "nodir" / "a.md"))
+    assert result.returncode == 0, result.stderr
+    kept = path.read_text(encoding="utf-8") + (tmp_path / "nodir" / "a.md").read_text(encoding="utf-8")
+    assert all(f"] e{i}\n" in kept for i in range(1, 6))
+
+
+def test_an_archive_that_cannot_be_written_leaves_the_active_file_unchanged(tmp_path):
+    entries = "".join(_entry(f"2026-01-0{i} 10:00", f"e{i}", "routed") for i in range(1, 6))
+    path = _write(tmp_path, entries)
+    before = path.read_text(encoding="utf-8")
+    blocker = tmp_path / "afile"
+    blocker.write_text("not a folder", encoding="utf-8")          # its 'child' can't be created
+    result = _run(path, "--archive", str(blocker / "a.md"))
+    assert result.returncode == 1 and "unchanged" in result.stderr
+    assert path.read_text(encoding="utf-8") == before
+    assert not list(tmp_path.glob(".*.tmp"))

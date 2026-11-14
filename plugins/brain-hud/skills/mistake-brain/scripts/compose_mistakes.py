@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -69,6 +70,15 @@ def parse_date(d: str) -> datetime:
         return datetime.strptime(d, "%Y-%m-%d %H:%M")
     except ValueError:
         return datetime.min
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write through a temporary file in the same folder and rename it over the target: a crash or a full
+    disk leaves the old file whole. The archive's folder is created if it isn't there."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def main() -> int:
@@ -134,8 +144,19 @@ def main() -> int:
     remaining_text = re.sub(rf"\n*(?:{GAP}\n*)+", "\n\n", remaining_text).rstrip("\n") + "\n"
     archive_text = re.sub(r"\n{3,}", "\n\n", archive_text).rstrip("\n") + "\n"
 
-    path.write_text(remaining_text, encoding="utf-8")
-    archive_path.write_text(archive_text, encoding="utf-8")
+    # The archive first: if it can't be written, the active file is untouched and nothing is lost.
+    # A failure after it leaves the moved entries in both files, never in neither.
+    try:
+        _write_atomic(archive_path, archive_text)
+    except OSError as e:
+        print(f"error: could not write the archive {archive_path}: {e}; {path} is unchanged", file=sys.stderr)
+        return 1
+    try:
+        _write_atomic(path, remaining_text)
+    except OSError as e:
+        print(f"error: could not rewrite {path}: {e}; the moved entries are in {archive_path} and still in {path}",
+              file=sys.stderr)
+        return 1
 
     print(f"Moved {len(to_move)} entr{'y' if len(to_move) == 1 else 'ies'} from {path} to {archive_path}")
     print(f"{path}: {line_count} -> {remaining_text.count(chr(10)) + 1} lines")

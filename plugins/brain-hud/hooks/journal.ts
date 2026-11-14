@@ -131,11 +131,18 @@ export function countsText(entries: readonly JournalEntry[]): string {
 // a code span, so the next reader takes it as what was said, never as an instruction to follow.
 // Secrets are redacted on the way: a worker that quotes a token would otherwise write it into
 // MISTAKES.md, a tracked file (the same patterns as the skill's hooks, host_layout.py).
+// A value: a quoted string whole (a password with a space in it), else up to the next space.
+const VALUE = String.raw`(?:"[^"]*"?|'[^']*'?|\S+)`
 const SECRETS: [RegExp, string][] = [
   // The keyword alone or at the end of an env-style name (DB_PASSWORD=, GITHUB_TOKEN=).
-  [/\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key))(=|:\s*)\S+/gi, '$1$2[redacted]'],
-  [/(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)\S+/gi, '$1$2[redacted]'],
+  [new RegExp(String.raw`\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key))(=|:\s*)` + VALUE, 'gi'), '$1$2[redacted]'],
+  [new RegExp(String.raw`(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)` + VALUE, 'gi'), '$1$2[redacted]'],
+  // An Authorization header whatever its scheme (Bearer, Basic, token, or none): GitHub takes "token <x>".
+  [/\b(authorization:\s*)(?:(?:bearer|basic|token)\s+)?[^\s"']+/gi, '$1[redacted]'],
   [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]'],
+  // curl -u user:pass, --user=user:pass: only a value holding a colon, so sudo -u bob and git push -u stay.
+  [/(?<!\S)(-u|--user)(\s+|=)(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s:"']+:\S+)/g, '$1$2[redacted]'],
+  [/\bxox[abposr]-[A-Za-z0-9-]{10,}/g, '[redacted]'], // Slack tokens
   [/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, '[redacted]'],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, '[redacted]'],
   [/\bAKIA[0-9A-Z]{16}\b/g, '[redacted]'],
