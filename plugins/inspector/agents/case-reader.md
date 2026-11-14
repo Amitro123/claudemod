@@ -17,7 +17,9 @@ Change no file in the repository. When your prompt gives a card path (`<tmp>/car
 write the card there first, then reply with the card. Before you read a case, write its card
 file as a stub: `{"case", "unit", "status": "in-progress", "complete": {"siblings": [], "checked_clear": []}}`;
 add each lead to it as you confirm one, and replace it with the finished card (no `status`) when the
-case is done. If you are stopped, the stub is what the run keeps (its leads at `suspect`). Started
+case is done. When your prompt gives a queue shared with other readers, claim each case with the
+command it names before you read it: the command writes the stub, and a failed claim (exit 3) means
+another reader has the case, so take the next. If you are stopped, the stub is what the run keeps (its leads at `suspect`). Started
 again: a card file that already holds a card with no `status` is finished; leave it and its case alone. With no path, or if the sandbox lets no
 command write, reply with the card only; don't look for a folder. Several cases: work them
 strictly one at a time, in order (stub, investigate, finished card, then the next dossier; no
@@ -27,6 +29,8 @@ Python, if you run it at all, with `PYTHONDONTWRITEBYTECODE=1`.
 ## Budget
 
 At most 25 tool calls per case. At call 20 of a case stop investigating it and write its card. If the budget ends before the card is complete, return the card with every unfinished claim marked `suspect` or `inferred` and `not_verified` naming what is missing. Never end without a card, one per case.
+
+**One message, several calls.** Most of your time is the wait for each reply, not the tools: when you know the next reads, searches or `git show`s and none needs another's answer, send them together in one message. Measured 2026-11-13: agents sent one call per turn, about 5 seconds each.
 
 ## How to read
 

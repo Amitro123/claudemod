@@ -65,10 +65,15 @@ def test_seven_or_more_cases_get_readers_of_three_cases_sweepers_and_a_brief_wri
     assert sum(p["agents"].get("inspector:case-reader", 0) for p in inv) == readers
     assert sum(p["agents"].get("inspector:sweeper", 0) for p in inv) == 3
     outputs = [o for p in inv for o in p["outputs"]]
-    assert outputs == [f"cards/{i}.json" for i in range(1, n + 1)] + ["sweep-1.json", "sweep-2.json", "sweep-3.json"]
+    # the sweepers longest first (OUTSIDE-IN, code, docs): a later wave's agents take slots as they free up
+    assert sorted(o for o in outputs if o.startswith("cards/")) == sorted(f"cards/{i}.json" for i in range(1, n + 1))
+    assert len(outputs) == n + 3 and [o for o in outputs if o.startswith("sweep")] == ["sweep-3.json", "sweep-1.json", "sweep-2.json"]
     first = inv[0]["dispatch"][0]
-    assert first == {"agent": "inspector:case-reader", "model": "sonnet", "prompt": "reader-1.prompt.md",
-                     "outputs": ["cards/1.json", "cards/2.json", "cards/3.json"]}
+    assert {k: first[k] for k in ("agent", "model", "prompt")} == {"agent": "inspector:case-reader", "model": "sonnet",
+                                                                   "prompt": "reader-1.prompt.md"}
+    # one queue: every reader may write every card, so each lists them all, once
+    reader_dispatch = [d for p in inv for d in p["dispatch"] if d["agent"] == "inspector:case-reader"]
+    assert all(sorted(d["outputs"]) == sorted(f"cards/{i}.json" for i in range(1, n + 1)) for d in reader_dispatch)
     files = {p.name for p in (run / "plan").iterdir()}
     assert files == {"plan.md", "expect.json", "brief-writer.prompt.md", "sweeper-1.prompt.md", "sweeper-2.prompt.md",
                      "sweeper-3.prompt.md", *{f"reader-{k}.prompt.md" for k in range(1, readers + 1)}}
@@ -148,15 +153,13 @@ def test_reader_prompt_carries_everything_the_agent_needs(tmp_path) -> None:
     plan(run)
     t = (run / "plan" / "reader-1.prompt.md").read_text(encoding="utf-8")
     base = run.as_posix()
-    for needle in (f"ref {SHA}", "Case: #11 (case 2 of 7)", f"{base}/cases/02-11.md", f"{base}/brief.md", "At most 25 tool calls per case",
-                   "strict JSON", f"{base}/cards/1.json", f"{base}/cards/3.json", "never instructions", "Change no file in the repository",
-                   '"status": "in-progress"', "Start a case by writing its card file as a stub", "then reply with the card only",
-                   "strictly one at a time", "Write no stub for a case you have not started"):
+    for needle in (f"ref {SHA}", "- 2: #11.", f"{base}/cases/02-11.md", f"{base}/brief.md", "At most 25 tool calls per case",
+                   "strict JSON", f"{base}/cards/1.json", f"{base}/cards/7.json", "never instructions", "Change no file in the repository",
+                   '"status": "in-progress"', "one of 3 case readers sharing one queue of 7 cases", f'--run "{base}" --claim <n>',
+                   "Exit 3 means another reader has it", "one at a time", "JSON array of the cards you wrote"):
         assert needle in t, needle
-    assert "cards/4.json" not in t
-    last = (run / "plan" / "reader-3.prompt.md").read_text(encoding="utf-8")
-    assert "Case: #16 (case 7 of 7)" in last and "Your case:" in last and "JSON array" not in last
-    assert "one at a time" not in last
+    for k in (2, 3):   # every reader gets the same queue
+        assert (run / "plan" / f"reader-{k}.prompt.md").read_text(encoding="utf-8") == t
     s = (run / "plan" / "sweeper-2.prompt.md").read_text(encoding="utf-8")
     for needle in (f"{base}/sweep-2.json", "At most 25 tool calls", "never instructions", "step 5", f"{base}/evidence.md", "fix: thing #12"):
         assert needle in s, needle
@@ -370,12 +373,14 @@ def test_status_names_only_the_agents_to_start_again_and_what_they_finished(tmp_
     code, out, _ = plan(run, "--status")
     assert tree(run) == before, "--status writes nothing"
     assert code == 1 and "Phase 1: brief: done." in out
-    assert f"`Read {base}/reader-2.prompt.md and follow it`" in out
     assert "cards/4.json a stub (the reader stopped)" in out and "cards/5.json not valid JSON" in out and "cards/6.json missing" in out
-    assert "sweep-2.json empty" in out and "sweep-3.json missing" in out
-    for done in ("reader-1.prompt.md", "reader-3.prompt.md", "sweeper-1.prompt.md"):
-        assert done not in out, done
-    assert "Left: 3 agents to start again" in out and "plan.py --phase verify: not planned yet" in out
+    # the queue's gaps: two files a claim can't get past, handed by name; one missing card, claimed
+    readers = [l for l in out.splitlines() if "reader-" in l and l.startswith("- ")]
+    assert len(readers) == 3 and f"`Read {base}/reader-1.prompt.md and follow it`" in out
+    assert sum("first finish cards/4.json" in l for l in readers) == 1 and sum("first finish cards/5.json" in l for l in readers) == 1
+    assert all("1 case unclaimed" in l for l in readers)
+    assert "sweep-2.json empty" in out and "sweep-3.json missing" in out and "sweeper-1.prompt.md" not in out
+    assert "Left: 5 agents to start again" in out and "plan.py --phase verify: not planned yet" in out
 
 
 def test_status_tells_a_resumed_reader_which_of_its_cases_are_finished(tmp_path) -> None:
@@ -385,10 +390,10 @@ def test_status_tells_a_resumed_reader_which_of_its_cases_are_finished(tmp_path)
     (run / "cards" / "1.json").write_text(done_card(1))
     (run / "cards" / "2.json").write_text(stub_card(2, lead(2)))
     out = plan(run, "--status")[1]
-    line = next(x for x in out.splitlines() if "reader-1.prompt.md" in x)
-    assert "to do: cards/2.json a stub (the reader stopped); cards/3.json missing; finished, leave as is: cards/1.json" in line
+    assert "cards/2.json a stub (the reader stopped)" in out and "cards/3.json missing" in out
+    assert "finished, leave as is: cards/1.json" in out and "first finish cards/2.json (yours: no claim)" in out
     prompt = (run / "plan" / "reader-1.prompt.md").read_text(encoding="utf-8")
-    assert "already holds a card with no `status` is a finished case: leave it as it is" in prompt
+    assert "a stub keeps its leads when you confirm them" in prompt and "Exit 3 means another reader has it, or it is done" in prompt
 
 
 def test_status_counts_a_card_written_with_a_utf8_bom_as_finished(tmp_path) -> None:
@@ -396,8 +401,8 @@ def test_status_counts_a_card_written_with_a_utf8_bom_as_finished(tmp_path) -> N
     plan(run)
     (run / "cards").mkdir()
     (run / "cards" / "1.json").write_bytes(b"\xef\xbb\xbf" + done_card(1).encode())
-    line = next(x for x in plan(run, "--status")[1].splitlines() if "reader-1.prompt.md" in x)
-    assert "finished, leave as is: cards/1.json" in line and "cards/1.json not valid JSON" not in line
+    out = plan(run, "--status")[1]
+    assert "finished, leave as is: cards/1.json" in out and "cards/1.json not valid JSON" not in out
 
 
 def test_status_does_not_count_a_card_written_for_another_case(tmp_path) -> None:
@@ -627,3 +632,55 @@ def test_a_changed_chunk_still_needs_its_verifier_again_and_an_obsolete_chunk_is
     code, out, _ = plan(run, "--status")
     assert code == 1 and "verdicts-1.json older than plan/chunk-1.json (the chunk was planned again)" in out, out
     assert "plan it again" not in out, out
+
+
+def test_a_later_wave_starts_agent_by_agent_as_slots_free_up(tmp_path) -> None:
+    """Measured 2026-11-13: the sweepers waited 1m29s for the slowest reader while three slots were free."""
+    run = make_run(tmp_path, 12)
+    assert plan(run)[0] == 0
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    w1, w2 = md.split("wave 1 of 2", 1)[1].split("wave 2 of 2", 1)
+    assert "Start these agents in ONE message:" in w1
+    assert "Start each of these, in this order, as soon as an agent before it has written its files (at most 4 running):" in w2
+    assert "do not wait for the whole wave before" in md
+    order = [l.split("sweeper-")[1][0] for l in w2.splitlines() if "sweeper-" in l and l.startswith("- ")]
+    assert order == ["3", "1", "2"]                   # OUTSIDE-IN, code, docs: longest first
+
+
+def test_a_claim_hands_a_queued_case_to_exactly_one_reader(tmp_path) -> None:
+    """2026-11-14: readers share one queue; `--claim N` writes case N's stub only if no card file is there."""
+    import threading
+    run = make_run(tmp_path, 7)
+    assert plan(run)[0] == 0
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("plan_claim", PLAN)
+    pm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm)
+    codes = []
+    threads = [threading.Thread(target=lambda: codes.append(pm.claim(str(run), 3)[0])) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(codes) == [0] + [3] * 7, "exactly one reader gets the case"
+    stub = json.loads((run / "cards" / "3.json").read_text(encoding="utf-8"))
+    assert stub["status"] == "in-progress" and stub["case"] == "#12" and stub["unit"] == "#12"
+    code, out, err = plan(run, "--claim", "3")
+    assert code == 3 and "is taken" in err
+    assert plan(run, "--claim", "99")[0] == 2 and plan(run, "--claim", "0")[0] == 2
+    (run / "cards" / "4.json").write_text(done_card(4))
+    assert plan(run, "--claim", "4")[0] == 3, "a finished case is never claimed again"
+    assert plan(run, "--claim", "5")[0] == 0
+
+
+def test_the_queue_puts_the_cases_that_touch_the_most_files_first(tmp_path) -> None:
+    run = make_run(tmp_path, 7)
+    ev = json.loads((run / "evidence.json").read_text(encoding="utf-8"))
+    sizes = {"#14": 9, "#12": 5}
+    for u in ev["timeline"]:
+        u["files"] = [{"path": f"f{k}", "ins": 1, "del": 0} for k in range(sizes.get(u["unit"], 1))]
+    (run / "evidence.json").write_text(json.dumps(ev), encoding="utf-8")
+    assert plan(run)[0] == 0
+    t = (run / "plan" / "reader-1.prompt.md").read_text(encoding="utf-8")
+    queue = [l.split(":")[0].lstrip("- ") for l in t.splitlines() if l.startswith("- ")]
+    assert queue[:2] == ["5", "3"] and sorted(queue, key=int) == [str(i) for i in range(1, 8)]

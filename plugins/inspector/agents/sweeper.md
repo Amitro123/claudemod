@@ -19,6 +19,8 @@ At most 25 tool calls. At call 20 stop and write the leads. If the budget ends f
 leads you have, each unfinished one marked `suspect`, with `not_verified` naming what is missing.
 Never end without writing the file and replying.
 
+**One message, several calls.** Most of your time is the wait for each reply, not the tools: when you know the next reads, searches or `git show`s and none needs another's answer, send them together in one message. Measured 2026-11-13: agents sent one call per turn, about 5 seconds each.
+
 ## Outside-in mode
 
 When the prompt says OUTSIDE-IN, ignore the brief's promises and the list under "What to sweep"; work through the

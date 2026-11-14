@@ -8,8 +8,9 @@
 `<run>/plan/`: `plan.md` (what the main conversation does, phase by phase), one prompt file per agent
 and `expect.json` (the agents and output files each phase must leave; check_run.py reads it).
 Up to 6 cases: one `investigator`. From 7: a brief-writer, case readers of up to 3 cases each
-(`--per-case`: one per case, and from 3 cases) and three sweepers. A phase starts at most 4 agents at
-once; a larger one is split into waves, each started when the one before has left its files.
+(`--per-case`: one per case, and from 3 cases) and three sweepers. At most 4 agents run at
+once; a larger phase is split into waves. A later wave's agents start one by one, each as soon as an agent before it has
+left its files (a slot is free), so the slowest agent of a wave does not hold the next wave back.
 `--status` writes nothing: per phase and wave it names the outputs that are missing, invalid or still
 a reader's stub card, and prints the dispatch lines of only the agents to start again (exit 0 when
 nothing is left, 1 when something is).
@@ -92,11 +93,18 @@ class Ctx:
         self.per_case = per_case
         self.parallel = n > SINGLE_MAX or (per_case and n >= 3)
         size = 1 if per_case else PER_READER
-        self.groups = [self.keep[i:i + size] for i in range(0, n, size)] if self.parallel else []
-        titles = {}
+        titles, nfiles = {}, {}
         for u in ev.get("timeline") or []:
             if isinstance(u, dict) and isinstance(u.get("unit"), str):
                 titles[u["unit"]] = one_line(u.get("title", ""))
+                nfiles[u["unit"]] = len(u["files"]) if isinstance(u.get("files"), list) else 0
+        # The readers share one queue: each takes the next unclaimed case when it finishes one, largest first
+        # (files touched ranked best against measured reading time, Spearman 0.65 on 36 cases). Measured
+        # 2026-11-14: no size measure split cases statically better than the noise (same case: 16% apart
+        # between runs, up to 66%); a shared queue cut the simulated reader phase by 7%.
+        self.queue = sorted(self.keep, key=lambda i: -nfiles.get(cases[i - 1], 0)) if self.parallel else []
+        self.readers = -(-len(self.keep) // size) if self.parallel else 0
+        self.groups = [[i] for i in self.keep] if self.parallel and per_case else []
         self.titles = [titles.get(c, "") for c in cases]
         self.dossiers = []
         for i, c in enumerate(cases, 1):
@@ -142,6 +150,53 @@ def reader_prompt(c: Ctx, ids: list[int]) -> str:
               "as run from the run folder, what it needs, and what it prints when the lead holds. Keep `probe` as well.",
               "Change no file in the repository; the card files and your probe files are the only files you write.", ""]
     return "\n".join(lines)
+
+
+def queue_reader_prompt(c: Ctx) -> str:
+    claim = f'{c.script("plan.py")} --run "{c.run}" --claim <n>'
+    lines = [f"Repository: {c.repo}, ref {c.ref}.",
+             f"Brief: read {c.run}/brief.md (the project's promises P1, P2... and its seams).",
+             f"You are one of {c.readers} case readers sharing one queue of {len(c.queue)} cases. The queue, in order "
+             "(<n> is the case number):"]
+    lines += [f"- {i}: {c.cases[i - 1]}. Dossier: {c.dossiers[i - 1]}. Card: {c.run}/cards/{i}.json." for i in c.queue]
+    lines += [f"Take cases from the queue in order, one at a time. Before you open a case's dossier, claim it: run `{claim}`. "
+              "Exit 0 means the case is yours: the command wrote its stub card (`\"status\": \"in-progress\"`). Exit 3 means another reader has it, or it is "
+              "done: go to the next case. Stop when no case is left to claim.",
+              "If your dispatch line hands you a card file (`first finish cards/<n>.json`), that case is yours already: do not "
+              "claim it. Finish it first: a stub keeps its leads when you confirm them; a file that is not this case's card "
+              "is replaced.",
+              f"At most 25 tool calls per case. {EVIDENCE}",
+              "Add each lead to the stub as you confirm one. When the case is done, replace the stub with the finished card "
+              "(no `status`), then claim the next case.",
+              "Write each card as strict JSON (a backslash inside a string is doubled) to its card file first, then reply with "
+              "a JSON array of the cards you wrote, in order.",
+              f"A probe you ran that can be run again (a script on a copy of the code): save it as {c.run}/probes/<case>-<k>.<ext> "
+              "(<case> is the case number above) and give each lead it reproduces `probe_file` with path, leads, ref, command, "
+              "requires, expect: the path relative to the run folder, the `where` of each lead it covers, the ref, the command "
+              "as run from the run folder, what it needs, and what it prints when the lead holds. Keep `probe` as well.",
+              "Change no file in the repository; the card files and your probe files are the only files you write.", ""]
+    return "\n".join(lines)
+
+
+def claim(run: str, n: int) -> tuple[int, str]:
+    """Create cards/<n>.json as a stub, only if no file is there (O_EXCL): the one atomic step that hands a queued
+    case to exactly one reader. 0 claimed, 3 taken or done, 2 not a case of this plan."""
+    exp = load(os.path.join(run, "plan", "expect.json"))
+    labels = exp.get("case_labels") if isinstance(exp, dict) else None
+    ids = exp.get("reader_ids") if isinstance(exp, dict) else None
+    if not isinstance(labels, list) or not isinstance(ids, list) or str(n) not in ids or not 0 < n <= len(labels):
+        return 2, f"case {n} is not a case of this plan"
+    label = labels[n - 1]
+    os.makedirs(os.path.join(run, "cards"), exist_ok=True)
+    path = os.path.join(run, "cards", f"{n}.json")
+    stub = {"case": label, "unit": label, "status": STUB, "complete": {"siblings": [], "checked_clear": []}}
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return 3, f"case {n} ({label}) is taken: cards/{n}.json exists; claim the next case"
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(stub, ensure_ascii=False) + "\n")
+    return 0, f"claimed case {n} ({label}): cards/{n}.json holds its stub"
 
 
 def sweeper_prompt(c: Ctx, k: int) -> str:
@@ -216,7 +271,7 @@ def phase(name: str, dispatch: list[tuple[str, str, list[str]]]) -> dict:
     for kind, _, _ in dispatch:
         agents[kind] = agents.get(kind, 0) + 1
     return {"name": name, "agents": agents, "min_agents": len(dispatch),
-            "outputs": [o for _, _, outs in dispatch for o in outs],
+            "outputs": list(dict.fromkeys(o for _, _, outs in dispatch for o in outs)),
             "dispatch": [{"agent": k, "model": agent_model(k), "prompt": p, "outputs": list(outs)} for k, p, outs in dispatch]}
 
 
@@ -237,9 +292,16 @@ def phases_collect(c: Ctx) -> list[dict]:
         return []
     if not c.parallel:
         return [phase("investigate", [("inspector:investigator", "investigator.prompt.md", ["leads.json"])])]
-    readers = [("inspector:case-reader", f"reader-{k}.prompt.md", [f"cards/{i}.json" for i in g])
-               for k, g in enumerate(c.groups, 1)]
-    sweeps = [("inspector:sweeper", f"sweeper-{k}.prompt.md", [f"sweep-{k}.json"]) for k in range(1, len(SWEEPERS) + 1)]
+    if c.per_case:
+        readers = [("inspector:case-reader", f"reader-{k}.prompt.md", [f"cards/{i}.json" for i in g])
+                   for k, g in enumerate(c.groups, 1)]
+    else:   # a shared queue: every reader may write any card
+        readers = [("inspector:case-reader", f"reader-{k}.prompt.md", [f"cards/{i}.json" for i in c.queue])
+                   for k in range(1, c.readers + 1)]
+    # Longest first (measured 2026-11-13: OUTSIDE-IN 2m29s, code 2m09s, docs 1m10s): started as slots free up,
+    # the long ones should take the first free slots.
+    order = [k for k in (3, 1, 2) if k <= len(SWEEPERS)] + [k for k in range(4, len(SWEEPERS) + 1)]
+    sweeps = [("inspector:sweeper", f"sweeper-{k}.prompt.md", [f"sweep-{k}.json"]) for k in order]
     return [phase("brief", [("general-purpose", "brief-writer.prompt.md", ["brief.md"])])] + waves("investigate", readers + sweeps)
 
 
@@ -289,21 +351,25 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
           "Do not start a general worker in place of a plugin agent type. Each agent writes its own file; never retype its output.",
           "Start each agent with the model named on its line, passed explicitly: a host may ignore the agent file's own "
           "`model` and run the agent on your model instead.",
-          f"Start all agents of a phase in ONE message (at most {WAVE}; a larger phase comes in waves: start a wave when the files "
-          "of the one before exist). Each dispatch is `Read <prompt file> and follow it`.",
+          f"At most {WAVE} agents run at once. Start the agents of a phase, or of a first wave, in ONE message. A later wave's "
+          "agents start one at a time, in the order listed, each as soon as an agent before it has written its files: do not wait "
+          "for the whole wave before. Each dispatch is `Read <prompt file> and follow it`.",
           f"If an agent stopped or a file is missing, run {c.script('plan.py')} --run \"{c.run}\" --status: it prints the dispatch "
           "lines of only the agents to start again. A stub card (`\"status\": \"in-progress\"`) is partial work; the merge keeps it.", ""]
     if not c.parallel:
         L += [f"{n} case{'s' if n > 1 else ''} (at most {SINGLE_MAX}): start exactly one `inspector:investigator` for the whole investigation. "
               "Readers per case would cost more than they find here, and you do not do it yourself.", ""]
     elif not c.per_case:
-        L += [f"{n} cases: {len(c.groups)} case readers of up to {PER_READER} cases each, and three sweepers.", ""]
+        L += [f"{n} cases: {c.readers} case readers sharing one queue (largest first; each claims its next case with "
+              "plan.py --claim), and three sweepers.", ""]
     planned = len(ph) + (0 if verify else 1)
     L += [f"Phases: {planned}" + ("" if verify else " (the last one, verify, is planned after the merge)") + ".", ""]
     for i, p in enumerate(ph, 1):
         ag = ", ".join(f"{k} x {v}" for k, v in p["agents"].items())
         wave = f", wave {p['wave']} of {p['waves']}" if "wave" in p else ""
-        L += [f"## Phase {i}: {p['name']}{wave} ({p['min_agents']} agent{'s' if p['min_agents'] != 1 else ''}: {ag})", "", "Start these agents in ONE message:"]
+        start = ("Start each of these, in this order, as soon as an agent before it has written its files "
+                 f"(at most {WAVE} running):" if p.get("wave", 1) > 1 else "Start these agents in ONE message:")
+        L += [f"## Phase {i}: {p['name']}{wave} ({p['min_agents']} agent{'s' if p['min_agents'] != 1 else ''}: {ag})", "", start]
         for d in p["dispatch"]:
             mode = f" (mode: {SWEEPERS[int(d['prompt'][8:-10]) - 1][0]})" if d["prompt"].startswith("sweeper-") else ""
             L.append(f"- {d['agent']} (model: {d['model']}): `{c.dispatch(d['prompt'])}`{mode}")
@@ -419,8 +485,12 @@ def build(run: str, phase: str = "collect", case_file: str | None = None,
     files: dict[str, str] = {}
     if c.parallel:
         files["brief-writer.prompt.md"] = brief_prompt(c)
-        for k, g in enumerate(c.groups, 1):
-            files[f"reader-{k}.prompt.md"] = reader_prompt(c, g)
+        if c.per_case:
+            for k, g in enumerate(c.groups, 1):
+                files[f"reader-{k}.prompt.md"] = reader_prompt(c, g)
+        else:
+            for k in range(1, c.readers + 1):
+                files[f"reader-{k}.prompt.md"] = queue_reader_prompt(c)
         for k in range(1, len(SWEEPERS) + 1):
             files[f"sweeper-{k}.prompt.md"] = sweeper_prompt(c, k)
     elif n:
@@ -578,18 +648,41 @@ def status(run: str) -> tuple[int, str]:
             per_agent = [(d, d["outputs"]) for d in dispatch]
         else:  # a plan written before outputs were recorded per agent: any gap restarts the whole phase
             per_agent = [(d, p.get("outputs") or []) for d in dispatch]
-        todo = []
+        todo, queued = [], []
+        readers = [d for d, _ in per_agent if d.get("agent") == "inspector:case-reader"]
+        if len(readers) > 1 and all(d.get("outputs") == readers[0].get("outputs") for d in readers):
+            # Readers sharing a queue: a gap is the queue's, not one reader's. A stub left by a stopped reader is
+            # handed to a restarted reader by name; missing cards are claimed from the queue as before.
+            per_agent = [(d, o) for d, o in per_agent if d not in readers]
+            states = [(o, output_state(run, o, labels)) for o in readers[0]["outputs"]]
+            # A file that exists but isn't a finished card (a stub, another case's card, unreadable) blocks a claim:
+            # it is handed to a restarted reader by name. A missing card is claimed from the queue.
+            handed = [o for o, st in states if st not in ("done", "missing")]
+            missing = [o for o, st in states if st == "missing"]
+            n = min(len(readers), len(handed) + len(missing))
+            if n:
+                done = [o for o, st in states if st == "done"]
+                queued.append(f"  queue: to do: {'; '.join(f'{o} {st}' for o, st in states if st != 'done')}"
+                              + (f"; finished, leave as is: {', '.join(done)}" if done else ""))
+            for k in range(n):
+                d, mine = readers[k], handed[k::n]
+                first = f"first finish {', '.join(mine)} (yours: no claim); then " if mine else ""
+                queued.append(f"- {d.get('agent')}{' (model: ' + d['model'] + ')' if d.get('model') else ''}: "
+                              f"`Read {plan_dir}/{d.get('prompt')} and follow it` ({first}claim from the queue: "
+                              f"{len(missing)} case{'s' if len(missing) != 1 else ''} unclaimed)")
         for d, outs in per_agent:
             states = [(o, output_state(run, o, labels)) for o in outs]
             gaps = [f"{o} {s}" for o, s in states if s != "done"]
             if gaps:
                 done = [o for o, s in states if s == "done"]
                 todo.append((d, gaps, done))
-        if not todo:
+        if not todo and not queued:
             L.append(f"{head}: done.")
             continue
-        left += len(todo)
-        L.append(f"{head}: {len(todo)} agent{'s' if len(todo) != 1 else ''} to start again, in ONE message:")
+        k = len(todo) + sum(1 for q in queued if q.startswith("- "))
+        left += k
+        L.append(f"{head}: {k} agent{'s' if k != 1 else ''} to start again, in ONE message:")
+        L += queued
         for d, gaps, done in todo:
             keep = f"; finished, leave as is: {', '.join(done)}" if done else ""
             model = f" (model: {d['model']})" if d.get("model") else ""
@@ -614,8 +707,18 @@ def main(argv=None) -> int:
     ap.add_argument("--case-file", help="where an investigator writes the case file (default <run>/case-file.md)")
     ap.add_argument("--drop", action="append", help="a case label to leave out, e.g. '#73' (repeatable)")
     ap.add_argument("--per-case", action="store_true", help="one case reader per case (from 3 cases) instead of the lean default")
+    ap.add_argument("--claim", type=int, metavar="N", help="a case reader's claim on queued case N: writes its stub card "
+                    "only if none exists (exit 0 claimed, 3 taken)")
     ap.add_argument("--status", action="store_true", help="write nothing; say which planned outputs are missing and what to start again")
     a = ap.parse_args(argv)
+    if a.claim is not None:
+        try:
+            code, text = claim(a.run, a.claim)
+        except (Invalid, OSError) as e:
+            print(f"plan.py: {e}", file=sys.stderr)
+            return 2
+        print(text, file=sys.stdout if code == 0 else sys.stderr)
+        return code
     if a.status:
         try:
             code, text = status(a.run)
