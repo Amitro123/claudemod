@@ -63,11 +63,12 @@ def test_json_gives_each_phase_its_duration_and_the_critical_path(tmp_path) -> N
                            "plan verify", "verify", "merge verdicts", "handoff"]
     assert steps["brief"]["seconds"] == 60
     w1, w2 = steps["investigate (wave 1 of 2)"], steps["investigate (wave 2 of 2)"]
-    # 3 readers and the longest sweeper (OUTSIDE-IN, sweep-3) in wave 1; code and docs take slots as they free up,
-    # so wave 2 starts when wave 1's first agent finished (reader-1's last card, +162), not when wave 1 ended.
-    assert [a["label"] for a in w1["agents"]][-1] == "sweeper-3"
-    assert w1["end"] - T0 == 290 and w2["start"] - T0 == 162 and w2["start"] < w1["end"]
-    assert w2["end"] - T0 == 280 and w2["seconds"] == 118
+    # 3 readers sharing one queue (one row: any of them may have written any card) and the longest sweeper
+    # (OUTSIDE-IN, sweep-3) in wave 1; code and docs take slots as they free up, so wave 2 starts when wave 1's
+    # first row finished (the readers' last card, +186), not when wave 1 ended (+290).
+    assert [a["label"] for a in w1["agents"]] == ["3 readers (shared queue)", "sweeper-3"]
+    assert w1["end"] - T0 == 290 and w2["start"] - T0 == 186 and w2["start"] < w1["end"]
+    assert w2["end"] - T0 == 280 and w2["seconds"] == 94
     assert steps["merge"]["seconds"] == 11 and steps["verify"]["seconds"] == 190
     assert steps["handoff"]["seconds"] == 5
     rel = {a["label"]: a["rel"] for a in w2["agents"]}

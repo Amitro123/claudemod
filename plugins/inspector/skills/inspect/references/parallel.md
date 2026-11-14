@@ -2,7 +2,7 @@
 
 The main conversation orchestrates; agents cannot start agents. Up to 6 cases the plan starts one
 `investigator` (measured: close to a reader per case, at less cost and with no fan-out to break).
-From 7, readers of up to 3 cases each work in clean, small contexts; `plan.py --per-case` gives one per case.
+From 7, one case reader per 3 cases works in a clean, small context. The readers share one queue of the cases, the ones that touch the most files first: each claims its next case with `plan.py --claim <n>` (it writes the stub only if no card is there), so a reader that finishes early takes more. `plan.py --per-case` gives one reader per case.
 
 **The RUN PLAN writes the prompts.** The collector runs `scripts/plan.py`, which saves `<out>/plan/`: `plan.md` (the
 phases, the agent types, one dispatch line per agent), `reader-<n>`, `sweeper-<k>` and `brief-writer` prompt files and

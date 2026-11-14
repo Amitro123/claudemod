@@ -67,6 +67,12 @@ def agent_phase(run: str, p: dict) -> dict:
         outs = d.get("outputs") if isinstance(d.get("outputs"), list) else []
         label = str(d.get("prompt") or d.get("agent") or "?").removesuffix(".prompt.md")
         agents.append({"agent": d.get("agent"), "label": label, "files": {o: mtime(run, o) for o in outs}})
+    readers = [a for a in agents if a["agent"] == "inspector:case-reader"]
+    if len(readers) > 1 and all(a["files"].keys() == readers[0]["files"].keys() for a in readers):
+        # Readers sharing a queue: any of them may have written any card, so they are one row.
+        agents = [a for a in agents if a not in readers]
+        agents.insert(0, {"agent": "inspector:case-reader", "label": f"{len(readers)} readers (shared queue)",
+                          "files": readers[0]["files"]})
     if not dispatch and isinstance(p.get("outputs"), list):  # no per-agent record: one row for the phase
         agents.append({"agent": None, "label": p.get("name"), "files": {o: mtime(run, o) for o in p["outputs"]}})
     return {"name": f"{p.get('name')}{wave}", "kind": "agents", "agents": agents, "wave": p.get("wave", 1)}
