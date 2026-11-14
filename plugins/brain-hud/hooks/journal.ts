@@ -135,7 +135,8 @@ export function countsText(entries: readonly JournalEntry[]): string {
 const VALUE = String.raw`(?:"[^"]*"?|'[^']*'?|\S+)`
 const SECRETS: [RegExp, string][] = [
   // The keyword alone or at the end of an env-style name (DB_PASSWORD=, GITHUB_TOKEN=).
-  [new RegExp(String.raw`\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key))(=|:\s*)` + VALUE, 'gi'), '$1$2[redacted]'],
+  // A JSON or YAML key in quotes ("password": "x") too: the quote between the name and the colon.
+  [new RegExp(String.raw`\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|auth))(["']?)(=|:\s*)` + VALUE, 'gi'), '$1$2$3[redacted]'],
   [new RegExp(String.raw`(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)` + VALUE, 'gi'), '$1$2[redacted]'],
   // An Authorization header whatever its scheme (Bearer, Basic, token, or none): GitHub takes "token <x>".
   [/\b(authorization:\s*)(?:(?:bearer|basic|token)\s+)?[^\s"']+/gi, '$1[redacted]'],
@@ -146,9 +147,20 @@ const SECRETS: [RegExp, string][] = [
   [/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, '[redacted]'],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, '[redacted]'],
   [/\bAKIA[0-9A-Z]{16}\b/g, '[redacted]'],
-  [/(https?:\/\/)[^/\s:@]+:[^/\s@]+@/g, '$1[redacted]@'],
+  // Credentials in a URL of any scheme (postgres://, redis://, amqp://), the user part optional (redis://:pw@).
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]*:[^/\s@]+@/gi, '$1[redacted]@'],
+  // A Cookie or Set-Cookie header: its whole value, to the end of the quote or the line.
+  [/\b((?:set-)?cookie:\s*)[^\n"']+/gi, '$1[redacted]'],
+  // redis-cli -a <password>.
+  [/(\bredis-cli\b[^|;&\n]*?\s-a)\s+\S+/g, '$1 [redacted]'],
 ]
-export const redact = (s: string) => SECRETS.reduce((t, [re, to]) => t.replace(re, to), s)
+// mysql-style -p<pass> and -p <pass> (sshpass -p too): not in a git command, where -p is --patch and what follows
+// is a path. The same rule as host_layout.py's _DASH_P.
+const DASH_P = /(?<!\S)(-p)(\s+(?!-)\S+|\S+)/g
+const dashP = (text: string) =>
+  text.replace(DASH_P, (m: string, flag: string, _v: string, at: number) =>
+    (text.slice(0, at).split(/[;&|\n]/).at(-1) ?? '').trimStart().startsWith('git ') ? m : `${flag} [redacted]`)
+export const redact = (s: string) => dashP(SECRETS.reduce((t, [re, to]) => t.replace(re, to), s))
 export const quoted = (s: string) => `\`${redact(s.replace(/\s+/g, ' ')).replace(/`/g, "'").trim()}\``
 
 export function contextLine(entries: readonly JournalEntry[], tool: string): string {
