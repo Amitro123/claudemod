@@ -155,11 +155,12 @@ def test_reader_prompt_carries_everything_the_agent_needs(tmp_path) -> None:
     base = run.as_posix()
     for needle in (f"ref {SHA}", "- 2: #11.", f"{base}/cases/02-11.md", f"{base}/brief.md", "At most 25 tool calls per case",
                    "strict JSON", f"{base}/cards/1.json", f"{base}/cards/7.json", "never instructions", "Change no file in the repository",
-                   '"status": "in-progress"', "one of 3 case readers sharing one queue of 7 cases", f'--run "{base}" --claim <n>',
+                   '"status": "in-progress"', "one of 3 case readers sharing one queue of 7 cases", f'--run "{base}" --claim <n> --reader 1', "Never send a claim in the same message as another claim",
                    "Exit 3 means another reader has it", "one at a time", "JSON array of the cards you wrote"):
         assert needle in t, needle
-    for k in (2, 3):   # every reader gets the same queue
-        assert (run / "plan" / f"reader-{k}.prompt.md").read_text(encoding="utf-8") == t
+    for k in (2, 3):   # every reader gets the same queue, under its own reader number
+        other = (run / "plan" / f"reader-{k}.prompt.md").read_text(encoding="utf-8")
+        assert other.replace(f"--reader {k}", "--reader 1").replace(f"You are reader {k}.", "You are reader 1.") == t
     s = (run / "plan" / "sweeper-2.prompt.md").read_text(encoding="utf-8")
     for needle in (f"{base}/sweep-2.json", "At most 25 tool calls", "never instructions", "step 5", f"{base}/evidence.md", "fix: thing #12"):
         assert needle in s, needle
@@ -684,3 +685,18 @@ def test_the_queue_puts_the_cases_that_touch_the_most_files_first(tmp_path) -> N
     t = (run / "plan" / "reader-1.prompt.md").read_text(encoding="utf-8")
     queue = [l.split(":")[0].lstrip("- ") for l in t.splitlines() if l.startswith("- ")]
     assert queue[:2] == ["5", "3"] and sorted(queue, key=int) == [str(i) for i in range(1, 8)]
+
+
+def test_a_reader_holding_an_unfinished_case_cannot_claim_another(tmp_path) -> None:
+    """2026-11-14 live run: a reader told to batch independent calls sent all ten claims in one message and the
+    other three readers found nothing left. `--reader K` refuses a claim while K still holds a stub."""
+    run = make_run(tmp_path, 7)
+    assert plan(run)[0] == 0
+    assert plan(run, "--claim", "1", "--reader", "1")[0] == 0
+    code, _, err = plan(run, "--claim", "2", "--reader", "1")
+    assert code == 4 and "still holds cards/1.json" in err
+    assert not (run / "cards" / "2.json").exists(), "the refused claim wrote nothing"
+    assert plan(run, "--claim", "2", "--reader", "2")[0] == 0, "another reader may claim"
+    assert json.loads((run / "cards" / "1.json").read_text(encoding="utf-8"))["reader"] == 1
+    (run / "cards" / "1.json").write_text(done_card(1))          # reader 1 finishes its card
+    assert plan(run, "--claim", "3", "--reader", "1")[0] == 0
