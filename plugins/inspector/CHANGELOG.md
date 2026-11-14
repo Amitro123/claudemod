@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added: `premerge.py`, an opt-in pre-merge check. It asks a decision model four closed questions about a branch's diff and prints the ones answered yes, with what to look at. It is advisory, fails open and always exits 0. Each question is a kind of wrong assumption behind past culprits (`culprit.assumed` in the cards). On 107 changes of two repositories, the four ranked the known culprits at 0.92 to 1.00. Together they flagged 26 of the 107, including 6 of 7 known culprit cases, for $0.04 in all. Questions about awaits and pattern-based guards flagged half of all changes and were dropped (`evals/premerge/README.md`). The README no longer calls evidence.py offline when `--decision-model` is on.
 - Fixed (outside review of 2026-11-14, R114-01..03): the shared queue's resume and claim lifecycle.
   - **R114-01:** `--status` handed the same unfinished card to a reader in every wave of a queue with more than four readers, and a wave of one reader restarted it the per-agent way. Recovery owners are now assigned once across all waves, and a one-reader wave follows the queue's rules.
   - **R114-02:** a claim on a case a re-plan dropped (`--drop`) kept blocking its reader. Claims count only for cases the active plan still has, and the dropped card and claim stay on disk.
