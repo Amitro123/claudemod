@@ -39,7 +39,7 @@ whether the skill finds it. Run manually before a release or via the `regression
 
 | Case | Type | Measures |
 |---|---|---|
-| `backtest-01` | Value (key bugs found) | Recall on 13 known bugs from real history |
+| `backtest-01` | Value (key bugs found) | Recall on 8 key graders (K1, K2, K8, K12, K14–K17) from real history |
 | `chain-01`, `sec-01`, `sibling-01`, `history-01` | Discipline (correct reasoning) | Regression on past skill bugs |
 | `control-01` | False-positive control | No spurious high-confidence leads |
 
@@ -94,7 +94,16 @@ All workflows in `.github/workflows/` must pass. These are branch protection che
    python3 evals/gate/scorecard_gate.py --row /tmp/row.json
    ```
    `scorecard_gate.py` reads `evals/gate/thresholds.json` and exits non-zero if a threshold is
-   breached. Thresholds are currently **provisional** (see `status` field); update them after
+   breached. A configured (non-null) threshold whose metric is missing from the row also fails;
+   pass `--allow-missing` to downgrade to a warning during development.
+
+   Current provisional thresholds:
+   - **recall_min 0.75** — the meaningful gate (recall on gold-file bugs).
+   - **precision_min 0.90** — real runs show 0.94–0.97; the original 0.70 never bites so it was
+     raised. This is still a floor, not a target.
+   - **not_real_max** — TODO, set after baseline runs.
+
+   Thresholds are currently **provisional** (see `status` field); update them after
    recording 2–3 baseline runs on a fixed project.
 3. For factory, compare the summary table from `run-all.sh` against previous runs. The key
    value-measuring cases are `appr-04`, `plan-01`, `spec-01` (see FACTORY-SUITE.md for expected Δ).

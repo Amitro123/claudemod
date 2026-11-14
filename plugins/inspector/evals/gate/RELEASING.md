@@ -25,10 +25,17 @@ past failures lived.
    ```
    `scorecard_gate.py` reads `evals/gate/thresholds.json` and exits non-zero when a threshold is
    breached. The thresholds are **provisional** until baseline runs establish them—see the `status`
-   field in `thresholds.json`. Starting points (from RELEASING.md proposals): recall on planned bugs
-   >= 75%, precision >= 70%. A threshold set to `null` is skipped. Below a provisional threshold:
-   explain it in the PR. Once baselines are recorded, update `thresholds.json` and set `status` to
-   `"baselined"`.
+   field in `thresholds.json`. A configured threshold whose metric is missing from the row fails
+   the gate (pass `--allow-missing` to downgrade to a warning during development).
+
+   Current provisional thresholds:
+   - **recall_min 0.75**: the meaningful gate—recall on gold-file bugs.
+   - **precision_min 0.90**: real runs show 0.94–0.97, so 0.90 catches genuine regressions. The
+     original proposal of 0.70 never bites and was raised.
+   - **not_real_max**: TODO—set after baseline runs.
+
+   A threshold set to `null` is skipped. Below a provisional threshold: explain it in the PR.
+   Once baselines are recorded, update `thresholds.json` and set `status` to `"baselined"`.
 5. **Changelog** has an entry for each change since the last release under `## Unreleased`.
 
 ## Who bumps and how

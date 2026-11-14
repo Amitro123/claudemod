@@ -39,7 +39,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm i -g @anthropic-ai/claude-code@2.1.312
-      - run: apt-get update && apt-get install -y bubblewrap socat
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
         if: runner.os == 'Linux'
 
       - name: Run key inspector case (backtest-01)
@@ -57,9 +57,17 @@ jobs:
             --scaffold --no-publish --trust-plugin \
             --json evals/results/out-backtest-01.json \
             --allow-tools Bash Write Agent \
-            > evals/results/log-backtest-01.txt 2>&1 || true
-          echo "--- log ---"
-          cat evals/results/log-backtest-01.txt || true
+            2>&1 | tee evals/results/log-backtest-01.txt
+
+      - name: Check scorecard thresholds
+        run: |
+          cd plugins/inspector
+          if [ -f evals/results/out-backtest-01.json ]; then
+            python3 evals/gate/scorecard_gate.py --row evals/results/out-backtest-01.json
+          else
+            echo "No eval output found; cannot check thresholds."
+            exit 1
+          fi
 
       - name: Upload results
         if: always()
@@ -80,7 +88,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm i -g @anthropic-ai/claude-code@2.1.312
-      - run: apt-get update && apt-get install -y bubblewrap socat
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
         if: runner.os == 'Linux'
 
       - name: Run key factory cases (appr-04, plan-01, spec-01)
@@ -89,9 +97,10 @@ jobs:
         run: |
           cd plugins/factory
           mkdir -p evals/results
+          status=0
           for case_id in appr-04 plan-01 spec-01; do
             echo "=== $case_id"
-            claude plugin eval . \
+            if ! claude plugin eval . \
               --case "${case_id}*" \
               --runs "${{ inputs.runs }}" \
               --max-cost-usd "${{ inputs.max_cost }}" \
@@ -100,9 +109,12 @@ jobs:
               --threshold 0.7 \
               --json "evals/results/out-${case_id}.json" \
               --allow-tools Bash Edit Write \
-              > "evals/results/log-${case_id}.txt" 2>&1 || true
-            echo "exit $?  (log: evals/results/log-${case_id}.txt)"
+              2>&1 | tee "evals/results/log-${case_id}.txt"; then
+              echo "FAIL: $case_id exited non-zero"
+              status=1
+            fi
           done
+          exit "$status"
 
       - name: Print summary
         if: always()

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Check a scorecard row against thresholds.json and exit non-zero if any threshold is breached.
 
-    scorecard_gate.py --row ROW_JSON [--thresholds thresholds.json]
-    scorecard_gate.py --history HISTORY_JSONL [--thresholds thresholds.json]
+    scorecard_gate.py --row ROW_JSON [--thresholds thresholds.json] [--allow-missing]
+    scorecard_gate.py --history HISTORY_JSONL [--thresholds thresholds.json] [--allow-missing]
 
 `--row` reads a single JSON scorecard row (the output of `scorecard.py score --format json`).
 `--history` reads a JSONL history file and checks the last row.
 
 Reads thresholds from thresholds.json (default: next to this script). A threshold set to null is
-skipped. Exit 0 when all thresholds pass, 1 when at least one is breached, 2 on invalid input.
-Prints a short report to stdout.
+skipped. A configured (non-null) threshold whose metric is missing from the row is a FAIL by
+default; pass --allow-missing to downgrade those to a WARNING (the gate still reports them and
+never prints 'All thresholds passed' when warnings are present).
+Exit 0 when all thresholds pass, 1 when at least one is breached or missing, 2 on invalid input.
+With --allow-missing, missing-data items become warnings and do not cause exit 1 on their own.
 """
 from __future__ import annotations
 
@@ -30,13 +33,21 @@ def load_json(path: str):
         sys.exit(2)
 
 
-def check(row: dict, thresholds: dict) -> list[dict]:
+def check(row: dict, thresholds: dict, *, allow_missing: bool = False) -> list[dict]:
     t = thresholds.get("thresholds", thresholds)
     results = []
 
     def gate(name: str, actual, threshold, direction: str):
-        if threshold is None or actual is None:
+        if threshold is None:
             results.append({"name": name, "status": "skipped", "actual": actual, "threshold": threshold})
+            return
+        if actual is None:
+            if allow_missing:
+                results.append({"name": name, "status": "WARNING", "actual": actual, "threshold": threshold,
+                                "detail": "metric missing from row (--allow-missing)"})
+            else:
+                results.append({"name": name, "status": "FAIL", "actual": actual, "threshold": threshold,
+                                "detail": "metric missing from row"})
             return
         if direction == "min" and actual < threshold:
             results.append({"name": name, "status": "FAIL", "actual": actual, "threshold": threshold,
@@ -67,13 +78,16 @@ def check(row: dict, thresholds: dict) -> list[dict]:
 def report(results: list[dict], status_label: str) -> str:
     lines = [f"Scorecard gate ({status_label}):", ""]
     for r in results:
-        mark = {"pass": "PASS", "FAIL": "FAIL", "skipped": "SKIP"}[r["status"]]
+        mark = {"pass": "PASS", "FAIL": "FAIL", "skipped": "SKIP", "WARNING": "WARN"}[r["status"]]
         detail = f"  ({r.get('detail', '')})" if r.get("detail") else ""
         lines.append(f"  [{mark}] {r['name']}: actual={r['actual']} threshold={r['threshold']}{detail}")
     failed = [r for r in results if r["status"] == "FAIL"]
+    warned = [r for r in results if r["status"] == "WARNING"]
     lines.append("")
     if failed:
         lines.append(f"{len(failed)} threshold(s) breached.")
+    elif warned:
+        lines.append(f"{len(warned)} threshold(s) could not be checked (missing data).")
     else:
         lines.append("All thresholds passed.")
     return "\n".join(lines)
@@ -85,6 +99,8 @@ def main(argv=None) -> int:
     group.add_argument("--row", help="path to a single JSON scorecard row")
     group.add_argument("--history", help="path to a JSONL history file (checks the last row)")
     ap.add_argument("--thresholds", default=DEFAULT_THRESHOLDS, help="path to thresholds.json")
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="downgrade missing-data failures to warnings instead of failing the gate")
     a = ap.parse_args(argv)
 
     thr = load_json(a.thresholds)
@@ -110,7 +126,7 @@ def main(argv=None) -> int:
         row = lines[-1]
 
     status_label = thr.get("status", "unknown")
-    results = check(row, thr)
+    results = check(row, thr, allow_missing=a.allow_missing)
     print(report(results, status_label))
 
     return 1 if any(r["status"] == "FAIL" for r in results) else 0
