@@ -133,16 +133,24 @@ function serial(job: () => Promise<void>): Promise<void> {
 // A move to another phase stamps when it began; a stop to wait keeps where the progress stood.
 // A run that is no longer live (stopped, done) never moves to another phase: a step that awaited
 // something (git, a route, a record) while the person pressed Stop must not undo the Stop.
+// A move refused that way returns null, not the unchanged run: every caller treats null as "stop
+// here", so none of them sends a prompt or starts an agent for a stopped run (the 2026-11-14
+// inspection found onSpec, finishReview, the spec retry and the review retry doing so).
 async function patch($: EngineInterface, fn: (r: Run) => Run): Promise<Run | null> {
   const t = await $.clock.now()
-  return update($, run, cur => {
+  let refused = false
+  const r = await update($, run, cur => {
     if (!cur) return cur
     const next = fn(cur)
     if (next.phase === cur.phase) return next
-    if (!isLive(cur.phase)) return cur
+    if (!isLive(cur.phase)) {
+      refused = true
+      return cur
+    }
     const held = next.phase === 'needs-human' || next.phase === 'stopped' ? { lastProgress: progressOf(cur) } : {}
     return { ...next, ...held, phaseSince: t }
   })
+  return refused ? null : r
 }
 
 // A move to a phase the run works in clears what it was blocked on.

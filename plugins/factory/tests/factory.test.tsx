@@ -32,7 +32,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false, holdGoalCheck = false } = {}) {
   // Files the install writes in the worktree (`setupMakes`, a lockfile npm install made): untracked from then on.
   const made: string[] = []
   const spawned: Spawned[] = []
@@ -65,7 +65,13 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     sends.push({ to: e.to, text: e.text })
     return (delivers ? { isDelivered: true } : { isDelivered: false, reason: 'no such agent' }) as never
   })
-  on('command.list', () => ({ value: goalRun ? [{ name: 'session-goal', description: 'g', source: 'plugin' }] : [] }) as never)
+  // `holdGoalCheck`: once armed, the check for goal-run waits until the test releases it (the spec's
+  // answer asks it again, so a test can press Stop meanwhile).
+  let goalCheckArmed = false
+  on('command.list', async () => {
+    if (holdGoalCheck && goalCheckArmed) await held
+    return { value: goalRun ? [{ name: 'session-goal', description: 'g', source: 'plugin' }] : [] } as never
+  })
   // The mod's own spawn arrives in the Agent tool's words (subagent_type).
   on('agent.spawn', async (_, e) => {
     const a = e as unknown as { subagentType?: string; subagent_type?: string; prompt: string; description: string; cwd?: string; model?: string }
@@ -190,7 +196,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     const { Box } = $.ui.resolve(e)
     return <Box />
   })
-  return { limits, spawned, ran, sent, toasts, written, release, asked, clock, sends, registered, setConfig: (c: string) => void (configCommit = c) }
+  return { limits, spawned, ran, sent, toasts, written, release, asked, clock, sends, registered, setConfig: (c: string) => void (configCommit = c), armGoalCheck: () => void (goalCheckArmed = true) }
 }
 
 const texts = async (ui: { findAll: (q: { type: 'Text' }) => Promise<unknown[]> }) =>
@@ -1170,6 +1176,23 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     // The failed start used to put the run back in review and send the findings to a builder.
     expect(builders()).toBe(before)
     expect(w.sends.length).toBe(sendsBefore)
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/Phase: stopped/)
+  })
+
+  test('a Stop while the spec answer is being handled sends no plan to goal-run', async ($, on) => {
+    // 2026-11-14 inspection: patch returned the stopped run unchanged, so onSpec's `if (r)` still
+    // submitted the plan prompt. A refused move now returns null to every caller.
+    const w = engine(on, { holdGoalCheck: true })
+    await startRun($)
+    w.armGoalCheck()
+    const sentBefore = w.sent.length
+    const done = $.turn.complete({ answer: SPEC_ANSWER, durationMs: 1000, isAborted: false, turnId: 't-a1', agentId: 'a1', reason: 'answer' } as never)
+    await settled()
+    expect(await command($, 'stop')).toMatch(/^Stopped/)
+    w.release()
+    await done
+    await settled()
+    expect(w.sent.slice(sentBefore).filter(t => t.includes(PLAN))).toEqual([])
     expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/Phase: stopped/)
   })
 })
