@@ -1028,6 +1028,34 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     }
   })
 
+  test('2026-11-14 inspection: program options, wrapper values, rm paths and review writers are seen through', () => {
+    for (const c of [
+      // a program's own options before the subcommand
+      'gh -R a/b pr create', 'gh --repo a/b release create v1', 'docker --context prod push img', 'kubectl -n prod delete pod x',
+      'kubectl --context=prod apply -f x.yaml', 'helm -n prod uninstall app',
+      // a wrapper's option that takes a value
+      'env -u X git push', 'nice -n 5 git push', 'sudo -u bob git push', 'timeout -s KILL 5 git push', 'xargs -I{} git push',
+      // rm -r of a path that can leave the worktree
+      'rm -R /x', 'rm -r ./../x', 'rm -r sub/../../x', 'rm -rf $HOME/x', 'rm -rf "/home/u/data"', "rm -fr '/srv/app'", 'rm --recursive -f /x',
+    ]) {
+      expect([c, forbiddenCommand(c) !== '']).toEqual([c, true])
+    }
+    for (const c of ['gh -R a/b issue list', 'kubectl -n prod get pods', 'rm -rf build dist', 'rm -rf "build dir"', 'rm -f /tmp/x', 'sudo -u bob npm test', 'nice -n 5 npm test', 'git commit -m "rm -rf / and git push"']) {
+      expect([c, forbiddenCommand(c)]).toEqual([c, ''])
+    }
+    for (const c of [
+      'cp -t src /tmp/x', 'cp --target-directory=src /tmp/x', 'ln -t src /tmp/x', 'install /tmp/x src/a', 'mv -t src /tmp/x',
+      'echo x>out.txt', 'echo x &>out.txt', 'cat a>b', 'git checkout-index -a -f', 'git read-tree -u HEAD', 'git sparse-checkout set src',
+      'git submodule update --init', 'git diff --output=src/a.patch', "awk -i inplace '{print}' src/a.ts", 'patch -p1 < /tmp/fix.diff',
+      'find . -name "*.tmp" -delete', 'find src -exec rm {} +',
+    ]) {
+      expect([c, forbiddenInReview(c) !== '']).toEqual([c, true])
+    }
+    for (const c of ['cp -t /tmp/out src/a.ts', 'install src/a /tmp/a', 'echo x>/tmp/out.txt', 'node a.js 2>/dev/null', 'git submodule status', 'patch --dry-run -p1 < /tmp/f.diff', 'find src -name "*.ts"', 'echo "a => b"', 'git diff --stat']) {
+      expect([c, forbiddenInReview(c)]).toEqual([c, ''])
+    }
+  })
+
   test('MCP tools that change a remote are refused to the run\'s agents; reading ones are not', () => {
     for (const t of ['mcp__github__push_files', 'mcp__github__create_or_update_file', 'mcp__github__create_pull_request', 'mcp__github__merge_pull_request', 'mcp__github__create_branch', 'mcp__github__delete_file', 'mcp__vercel__deploy']) {
       expect([t, forbiddenTool(t) !== '']).toEqual([t, true])
