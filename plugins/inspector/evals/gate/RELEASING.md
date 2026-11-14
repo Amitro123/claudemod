@@ -17,10 +17,18 @@ past failures lived.
    Exit 0 required: every invariant `pass` (a `skipped` one needs a written reason in the PR). Exit 1 is
    a finding to fix, exit 2 is a wrong invocation. The checker only reads the run folder. If a folder
    names files differently, pass `--override file.json`; do not edit the checker.
-4. **Scorecard thresholds (proposals, not frozen).** Record the run with `evals/scorecard.py` and compare
-   with the previous version. Starting points to calibrate after a few baseline runs: recall on planned
-   bugs >= 75%, precision >= 70%, zero high-confidence leads on the control case, cost and wall time
-   within about 30% of the known range. Below a proposal: explain it in the PR; nothing blocks on these yet.
+4. **Scorecard thresholds (enforceable, currently provisional).** Record the run with `evals/scorecard.py`
+   and compare with the previous version, then check the thresholds:
+   ```bash
+   python3 evals/scorecard.py score --merged merged.json --gold gold.json --format json > /tmp/row.json
+   python3 evals/gate/scorecard_gate.py --row /tmp/row.json
+   ```
+   `scorecard_gate.py` reads `evals/gate/thresholds.json` and exits non-zero when a threshold is
+   breached. The thresholds are **provisional** until baseline runs establish them—see the `status`
+   field in `thresholds.json`. Starting points (from RELEASING.md proposals): recall on planned bugs
+   >= 75%, precision >= 70%. A threshold set to `null` is skipped. Below a provisional threshold:
+   explain it in the PR. Once baselines are recorded, update `thresholds.json` and set `status` to
+   `"baselined"`.
 5. **Changelog** has an entry for each change since the last release under `## Unreleased`.
 
 ## Who bumps and how
