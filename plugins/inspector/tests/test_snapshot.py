@@ -93,6 +93,7 @@ def test_cli_crosscheck_rejects_changed_plugin(tmp_path, capsys):
     saved.write_text(json.dumps(ev))
     cards = tmp_path / 'cards'
     cards.mkdir()
+    (cards / '1.json').write_text('{"case": "#1", "unit": "#1", "complete": {"siblings": [], "checked_clear": []}}')
     assert crosscheck.main(['--evidence', str(saved), '--cards', str(cards)]) == 1
     assert 'Inspector files changed' in capsys.readouterr().err
 
@@ -102,6 +103,7 @@ def test_cli_crosscheck_rejects_a_different_scope(tmp_path, capsys):
     saved.write_text(json.dumps(fake_evidence()))
     cards = tmp_path / 'cards'
     cards.mkdir()
+    (cards / '1.json').write_text('{"case": "#1", "unit": "#1", "complete": {"siblings": [], "checked_clear": []}}')
     assert crosscheck.main(['--evidence', str(saved), '--cards', str(cards), '--path', 'other']) == 1
     assert 'Requested path differs' in capsys.readouterr().err
 

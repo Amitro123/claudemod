@@ -75,7 +75,7 @@ def read_items(src: str) -> list[dict]:
     items: list[dict] = []
     bad: list[str] = []
     if src == "-":
-        text = sys.stdin.read().strip()
+        text = sys.stdin.read().lstrip("\ufeff").strip()   # a BOM, as Windows PowerShell pipes write, like files
         if not text:
             raise LeadsError("stdin is empty; use [] for an intentionally empty result")
         dec, i = json.JSONDecoder(), 0
@@ -93,6 +93,9 @@ def read_items(src: str) -> list[dict]:
     else:
         if os.path.isdir(src):
             paths = sorted(glob.glob(os.path.join(src, "*.json")))
+            if not paths:
+                # A folder with nothing in it read as zero leads, and the scripts went on as if all was checked.
+                raise LeadsError(f"{src}: a folder with no *.json; give the cards folder, a .json file, or - for stdin")
         elif os.path.isfile(src):
             paths = [src]
         else:
