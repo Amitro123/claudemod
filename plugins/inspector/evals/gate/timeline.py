@@ -111,11 +111,22 @@ def timeline(run: str) -> dict:
     missing, crit = [], []
     prev_end = t0
     first_free = None          # when the first agent of the wave before finished: a later wave starts then
+    wave_start = t0
     for s in steps:
         if s["kind"] == "unplanned":
             notes.append("verify not planned yet (plan.py --phase verify): the timeline stops at the merge")
             continue
         s["start"] = first_free if s.get("wave", 1) > 1 and first_free is not None else prev_end
+        if s["kind"] == "agents" and s.get("wave", 1) > 1 and s["start"] is not None:
+            # An agent of this wave finished before the wave "started": it took a slot the files can't show
+            # freeing (a queue reader that claimed nothing writes no card). Start it with the wave before.
+            ends = [t for a in s["agents"] for t in a["files"].values() if t is not None]
+            if ends and min(ends) < s["start"]:
+                s["start"] = wave_start
+                notes.append(f"{s['name']}: an agent finished before its first visible free slot, so the wave is "
+                             "timed from the start of the wave before (its real start is not in the files)")
+        if s["kind"] == "agents" and s.get("wave", 1) == 1:
+            wave_start = s["start"]
         if s["kind"] == "agents":
             for a in s["agents"]:
                 ts = [t for t in a["files"].values() if t is not None]

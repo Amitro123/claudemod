@@ -152,16 +152,18 @@ def reader_prompt(c: Ctx, ids: list[int]) -> str:
     return "\n".join(lines)
 
 
-def queue_reader_prompt(c: Ctx) -> str:
-    claim = f'{c.script("plan.py")} --run "{c.run}" --claim <n>'
+def queue_reader_prompt(c: Ctx, k: int) -> str:
+    claim = f'{c.script("plan.py")} --run "{c.run}" --claim <n> --reader {k}'
     lines = [f"Repository: {c.repo}, ref {c.ref}.",
              f"Brief: read {c.run}/brief.md (the project's promises P1, P2... and its seams).",
              f"You are one of {c.readers} case readers sharing one queue of {len(c.queue)} cases. The queue, in order "
              "(<n> is the case number):"]
     lines += [f"- {i}: {c.cases[i - 1]}. Dossier: {c.dossiers[i - 1]}. Card: {c.run}/cards/{i}.json." for i in c.queue]
-    lines += [f"Take cases from the queue in order, one at a time. Before you open a case's dossier, claim it: run `{claim}`. "
+    lines += [f"You are reader {k}. Take cases from the queue in order, one at a time. Before you open a case's dossier, claim it: run `{claim}`. "
               "Exit 0 means the case is yours: the command wrote its stub card (`\"status\": \"in-progress\"`). Exit 3 means another reader has it, or it is "
-              "done: go to the next case. Stop when no case is left to claim.",
+              "done: go to the next case. Exit 4 means you still hold an unfinished case: finish its card first. Stop when no case is left to claim.",
+              "Claim one case, finish its card, then claim the next. Never send a claim in the same message as another claim: "
+              "claims are not independent calls, and a reader that takes several cases at once leaves the other readers idle.",
               "If your dispatch line hands you a card file (`first finish cards/<n>.json`), that case is yours already: do not "
               "claim it. Finish it first: a stub keeps its leads when you confirm them; a file that is not this case's card "
               "is replaced.",
@@ -178,18 +180,40 @@ def queue_reader_prompt(c: Ctx) -> str:
     return "\n".join(lines)
 
 
-def claim(run: str, n: int) -> tuple[int, str]:
+def held_by(run: str, reader: int) -> list[str]:
+    """The stub cards reader `reader` claimed and has not finished."""
+    out = []
+    folder = os.path.join(run, "cards")
+    for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        try:
+            with open(os.path.join(folder, name), encoding="utf-8-sig") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict) and d.get("status") == STUB and d.get("reader") == reader:
+            out.append(f"cards/{name}")
+    return out
+
+
+def claim(run: str, n: int, reader: int | None = None) -> tuple[int, str]:
     """Create cards/<n>.json as a stub, only if no file is there (O_EXCL): the one atomic step that hands a queued
-    case to exactly one reader. 0 claimed, 3 taken or done, 2 not a case of this plan."""
+    case to exactly one reader. With `reader`, a reader that still holds an unfinished stub is refused: measured
+    2026-11-14, a reader told to batch independent calls sent all ten claims at once and left three readers idle.
+    0 claimed, 3 taken or done, 4 this reader holds an unfinished case, 2 not a case of this plan."""
     exp = load(os.path.join(run, "plan", "expect.json"))
     labels = exp.get("case_labels") if isinstance(exp, dict) else None
     ids = exp.get("reader_ids") if isinstance(exp, dict) else None
     if not isinstance(labels, list) or not isinstance(ids, list) or str(n) not in ids or not 0 < n <= len(labels):
         return 2, f"case {n} is not a case of this plan"
     label = labels[n - 1]
+    if reader is not None:
+        held = held_by(run, reader)
+        if held:
+            return 4, f"reader {reader} still holds {', '.join(held)}: finish that card before claiming case {n}"
     os.makedirs(os.path.join(run, "cards"), exist_ok=True)
     path = os.path.join(run, "cards", f"{n}.json")
-    stub = {"case": label, "unit": label, "status": STUB, "complete": {"siblings": [], "checked_clear": []}}
+    stub = {"case": label, "unit": label, "status": STUB, "complete": {"siblings": [], "checked_clear": []},
+            **({"reader": reader} if reader is not None else {})}
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
@@ -309,13 +333,18 @@ def chunks_of(leads: list) -> list[list]:
     return [leads[i:i + CHUNK] for i in range(0, len(leads), CHUNK)]
 
 
+QUESTION_CAP = 1200
+
+
 def host_questions(leads: list) -> list[tuple[str, str]]:
     out = []
     for x in leads:
         v = x.get("needs_host_check")
         if v:
-            q = one_line(v, 300) if isinstance(v, str) and v.strip().lower() not in ("true", "yes") else one_line(x.get("what", ""), 300)
-            out.append((x["where"], q))
+            q = v if isinstance(v, str) and v.strip().lower() not in ("true", "yes") else x.get("what", "")
+            q = " ".join(str(q).split())
+            # A question cut mid-sentence can't be answered; keep it whole up to a generous cap and mark a cut.
+            out.append((x["where"], q if len(q) <= QUESTION_CAP else q[:QUESTION_CAP].rstrip() + " [cut]"))
     return out
 
 
@@ -490,7 +519,7 @@ def build(run: str, phase: str = "collect", case_file: str | None = None,
                 files[f"reader-{k}.prompt.md"] = reader_prompt(c, g)
         else:
             for k in range(1, c.readers + 1):
-                files[f"reader-{k}.prompt.md"] = queue_reader_prompt(c)
+                files[f"reader-{k}.prompt.md"] = queue_reader_prompt(c, k)
         for k in range(1, len(SWEEPERS) + 1):
             files[f"sweeper-{k}.prompt.md"] = sweeper_prompt(c, k)
     elif n:
@@ -707,13 +736,14 @@ def main(argv=None) -> int:
     ap.add_argument("--case-file", help="where an investigator writes the case file (default <run>/case-file.md)")
     ap.add_argument("--drop", action="append", help="a case label to leave out, e.g. '#73' (repeatable)")
     ap.add_argument("--per-case", action="store_true", help="one case reader per case (from 3 cases) instead of the lean default")
+    ap.add_argument("--reader", type=int, metavar="K", help="with --claim: the claiming reader; refused while it holds an unfinished case")
     ap.add_argument("--claim", type=int, metavar="N", help="a case reader's claim on queued case N: writes its stub card "
                     "only if none exists (exit 0 claimed, 3 taken)")
     ap.add_argument("--status", action="store_true", help="write nothing; say which planned outputs are missing and what to start again")
     a = ap.parse_args(argv)
     if a.claim is not None:
         try:
-            code, text = claim(a.run, a.claim)
+            code, text = claim(a.run, a.claim, a.reader)
         except (Invalid, OSError) as e:
             print(f"plan.py: {e}", file=sys.stderr)
             return 2
