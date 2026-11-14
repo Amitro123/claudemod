@@ -719,6 +719,8 @@ def test_a_host_question_is_not_cut_mid_sentence():
     assert huge.endswith(" [cut]") and len(huge) <= pm.QUESTION_CAP + 6
     assert pm.host_questions([{"where": "b", "needs_host_check": True, "what": "the  claim"}]) == [], \
         "a bare flag is no docs question: the verifier settles it"
+    assert pm.host_questions([{"where": "c", "needs_host_check": True, "docs_question": "Kaggle docs: is aiofiles in the image?"}]) \
+        == [("c", "Kaggle docs: is aiofiles in the image?")], "a question written beside the flag still goes"
 
 
 def test_a_hold_survives_a_rewritten_stub_and_claims_at_the_same_moment(tmp_path) -> None:

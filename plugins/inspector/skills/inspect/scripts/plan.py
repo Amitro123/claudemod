@@ -396,6 +396,10 @@ def host_questions(leads: list) -> list[tuple[str, str]]:
     out = []
     for x in leads:
         v = x.get("needs_host_check")
+        # A reader that kept the flag a boolean (the schema's old example) and wrote its question beside it, as
+        # `docs_question`: the 2026-11-14 rerun of UltimateDocResearcher lost three Kaggle docs questions that way.
+        if v and isinstance(x.get("docs_question"), str) and x["docs_question"].strip():
+            v = x["docs_question"]
         if v:
             # Only a written question goes to the docs-checker. A bare `true` is a doubt about this repository's own
             # code or the host as deployed: in two 2026-11-14 runs every docs question built from `what` came back
