@@ -542,3 +542,15 @@ def test_banner_counts_rejected_as_verified(monkeypatch, capsys) -> None:
 def test_no_banner_for_empty_input(monkeypatch, capsys) -> None:
     _, out, _ = run(monkeypatch, capsys, [])
     assert "UNVERIFIED" not in out and "no leads" in out
+
+
+def test_a_real_lead_sorts_before_a_real_low_one_and_a_broken_flow_before_hardening(monkeypatch, capsys) -> None:
+    """2026-11-14: verdict first, then category broken-flow (6 of 10 REAL at precision 0.55 on 58 verified leads)."""
+    def lead(w, verdict, cat, lvl="reproduced"):
+        return {"where": w, "what": "x", "level": lvl, "probe": "p", "category": cat, "verdict": verdict,
+                "verified_by": "v", "verifier_evidence": "ran it"}
+    leads = [lead("low-hard.py:1", "REAL-LOW", "hardening"), lead("low-flow.py:1", "REAL-LOW", "broken-flow", "read"),
+             lead("real-hard.py:1", "REAL", "hardening", "read"), lead("real-flow.py:1", "REAL", "broken-flow")]
+    _, out, _ = run(monkeypatch, capsys, leads)
+    order = [l.split("`")[1] for l in out.splitlines() if l.startswith("| ") and "`" in l]
+    assert order == ["real-flow.py:1", "real-hard.py:1", "low-flow.py:1", "low-hard.py:1"]
