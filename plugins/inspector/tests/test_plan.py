@@ -754,3 +754,65 @@ def test_a_hold_survives_a_rewritten_stub_and_claims_at_the_same_moment(tmp_path
             if card.exists():
                 card.unlink()
                 (run / "claims" / str(n)).unlink()
+
+
+def _pm(name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, PLAN)
+    pm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm)
+    return pm
+
+
+def _finish_other_outputs(run, n):
+    for name, content in [("brief.md", "brief"), ("sweep-1.json", "[]"), ("sweep-2.json", "[]"), ("sweep-3.json", "[]")]:
+        (run / name).write_text(content)
+
+
+def test_resume_gives_each_unfinished_card_one_owner_across_waves(tmp_path) -> None:
+    """2026-11-14 review R114-01: each wave of a shared queue handed out the same stub, and a wave of one reader
+    restarted it the per-agent way. Now every unfinished card has exactly one recovery owner in the whole plan."""
+    import re as _re
+    pm = _pm("plan_owner")
+    for cases in (13, 15, 24):
+        for stubs, gone in (((1,), ()), ((1, 2, 3), ()), ((1,), (5, 6))):
+            run = make_run(tmp_path / f"r{cases}-{len(stubs)}-{len(gone)}", cases)
+            assert plan(run)[0] == 0
+            for k, n in enumerate(stubs, 1):
+                assert pm.claim(str(run), n, k)[0] == 0
+            for i in range(1, cases + 1):
+                if i not in stubs and i not in gone:
+                    (run / "cards" / f"{i}.json").write_text(done_card(i))
+            _finish_other_outputs(run, cases)
+            out = pm.status(str(run))[1]
+            for n in stubs:
+                owners = [l for l in out.splitlines() if l.startswith("- ") and _re.search(rf"first finish [^)]*cards/{n}\.json", l)]
+                assert len(owners) == 1, (cases, stubs, gone, n, out)
+            assert not [l for l in out.splitlines() if l.startswith("- ") and "to do: cards/" in l], out
+            assert out.count("  queue: to do:") == 1, out
+
+
+def test_a_dropped_case_holds_nothing_but_an_active_one_still_does(tmp_path) -> None:
+    """2026-11-14 review R114-02: claims on cases a re-plan dropped kept blocking every reader."""
+    pm = _pm("plan_drop")
+    run = make_run(tmp_path, 10)
+    assert plan(run)[0] == 0
+    for i in (1, 2, 3):
+        assert pm.claim(str(run), i, i)[0] == 0
+    assert plan(run, "--drop", "#10", "--drop", "#11")[0] == 0          # cases 1 and 2; case 3 stays
+    codes = [pm.claim(str(run), n, r)[0] for n, r in ((4, 1), (5, 2), (6, 3))]
+    assert codes == [0, 0, 4], codes                                     # reader 3 still holds active case 3
+    assert (run / "cards" / "1.json").exists() and (run / "claims" / "1").exists(), "the dropped work stays on disk"
+
+
+def test_only_a_finished_card_for_the_held_case_releases_the_hold(tmp_path) -> None:
+    """2026-11-14 review R114-03: `{}` or another case's card counted as finished for the claim, not for --status."""
+    pm = _pm("plan_finish")
+    for k, (content, frees) in enumerate([("{}", False), (done_card(3), False), ("{not json", False),
+                                           ('{"case": "#11", "unit": "#11", "status": "in-progress"}', False),
+                                           ("[" + done_card(1) + "]", False), (done_card(1), True)]):
+        run = make_run(tmp_path / str(k), 7)
+        assert plan(run)[0] == 0
+        assert pm.claim(str(run), 1, 1)[0] == 0
+        (run / "cards" / "1.json").write_text(content)
+        assert pm.claim(str(run), 2, 1)[0] == (0 if frees else 4), content

@@ -182,29 +182,23 @@ def queue_reader_prompt(c: Ctx, k: int) -> str:
     return "\n".join(lines)
 
 
-def finished_card(path: str) -> bool:
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        return False
-    return isinstance(d, dict) and d.get("status") != STUB
-
-
-def held_by(run: str, reader: int) -> list[str]:
-    """The cases reader `reader` claimed and has not finished. Read from `claims/<n>`, which only this script
-    writes: a reader rewriting its stub card (and dropping a key) can't make a held case look free."""
+def held_by(run: str, reader: int, labels: list[str], active: list[str]) -> list[str]:
+    """The cases of the active plan reader `reader` claimed and has not finished. Read from `claims/<n>`, which only
+    this script writes: a reader rewriting its stub card (and dropping a key) can't make a held case look free.
+    Finished means what --status means (card_state: one object, not a stub, naming this case), so `{}` or another
+    case's card keeps the hold. A claim on a case the plan no longer has (`--drop`) holds nothing: its card stays
+    on disk for the record (2026-11-14 review, R114-02 and R114-03)."""
     out = []
     folder = os.path.join(run, "claims")
     for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
-        if not name.isdigit():
+        if not name.isdigit() or name not in active:
             continue
         try:
             with open(os.path.join(folder, name), encoding="utf-8") as f:
                 who = f.read().strip()
         except OSError:
             continue
-        if who == str(reader) and not finished_card(os.path.join(run, "cards", f"{name}.json")):
+        if who == str(reader) and output_state(run, f"cards/{name}.json", labels) != "done":
             out.append(f"cards/{name}.json")
     return out
 
@@ -255,12 +249,13 @@ def claim(run: str, n: int, reader: int | None = None) -> tuple[int, str]:
     if not isinstance(labels, list) or not isinstance(ids, list) or str(n) not in ids or not 0 < n <= len(labels):
         return 2, f"case {n} is not a case of this plan"
     with claim_lock(run):
-        return _claim(run, n, labels[n - 1], reader)
+        return _claim(run, n, labels, ids, reader)
 
 
-def _claim(run: str, n: int, label: str, reader: int | None) -> tuple[int, str]:
+def _claim(run: str, n: int, labels: list[str], active: list[str], reader: int | None) -> tuple[int, str]:
+    label = labels[n - 1]
     if reader is not None:
-        held = held_by(run, reader)
+        held = held_by(run, reader, labels, active)
         if held:
             return 4, f"reader {reader} still holds {', '.join(held)}: finish that card before claiming case {n}"
     os.makedirs(os.path.join(run, "cards"), exist_ok=True)
@@ -733,6 +728,24 @@ def status(run: str) -> tuple[int, str]:
     labels = exp.get("case_labels") if isinstance(exp.get("case_labels"), list) else []
     plan_dir = f"{posix(run)}/plan"
     L, left = [], 0
+    # Readers sharing one queue, in every wave: a gap is the queue's, not one reader's, so the unfinished cards
+    # are handed out once across all waves (2026-11-14 review, R114-01: each wave handed out the same stub, and a
+    # wave of one reader took the per-agent path). A stub, another case's card or an unreadable file blocks a
+    # claim, so it goes to one restarted reader by name; a missing card is claimed from the queue.
+    all_readers = [d for p in exp["phases"] for d in (p.get("dispatch") or []) if d.get("agent") == "inspector:case-reader"]
+    shared = len(all_readers) > 1 and all("outputs" in d and d["outputs"] == all_readers[0]["outputs"] for d in all_readers)
+    owner: dict[int, list[str]] = {}
+    queue_line, missing = "", []
+    if shared:
+        states = [(o, output_state(run, o, labels)) for o in all_readers[0]["outputs"]]
+        handed = [o for o, st in states if st not in ("done", "missing")]
+        missing = [o for o, st in states if st == "missing"]
+        n = min(len(all_readers), len(handed) + len(missing))
+        owner = {id(d): handed[k::n] for k, d in enumerate(all_readers[:n])}
+        if n:
+            done = [o for o, st in states if st == "done"]
+            queue_line = (f"  queue: to do: {'; '.join(f'{o} {st}' for o, st in states if st != 'done')}"
+                          + (f"; finished, leave as is: {', '.join(done)}" if done else ""))
     for i, p in enumerate(exp["phases"], 1):
         wave = f", wave {p['wave']} of {p['waves']}" if "wave" in p else ""
         head = f"Phase {i}: {p.get('name')}{wave}"
@@ -742,23 +755,15 @@ def status(run: str) -> tuple[int, str]:
         else:  # a plan written before outputs were recorded per agent: any gap restarts the whole phase
             per_agent = [(d, p.get("outputs") or []) for d in dispatch]
         todo, queued = [], []
-        readers = [d for d, _ in per_agent if d.get("agent") == "inspector:case-reader"]
-        if len(readers) > 1 and all(d.get("outputs") == readers[0].get("outputs") for d in readers):
-            # Readers sharing a queue: a gap is the queue's, not one reader's. A stub left by a stopped reader is
-            # handed to a restarted reader by name; missing cards are claimed from the queue as before.
+        if shared:
+            readers = [d for d, _ in per_agent if d.get("agent") == "inspector:case-reader"]
             per_agent = [(d, o) for d, o in per_agent if d not in readers]
-            states = [(o, output_state(run, o, labels)) for o in readers[0]["outputs"]]
-            # A file that exists but isn't a finished card (a stub, another case's card, unreadable) blocks a claim:
-            # it is handed to a restarted reader by name. A missing card is claimed from the queue.
-            handed = [o for o, st in states if st not in ("done", "missing")]
-            missing = [o for o, st in states if st == "missing"]
-            n = min(len(readers), len(handed) + len(missing))
-            if n:
-                done = [o for o, st in states if st == "done"]
-                queued.append(f"  queue: to do: {'; '.join(f'{o} {st}' for o, st in states if st != 'done')}"
-                              + (f"; finished, leave as is: {', '.join(done)}" if done else ""))
-            for k in range(n):
-                d, mine = readers[k], handed[k::n]
+            mine_here = [d for d in readers if id(d) in owner]
+            if mine_here and queue_line:
+                queued.append(queue_line)
+                queue_line = ""        # once, in the first wave that restarts a reader
+            for d in mine_here:
+                mine = owner[id(d)]
                 first = f"first finish {', '.join(mine)} (yours: no claim); then " if mine else ""
                 queued.append(f"- {d.get('agent')}{' (model: ' + d['model'] + ')' if d.get('model') else ''}: "
                               f"`Read {plan_dir}/{d.get('prompt')} and follow it` ({first}claim from the queue: "
