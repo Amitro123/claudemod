@@ -700,3 +700,16 @@ def test_a_reader_holding_an_unfinished_case_cannot_claim_another(tmp_path) -> N
     assert json.loads((run / "cards" / "1.json").read_text(encoding="utf-8"))["reader"] == 1
     (run / "cards" / "1.json").write_text(done_card(1))          # reader 1 finishes its card
     assert plan(run, "--claim", "3", "--reader", "1")[0] == 0
+
+
+def test_a_host_question_is_not_cut_mid_sentence():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("plan_questions", PLAN)
+    pm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm)
+    long_q = "Does Python treat a lone carriage return as the end of a physical line, " * 6 + "so a comment ends there?"
+    qs = pm.host_questions([{"where": "a.py:1", "needs_host_check": long_q}])
+    assert qs == [("a.py:1", " ".join(long_q.split()))]
+    huge = pm.host_questions([{"where": "a.py:1", "needs_host_check": "x " * 2000}])[0][1]
+    assert huge.endswith(" [cut]") and len(huge) <= pm.QUESTION_CAP + 6
+    assert pm.host_questions([{"where": "b", "needs_host_check": True, "what": "the  claim"}]) == [("b", "the claim")]

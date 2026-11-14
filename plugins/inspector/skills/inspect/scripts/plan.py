@@ -333,13 +333,18 @@ def chunks_of(leads: list) -> list[list]:
     return [leads[i:i + CHUNK] for i in range(0, len(leads), CHUNK)]
 
 
+QUESTION_CAP = 1200
+
+
 def host_questions(leads: list) -> list[tuple[str, str]]:
     out = []
     for x in leads:
         v = x.get("needs_host_check")
         if v:
-            q = one_line(v, 300) if isinstance(v, str) and v.strip().lower() not in ("true", "yes") else one_line(x.get("what", ""), 300)
-            out.append((x["where"], q))
+            q = v if isinstance(v, str) and v.strip().lower() not in ("true", "yes") else x.get("what", "")
+            q = " ".join(str(q).split())
+            # A question cut mid-sentence can't be answered; keep it whole up to a generous cap and mark a cut.
+            out.append((x["where"], q if len(q) <= QUESTION_CAP else q[:QUESTION_CAP].rstrip() + " [cut]"))
     return out
 
 
