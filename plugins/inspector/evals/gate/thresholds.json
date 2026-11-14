@@ -1,0 +1,16 @@
+{
+  "_comment": "Provisional thresholds for the inspector release gate. Replace with measured baselines after 2-3 runs on a fixed project. scorecard_gate.py reads this file and exits non-zero when a threshold is breached.",
+  "thresholds": {
+    "precision_min": 0.90,
+    "recall_min": 0.75,
+    "not_real_max": null,
+    "cost_per_verified_lead_max": null,
+    "duplicate_clusters_max": null
+  },
+  "_notes": {
+    "precision_min": "Real runs show 0.94-0.97; 0.90 is a floor that catches genuine regressions. The original RELEASING.md proposal of 0.70 never bites.",
+    "recall_min": "The meaningful gate: recall on gold-file bugs. 0.75 is the RELEASING.md starting point.",
+    "not_real_max": "TODO: set after baseline runs (tracks false positives the verifier caught)."
+  },
+  "status": "provisional"
+}

@@ -16,6 +16,7 @@ jobs:
       # release can't turn CI red (or hide a regression) with no change here: bump it on purpose, after
       # the tests pass on the new version.
       - run: npm i -g @anthropic-ai/claude-code@2.1.312
+      - run: claude plugin validate plugins/${{ matrix.mod }}
       - run: claude plugin test plugins/${{ matrix.mod }}
   # The factory's branch-history scan for never-commit files, against real git in disposable
   # repositories: `claude plugin test` can't start a process. Its own job, so it runs whatever the
