@@ -1162,8 +1162,12 @@ def decision_phase(worked: list[Unit], model: str, cut: float, warnings: list[st
             u.is_fix = True
             u.why = [f"decision model: p={p:.2f} (inferred)"] + u.why
             u.tags.append("model-fix")
-            for c in u.commits:
-                c["is_fix"] = not (CHORE.search(c["subject"]) or BUMP.search(c["subject"]))
+            # The model judged the unit, not its commits. Commits whose own subject says fix are the fixes;
+            # only when none does is every non-housekeeping commit one (a PR of one change). Otherwise a
+            # feature PR with one fix commit inside would send its whole feature commit to blame.
+            if not any(c.get("is_fix") for c in u.commits):
+                for c in u.commits:
+                    c["is_fix"] = not (CHORE.search(c["subject"]) or BUMP.search(c["subject"]))
             meta["promoted"].append(u.label())
     return meta
 

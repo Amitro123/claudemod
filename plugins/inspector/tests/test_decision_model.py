@@ -138,3 +138,14 @@ def test_a_reply_of_another_shape_warns_or_is_unanswered_never_raises(reply):
     u, warnings = unit(1, "a"), []
     evidence.decision_phase([u], "m/x", 0.5, warnings, lambda *a: reply)
     assert not u.is_fix and u.model_p is None
+
+
+
+def test_a_promoted_unit_whose_commits_say_fix_blames_only_those_commits():
+    """2026-11-14 inspection: #73, a feature PR promoted by the model, had its whole-feature commit marked a fix."""
+    u = unit(73, "inspector 0.2.0: a bug detective")
+    u.commits = [{"sha": "1" * 40, "subject": "inspector: the bug detective (feature)", "is_fix": False},
+                 {"sha": "2" * 40, "subject": "fix: run folder survives the sandbox", "is_fix": True},
+                 {"sha": "3" * 40, "subject": "bump version to 0.2.0", "is_fix": False}]
+    evidence.decision_phase([u], "m/x", 0.5, [], FakePost({"#73": 0.8}))
+    assert u.is_fix and [c["is_fix"] for c in u.commits] == [False, True, False]

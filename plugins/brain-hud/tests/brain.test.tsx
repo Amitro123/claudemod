@@ -5,7 +5,7 @@ import type { On } from 'claude-code'
 import { claudeCells, sceneSvg } from '../hooks/art'
 import { GRAPH, graphSvg, routeOf, shownFiles } from '../hooks/graph'
 import { diffBrain, logPrompt, paraStats, parseMemory, parseMistakes, withListing } from '../hooks/brain'
-import { handoffEntry, HANDOFF_TITLE, insertBelowMarker, journalText, looseEnds, quoted, reportSections, workerEntry } from '../hooks/journal'
+import { handoffEntry, HANDOFF_TITLE, insertBelowMarker, journalText, looseEnds, quoted, redact, reportSections, workerEntry } from '../hooks/journal'
 import { parseMemory as memoryOf } from '../hooks/brain'
 import type { JournalEntry } from '../hooks/journal'
 import type { Brain } from '../types'
@@ -1011,6 +1011,24 @@ describe('worker text quoted into MISTAKES.md or context has its secrets redacte
     const env = quoted('ran DB_PASSWORD=hunter3 then export GITHUB_TOKEN=abc999')
     for (const s of ['hunter3', 'abc999']) expect(env).not.toContain(s)
     expect(q).toMatch(/^`found it: export GH_TOKEN=\[redacted\]/)
+  })
+
+  test('the forms the Python side redacts since #125 are redacted here too (2026-11-14 inspection)', () => {
+    for (const [said, secret] of [
+      ['curl -H "Authorization: token ghx0abc123secret" https://x', 'ghx0abc123secret'],
+      ["curl -H 'Authorization: abc123secret' https://x", 'abc123secret'],
+      ['curl -u alice:s3cretpass https://x', 's3cretpass'],
+      ['curl --user=alice:s3cretpass https://x', 's3cretpass'],
+      ['curl -u "alice:s3cret pass" https://x', 'pass'],
+      ['SLACK=xoxb-1234567890-abcdefghij npm test', 'xoxb-1234567890'],
+      ['DB_PASSWORD="pass word" git checkout -- .', 'word'],
+      ["mytool --password 'two words' run", 'words'],
+    ]) {
+      const out = redact(said)
+      expect([said, out.includes(secret)]).toEqual([said, false])
+      expect(out).toContain('[redacted]')
+    }
+    for (const kept of ['git push -u origin main', 'sudo -u bob git checkout -- .', 'git checkout -- auth.py']) expect(redact(kept)).toBe(kept)
   })
 })
 
