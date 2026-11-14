@@ -5,6 +5,7 @@ import type { On } from 'claude-code'
 import { claudeCells, sceneSvg } from '../hooks/art'
 import { GRAPH, graphSvg, routeOf, shownFiles } from '../hooks/graph'
 import { diffBrain, logPrompt, paraStats, parseMemory, parseMistakes, withListing } from '../hooks/brain'
+import CASES from './redaction-cases'
 import { handoffEntry, HANDOFF_TITLE, insertBelowMarker, journalText, looseEnds, quoted, redact, reportSections, workerEntry } from '../hooks/journal'
 import { parseMemory as memoryOf } from '../hooks/brain'
 import type { JournalEntry } from '../hooks/journal'
@@ -1029,6 +1030,15 @@ describe('worker text quoted into MISTAKES.md or context has its secrets redacte
       expect(out).toContain('[redacted]')
     }
     for (const kept of ['git push -u origin main', 'sudo -u bob git checkout -- .', 'git checkout -- auth.py']) expect(redact(kept)).toBe(kept)
+  })
+
+  test('the shared cases (tests/redaction-cases.ts) redact here exactly as in host_layout.py', () => {
+    // The Python side runs the same file (tests/skill/scripts/test_redaction_cases.py): a form one side
+    // learns and the other doesn't fails a test (2026-11-14 inspection: JSON keys, postgres:// URLs,
+    // Cookie, -p<pass> and redis-cli -a passed through here).
+    const left = (CASES.redact as [string, string][]).filter(([said, secret]) => redact(said).includes(secret))
+    expect(left).toEqual([])
+    expect((CASES.keep as string[]).filter(k => redact(k) !== k)).toEqual([])
   })
 })
 

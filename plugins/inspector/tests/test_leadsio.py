@@ -138,3 +138,19 @@ def test_merge_cards_rejects_null_containers(where, bad, tmp_path, capsys):
         args += ["--sweep", str(sw)]
     assert merge_cards.main(args) == 2
     assert not (tmp_path / "o.json").exists()
+
+
+def test_an_empty_folder_is_refused_and_stdin_may_carry_a_bom(tmp_path, monkeypatch) -> None:
+    """Second 2026-11-14 inspection: a folder with no *.json read as zero items (exit 0, nothing checked), and a BOM
+    on stdin was refused though files accept it."""
+    empty = tmp_path / "cards"
+    empty.mkdir()
+    with pytest.raises(leadsio.LeadsError, match="no \\*.json"):
+        leadsio.read_items(str(empty))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("﻿" + json.dumps([{"where": "a.py:1", "what": "w"}])))
+    try:
+        items = leadsio.read_items("-")
+    except leadsio.LeadsError as e:
+        assert "BOM" not in str(e) and "character 0" not in str(e), e
+    else:
+        assert items and items[0]["where"] == "a.py:1"

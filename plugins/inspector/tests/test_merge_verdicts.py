@@ -165,3 +165,12 @@ def test_leads_without_any_verdict_file_are_still_refused(tmp_path) -> None:
     p = subprocess.run([sys.executable, str(script), "--leads", str(tmp_path / "leads.json"), "--out", str(tmp_path / "merged.json")],
                        capture_output=True, text=True)
     assert p.returncode == 2 and not (tmp_path / "merged.json").exists()
+
+
+def test_malformed_verdict_entries_exit_2_naming_each(tmp_path, capsys) -> None:
+    """Second 2026-11-14 inspection: ["oops"], [null] or a string `corrected` ended in an AttributeError (exit 1)."""
+    for bad, needle in (('["oops"]', "expected an object, got str"), ("[null]", "got NoneType"),
+                        (json.dumps([verdict("a.py:1", corrected="x")]), "`corrected` must be an object"),
+                        (json.dumps([{"verdict": "REAL"}]), "no `where`")):
+        code, m, err = run(tmp_path, capsys, [lead("a.py:1")], bad)
+        assert code == 2 and m is None and needle in err, (bad, err)

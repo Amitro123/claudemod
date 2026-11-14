@@ -32,6 +32,7 @@ import json
 import os
 import re
 import sys
+import time
 
 CHUNK = 8
 SINGLE_MAX = 6   # up to this many cases, one investigator: measured close to a reader per case, at less cost
@@ -181,32 +182,83 @@ def queue_reader_prompt(c: Ctx, k: int) -> str:
     return "\n".join(lines)
 
 
+def finished_card(path: str) -> bool:
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(d, dict) and d.get("status") != STUB
+
+
 def held_by(run: str, reader: int) -> list[str]:
-    """The stub cards reader `reader` claimed and has not finished."""
+    """The cases reader `reader` claimed and has not finished. Read from `claims/<n>`, which only this script
+    writes: a reader rewriting its stub card (and dropping a key) can't make a held case look free."""
     out = []
-    folder = os.path.join(run, "cards")
+    folder = os.path.join(run, "claims")
     for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
-        try:
-            with open(os.path.join(folder, name), encoding="utf-8-sig") as f:
-                d = json.load(f)
-        except (OSError, ValueError):
+        if not name.isdigit():
             continue
-        if isinstance(d, dict) and d.get("status") == STUB and d.get("reader") == reader:
-            out.append(f"cards/{name}")
+        try:
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                who = f.read().strip()
+        except OSError:
+            continue
+        if who == str(reader) and not finished_card(os.path.join(run, "cards", f"{name}.json")):
+            out.append(f"cards/{name}.json")
     return out
+
+
+class claim_lock:
+    """One claim at a time per run folder: the hold check and the create are one step under it. `mkdir` is atomic
+    on every OS; a lock older than STALE seconds (a claim that died holding it) is taken over."""
+    STALE, WAIT = 30.0, 10.0
+
+    def __init__(self, run: str):
+        self.path = os.path.join(run, "claims", ".lock")
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        deadline = time.monotonic() + self.WAIT
+        while True:
+            try:
+                os.mkdir(self.path)
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - os.stat(self.path).st_mtime > self.STALE:
+                        os.rmdir(self.path)
+                        continue
+                except OSError:
+                    continue
+                if time.monotonic() > deadline:
+                    raise Invalid(f"another claim holds {self.path}; try again")
+                time.sleep(0.02)
+
+    def __exit__(self, *exc):
+        try:
+            os.rmdir(self.path)
+        except OSError:
+            pass
 
 
 def claim(run: str, n: int, reader: int | None = None) -> tuple[int, str]:
     """Create cards/<n>.json as a stub, only if no file is there (O_EXCL): the one atomic step that hands a queued
-    case to exactly one reader. With `reader`, a reader that still holds an unfinished stub is refused: measured
-    2026-11-14, a reader claimed the rest of the queue in one shell loop and left the other readers idle. The CLI requires it.
+    case to exactly one reader. With `reader`, a reader that still holds an unfinished case is refused: measured
+    2026-11-14, a reader claimed the rest of the queue in one shell loop and left the other readers idle. The CLI
+    requires it. The hold check and the create run under one lock, so claims sent at the same moment by one reader
+    can't both pass the check (the second 2026-11-14 inspection got 2 of 3 through in 1 of 30 tries).
     0 claimed, 3 taken or done, 4 this reader holds an unfinished case, 2 not a case of this plan."""
     exp = load(os.path.join(run, "plan", "expect.json"))
     labels = exp.get("case_labels") if isinstance(exp, dict) else None
     ids = exp.get("reader_ids") if isinstance(exp, dict) else None
     if not isinstance(labels, list) or not isinstance(ids, list) or str(n) not in ids or not 0 < n <= len(labels):
         return 2, f"case {n} is not a case of this plan"
-    label = labels[n - 1]
+    with claim_lock(run):
+        return _claim(run, n, labels[n - 1], reader)
+
+
+def _claim(run: str, n: int, label: str, reader: int | None) -> tuple[int, str]:
     if reader is not None:
         held = held_by(run, reader)
         if held:
@@ -221,6 +273,9 @@ def claim(run: str, n: int, reader: int | None = None) -> tuple[int, str]:
         return 3, f"case {n} ({label}) is taken: cards/{n}.json exists; claim the next case"
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(json.dumps(stub, ensure_ascii=False) + "\n")
+    if reader is not None:
+        with open(os.path.join(run, "claims", str(n)), "w", encoding="utf-8") as f:
+            f.write(f"{reader}\n")
     return 0, f"claimed case {n} ({label}): cards/{n}.json holds its stub"
 
 
@@ -342,8 +397,12 @@ def host_questions(leads: list) -> list[tuple[str, str]]:
     for x in leads:
         v = x.get("needs_host_check")
         if v:
-            q = v if isinstance(v, str) and v.strip().lower() not in ("true", "yes") else x.get("what", "")
-            q = " ".join(str(q).split())
+            # Only a written question goes to the docs-checker. A bare `true` is a doubt about this repository's own
+            # code or the host as deployed: in two 2026-11-14 runs every docs question built from `what` came back
+            # "not answerable from documentation". The verifier settles those, or marks them UNVERIFIABLE.
+            if not isinstance(v, str) or v.strip().lower() in ("true", "yes"):
+                continue
+            q = " ".join(v.split())
             # A question cut mid-sentence can't be answered; keep it whole up to a generous cap and mark a cut.
             out.append((x["where"], q if len(q) <= QUESTION_CAP else q[:QUESTION_CAP].rstrip() + " [cut]"))
     return out

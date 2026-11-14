@@ -47,7 +47,10 @@ At most 25 tool calls per case. At call 20 of a case stop investigating it and w
    by line from the failing point: what runs after it, what it skips, in today's code. When it
    depends on how the host behaves (what the engine does when a hook throws, a framework's
    retry), cite where that is written (its types, its docs) or give the impact the level
-   `unverified` and flag the lead `"needs_host_check": true`. Never state an impact you didn't trace.
+   `unverified` and flag the lead with `needs_host_check`. When public documentation could settle it,
+   write the question itself, naming the tool ("Claude Code hooks docs: does a session.start hook that
+   throws stop the session's other hooks?"): that string goes to a docs-checker. `true` alone means
+   only this repository or the deployed host can settle it, and no docs question is asked. Never state an impact you didn't trace.
    Label rules (security gate with `security_actor`, needs-host-check, `change_status`, `reach`/`reach_when`, traced claims, `not_verified`): references/labels.md. `security` needs `security_input`, `security_boundary`, `security_sink`, `security_actor`; give `change_status`, `reach` (+ `reach_when`) and, for untraced sub-claims, `not_verified`; a `reproduced` or `read` lead needs a `probe`; give `test_kind` and, when known, `downstream`. A `change` that holds a query carries `query_run` (`{"mode": "read-only", "status": "executed", "observed": "<result summary>"}`) only if you ran it read-only; otherwise `change_status` stays `unverified`.
 6. Prove what you can cheaply. A probe that runs a copy of a function, or the project's own test
    for one file, counts as `reproduced` when you saw it fail. At most 3 probes. No installs.

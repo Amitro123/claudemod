@@ -110,7 +110,7 @@ export const diffLines = (diff: string) =>
 // these as a command in a Bash or PowerShell call is refused; quoted text (a commit message) doesn't
 // count, but a shell's -c string and eval's words do. A guard against an agent's mistake, not a
 // security boundary: a command built at run time (a variable, a script file) gets past it.
-const FORBIDDEN: { re: RegExp; what: string }[] = [
+const FORBIDDEN: { re: RegExp; what: string; test?: (cmd: string) => boolean }[] = [
   { re: /^git\s+push\b/, what: 'git push' },
   { re: /^git\s+remote\s+(add|set-url|remove|rm|rename)\b/, what: 'changing git remotes' },
   { re: /^gh\s+(pr|release|repo|secret|variable|workflow|api)\b/, what: 'GitHub changes with gh' },
@@ -120,13 +120,45 @@ const FORBIDDEN: { re: RegExp; what: string }[] = [
   { re: /^kubectl\s+(apply|delete|create|replace|patch|scale|rollout)\b/, what: 'changing a cluster' },
   { re: /^helm\s+(install|upgrade|uninstall|rollback)\b/, what: 'changing a cluster' },
   { re: /^(vercel|netlify|flyctl|fly|wrangler|firebase|heroku|railway)\b[^|]*\b(deploy|publish|--prod)\b/, what: 'deploying' },
-  { re: /^rm\s+(-\w*r\w*f?\w*|-\w*f\w*r\w*|--recursive)\b.*(\s|^)(\/|~|\.\.|[A-Za-z]:[\\/])/, what: 'deleting outside the worktree' },
+  { re: /^rm(?=\s|$)/, test: cmd => recursiveRmOutside(cmd), what: 'deleting outside the worktree' },
 ]
+
+// rm -r (-R, --recursive, in any flag group) of a path that can leave the worktree: absolute, ~, a
+// variable ($HOME/x), a drive, or one with a .. segment anywhere (./../x, sub/../../x). Quotes are read
+// through: rm -rf "/abs" names /abs. 2026-11-14 inspection: -R, ./../x, sub/../../x, $HOME/x and a quoted
+// path all got past the old pattern.
+function recursiveRmOutside(cmd: string): boolean {
+  const args = cmd.split(/\s+/).slice(1)
+  const flags = args.filter(a => /^-/.test(a) && a !== '--')
+  if (!flags.some(f => f === '--recursive' || (/^-[^-]/.test(f) && /[rR]/.test(f)))) return false
+  return args
+    .filter(a => !/^-/.test(a))
+    .map(a => a.replace(/^(["'])(.*)\1$/, '$2'))
+    .some(a => /^(\/|~|\$|[A-Za-z]:[\\/])/.test(a) || a.split(/[\\/]/).includes('..'))
+}
 
 // Words that run the command after them: wrappers and runners, with the options they take.
 const WRAPPERS = new Set(['sudo', 'exec', 'eval', 'command', 'env', 'time', 'nohup', 'nice', 'xargs', 'npx', 'bunx', 'stdbuf', 'timeout', 'doas'])
-// git's options before its subcommand; these take a value as the next word.
-const GIT_VALUE_OPTS = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env'])
+// A wrapper's options that take the next word as their value (sudo -u bob, nice -n 5, timeout -s KILL):
+// without them the value read as the program, and the command after it was never checked.
+const WRAPPER_VALUE_OPTS: Record<string, Set<string>> = {
+  sudo: new Set(['-u', '-g', '-C', '-D', '-h', '-p', '-U', '-r', '-t', '-R', '--user', '--group', '--chdir', '--host', '--prompt']),
+  doas: new Set(['-u', '-C']),
+  env: new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string']),
+  nice: new Set(['-n', '--adjustment']),
+  timeout: new Set(['-s', '--signal', '-k', '--kill-after']),
+  xargs: new Set(['-I', '-n', '-P', '-L', '-d', '-E', '-s', '-a', '--max-args', '--max-procs', '--delimiter', '--arg-file']),
+  stdbuf: new Set(['-i', '-o', '-e']),
+}
+// A program's own options before its subcommand; these take a value as the next word (gh -R a/b pr create,
+// kubectl -n prod delete): every leading option is skipped, so the subcommand is what the patterns see.
+const VALUE_OPTS: Record<string, Set<string>> = {
+  git: new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env']),
+  gh: new Set(['-R', '--repo', '--hostname']),
+  docker: new Set(['-c', '--context', '-H', '--host', '--config', '-l', '--log-level']),
+  kubectl: new Set(['-n', '--namespace', '--context', '--kubeconfig', '-s', '--server', '--cluster', '--user', '--as', '--token']),
+  helm: new Set(['-n', '--namespace', '--kube-context', '--kubeconfig']),
+}
 
 // A command's words with what runs it peeled off: VAR=x, the wrappers (and their options), a path to
 // the program (/usr/bin/git), `pnpm dlx`/`yarn dlx`/`npm exec`, and git's global options.
@@ -138,8 +170,8 @@ function normalize(segment: string): string {
     const w = (words[i] ?? '').replace(/^.*[\\/]/, '').replace(/\.exe$/i, '')
     if (WRAPPERS.has(w)) {
       i++
-      // timeout's duration, and the wrappers' own options.
-      while (i < words.length && (/^-/.test(words[i]!) || (w === 'timeout' && /^\d/.test(words[i]!)))) i++
+      // timeout's duration, and the wrappers' own options (with their values).
+      while (i < words.length && (/^-/.test(words[i]!) || (w === 'timeout' && /^\d/.test(words[i]!)))) i += WRAPPER_VALUE_OPTS[w]?.has(words[i]!) ? 2 : 1
       continue
     }
     if ((w === 'pnpm' || w === 'yarn') && words[i + 1] === 'dlx') {
@@ -156,10 +188,11 @@ function normalize(segment: string): string {
   const rest = words.slice(i)
   if (!rest.length) return ''
   rest[0] = rest[0]!.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '')
-  if (rest[0] === 'git') {
+  const opts = VALUE_OPTS[rest[0]!]
+  if (opts) {
     let k = 1
-    while (k < rest.length && /^-/.test(rest[k]!)) k += GIT_VALUE_OPTS.has(rest[k]!) ? 2 : 1
-    return ['git', ...rest.slice(k)].join(' ')
+    while (k < rest.length && /^-/.test(rest[k]!)) k += opts.has(rest[k]!) ? 2 : 1
+    return [rest[0]!, ...rest.slice(k)].join(' ')
   }
   return rest.join(' ')
 }
@@ -172,7 +205,9 @@ function commandsIn(line: string, depth = 0): string[] {
     for (const m of line.matchAll(/\b(?:bash|sh|zsh|dash|ksh|fish|pwsh|powershell)(?:\.exe)?\s+(?:-\w+\s+)*-(?:c|Command)\s+(['"])((?:(?!\1)[^\\]|\\.)*)\1/gi)) inner.push(...commandsIn(m[2]!, depth + 1))
     for (const m of line.matchAll(/\beval\s+(['"])((?:(?!\1)[^\\]|\\.)*)\1/g)) inner.push(...commandsIn(m[2]!, depth + 1))
   }
-  const unquoted = line.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, '""')
+  // Quoted text stays one word that can't start a command: its separators and spaces become _, so a commit
+  // message saying "git push" is not a push, while rm -rf "/abs" still names /abs.
+  const unquoted = line.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, q => `"${q.slice(1, -1).replace(/[\s;&|()`<>]/g, '_')}"`)
   const parts = unquoted.split(/&&|\|\||;|\||\n|\$\(|`|\(|\)/)
   return [...inner, ...parts.map(normalize).filter(Boolean)]
 }
@@ -180,7 +215,7 @@ function commandsIn(line: string, depth = 0): string[] {
 // Why a run's agent may not run this command, or '' when it may.
 export function forbiddenCommand(command: string): string {
   for (const cmd of commandsIn(command)) {
-    const hit = FORBIDDEN.find(f => f.re.test(cmd))
+    const hit = FORBIDDEN.find(f => f.re.test(cmd) && (!f.test || f.test(cmd)))
     if (hit) return hit.what
   }
   return ''
@@ -196,24 +231,37 @@ const CHANGES_CHECKOUT: { re: RegExp; what: string }[] = [
   { re: /^(sed|perl|ruby)\s+(.*\s)?(-[A-Za-z]*i\S*|--in-place\S*)(\s|$)/, what: 'editing a file in place' },
   { re: /^(npm|pnpm|yarn|bun)\s+(install|i|ci|add|remove|rm|uninstall|update|up|upgrade|link)(?=\s|$)/, what: 'changing installed dependencies' },
   { re: /^(truncate|shred)(?=\s|$)/, what: 'changing a file' },
+  // 2026-11-14 inspection: these wrote the checkout and got past the guard.
+  { re: /^git\s+(checkout-index|read-tree|sparse-checkout)(?=\s|$)/, what: 'changing the checkout with git' },
+  { re: /^git\s+submodule\s+(update|add|deinit|init|sync|absorbgitdirs|set-branch|set-url)(?=\s|$)/, what: 'changing the checkout with git' },
+  { re: /^git\s+(diff|log|show|format-patch)\b.*\s(--output(=|\s)|-o\s)/, what: 'writing a file in the checkout' },
+  { re: /^g?awk\s+(.*\s)?-i\s*inplace(\s|$)/, what: 'editing a file in place' },
+  { re: /^patch(?=\s|$)(?!.*\s--dry-run(\s|$))/, what: 'changing a file' },
+  { re: /^find\s.*\s(-delete|-exec\s+(rm|mv|sed|tee|truncate)\b)/, what: 'changing a file in the checkout' },
 ]
 // Under /tmp, or /dev/null. A `..` segment can climb out of /tmp (/tmp/../src/a.ts), so it never counts.
 const underTmp = (p: string): boolean =>
   p === '/dev/null' || (p.startsWith('/tmp/') && !p.split('/').includes('..'))
 // rm, rmdir, mv, cp, tee, touch, chmod, chown, ln, mkdir and dd of=: allowed only when what they write is under /tmp.
-const WRITERS = /^(rm|rmdir|mv|cp|tee|touch|chmod|chown|ln|mkdir)$/
+const WRITERS = /^(rm|rmdir|mv|cp|tee|touch|chmod|chown|ln|mkdir|install)$/
 function writesCheckout(cmd: string): boolean {
-  const [w, ...args] = cmd.split(/\s+/)
+  const [w, ...all] = cmd.split(/\s+/)
+  const args = all.map(a => a.replace(/^(["'])(.*)\1$/, '$2'))
+  // -t DIR / --target-directory=DIR names where cp, ln, mv and install write, whatever comes after.
+  const t = args.findIndex(a => a === '-t' || a === '--target-directory')
+  const target = t >= 0 ? args[t + 1] : args.find(a => a.startsWith('--target-directory='))?.slice('--target-directory='.length)
+  if (target !== undefined && /^(cp|ln|mv|install)$/.test(w!)) return !underTmp(target)
   const paths = args.filter(a => !a.startsWith('-'))
-  // cp and ln write only their last path (the others are read); the rest write every path they name.
-  if (w === 'cp' || w === 'ln') return !paths.length || !underTmp(paths.at(-1)!)
+  // cp, ln and install write only their last path (the others are read); the rest write every path they name.
+  if (w === 'cp' || w === 'ln' || w === 'install') return !paths.length || !underTmp(paths.at(-1)!)
   if (WRITERS.test(w!)) return !paths.length || paths.some(p => !underTmp(p))
   if (w === 'dd') return args.some(a => a.startsWith('of=') && !underTmp(a.slice(3)))
   return false
 }
 // A redirect (> or >>) to a file outside /tmp; 2>&1, >&2 and /dev/null are not writes. Looked for in
 // the line and in the strings a shell's -c or eval runs, as commandsIn reads them.
-const REDIRECT = /(?:^|[\s\d])>>?\s*(?!&)(\S+)/g
+// No space is needed before it (echo x>out, &>out): only => and -> (an arrow in prose) are left out.
+const REDIRECT = /(?<![=\->])>>?\s*(?!&)(\S+)/g
 function redirectsOutside(line: string, depth = 0): boolean {
   if (depth < 2) {
     for (const m of line.matchAll(/\b(?:bash|sh|zsh|dash|ksh|fish|pwsh|powershell)(?:\.exe)?\s+(?:-\w+\s+)*-(?:c|Command)\s+(['"])((?:(?!\1)[^\\]|\\.)*)\1|\beval\s+(['"])((?:(?!\3)[^\\]|\\.)*)\3/gi)) {

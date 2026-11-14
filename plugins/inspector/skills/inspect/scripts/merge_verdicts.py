@@ -48,6 +48,26 @@ def load_array(path: str, what: str) -> list:
     return data
 
 
+DICT_FIELDS = ("corrected", "probe_check")
+
+
+def check_verdicts(items: list, path: str) -> None:
+    """Every verdict entry is an object with a `where`, and its object fields are objects: a malformed file is
+    refused with every problem named (exit 2), never a traceback (second 2026-11-14 inspection)."""
+    bad = []
+    for i, v in enumerate(items):
+        if not isinstance(v, dict):
+            bad.append(f"[{i}]: expected an object, got {type(v).__name__}")
+            continue
+        if not str(v.get("where") or "").strip():
+            bad.append(f"[{i}]: no `where`")
+        for k in DICT_FIELDS:
+            if v.get(k) is not None and not isinstance(v[k], dict):
+                bad.append(f"[{i}] {v.get('where')}: `{k}` must be an object, got {type(v[k]).__name__}")
+    if bad:
+        raise ValueError(f"verdicts {path}: " + "; ".join(bad))
+
+
 def as_list(v: object) -> list:
     if v is None or v == "" or v == []:
         return []
@@ -137,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         verdicts = []
         for p in a.verdicts:
             one = load_array(p, "verdicts")
+            check_verdicts(one, p)
             print(f"verdicts file {p}: {len(one)} verdicts", file=sys.stderr)
             verdicts += one
         probe_only: list[str] = []

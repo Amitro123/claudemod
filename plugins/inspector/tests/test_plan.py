@@ -218,7 +218,7 @@ def test_docs_checker_only_when_a_lead_needs_a_host_check(tmp_path) -> None:
     run = make_run(tmp_path, 3, leads)
     plan(run, "--phase", "verify")
     e = exp(run)
-    assert e["docs_checker"] == {"needed": True, "questions": 2}
+    assert e["docs_checker"] == {"needed": True, "questions": 1}  # the bare `true` of lead 3 is no docs question
     assert e["phases"][-1]["agents"] == {"inspector:verifier": 1, "inspector:docs-checker": 1}
     dc = (run / "plan" / "docs-checker.prompt.md").read_text(encoding="utf-8")
     assert "does the tool trim the value?" in dc and "lead 3" not in dc.split("1.")[0]
@@ -717,4 +717,38 @@ def test_a_host_question_is_not_cut_mid_sentence():
     assert qs == [("a.py:1", " ".join(long_q.split()))]
     huge = pm.host_questions([{"where": "a.py:1", "needs_host_check": "x " * 2000}])[0][1]
     assert huge.endswith(" [cut]") and len(huge) <= pm.QUESTION_CAP + 6
-    assert pm.host_questions([{"where": "b", "needs_host_check": True, "what": "the  claim"}]) == [("b", "the claim")]
+    assert pm.host_questions([{"where": "b", "needs_host_check": True, "what": "the  claim"}]) == [], \
+        "a bare flag is no docs question: the verifier settles it"
+
+
+def test_a_hold_survives_a_rewritten_stub_and_claims_at_the_same_moment(tmp_path) -> None:
+    """Second 2026-11-14 inspection: held_by read the `reader` key from the stub, which the reader rewrites, and the
+    hold check and the create were two steps, so simultaneous claims by one reader could both pass."""
+    import importlib.util
+    import threading
+    run = make_run(tmp_path, 7)
+    assert plan(run)[0] == 0
+    spec = importlib.util.spec_from_file_location("plan_hold", PLAN)
+    pm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm)
+    assert pm.claim(str(run), 1, 1)[0] == 0
+    (run / "cards" / "1.json").write_text(json.dumps({"case": "#11", "unit": "#11", "status": "in-progress",
+                                                      "complete": {"siblings": [], "checked_clear": []}}))
+    assert pm.claim(str(run), 2, 1)[0] == 4, "a stub rewritten without `reader` is still held"
+    for trial in range(10):
+        codes = []
+        barrier = threading.Barrier(4)
+        def go(n):
+            barrier.wait()
+            codes.append(pm.claim(str(run), n, 10 + trial)[0])
+        threads = [threading.Thread(target=go, args=(n,)) for n in (3, 4, 5, 6)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        assert codes.count(0) <= 1, (trial, codes)
+        for n in (3, 4, 5, 6):
+            card = run / "cards" / f"{n}.json"
+            if card.exists():
+                card.unlink()
+                (run / "claims" / str(n)).unlink()

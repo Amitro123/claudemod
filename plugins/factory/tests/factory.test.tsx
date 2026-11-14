@@ -32,7 +32,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false, holdGoalCheck = false } = {}) {
   // Files the install writes in the worktree (`setupMakes`, a lockfile npm install made): untracked from then on.
   const made: string[] = []
   const spawned: Spawned[] = []
@@ -65,7 +65,13 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     sends.push({ to: e.to, text: e.text })
     return (delivers ? { isDelivered: true } : { isDelivered: false, reason: 'no such agent' }) as never
   })
-  on('command.list', () => ({ value: goalRun ? [{ name: 'session-goal', description: 'g', source: 'plugin' }] : [] }) as never)
+  // `holdGoalCheck`: once armed, the check for goal-run waits until the test releases it (the spec's
+  // answer asks it again, so a test can press Stop meanwhile).
+  let goalCheckArmed = false
+  on('command.list', async () => {
+    if (holdGoalCheck && goalCheckArmed) await held
+    return { value: goalRun ? [{ name: 'session-goal', description: 'g', source: 'plugin' }] : [] } as never
+  })
   // The mod's own spawn arrives in the Agent tool's words (subagent_type).
   on('agent.spawn', async (_, e) => {
     const a = e as unknown as { subagentType?: string; subagent_type?: string; prompt: string; description: string; cwd?: string; model?: string }
@@ -190,7 +196,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     const { Box } = $.ui.resolve(e)
     return <Box />
   })
-  return { limits, spawned, ran, sent, toasts, written, release, asked, clock, sends, registered, setConfig: (c: string) => void (configCommit = c) }
+  return { limits, spawned, ran, sent, toasts, written, release, asked, clock, sends, registered, setConfig: (c: string) => void (configCommit = c), armGoalCheck: () => void (goalCheckArmed = true) }
 }
 
 const texts = async (ui: { findAll: (q: { type: 'Text' }) => Promise<unknown[]> }) =>
@@ -1022,6 +1028,34 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     }
   })
 
+  test('2026-11-14 inspection: program options, wrapper values, rm paths and review writers are seen through', () => {
+    for (const c of [
+      // a program's own options before the subcommand
+      'gh -R a/b pr create', 'gh --repo a/b release create v1', 'docker --context prod push img', 'kubectl -n prod delete pod x',
+      'kubectl --context=prod apply -f x.yaml', 'helm -n prod uninstall app',
+      // a wrapper's option that takes a value
+      'env -u X git push', 'nice -n 5 git push', 'sudo -u bob git push', 'timeout -s KILL 5 git push', 'xargs -I{} git push',
+      // rm -r of a path that can leave the worktree
+      'rm -R /x', 'rm -r ./../x', 'rm -r sub/../../x', 'rm -rf $HOME/x', 'rm -rf "/home/u/data"', "rm -fr '/srv/app'", 'rm --recursive -f /x',
+    ]) {
+      expect([c, forbiddenCommand(c) !== '']).toEqual([c, true])
+    }
+    for (const c of ['gh -R a/b issue list', 'kubectl -n prod get pods', 'rm -rf build dist', 'rm -rf "build dir"', 'rm -f /tmp/x', 'sudo -u bob npm test', 'nice -n 5 npm test', 'git commit -m "rm -rf / and git push"']) {
+      expect([c, forbiddenCommand(c)]).toEqual([c, ''])
+    }
+    for (const c of [
+      'cp -t src /tmp/x', 'cp --target-directory=src /tmp/x', 'ln -t src /tmp/x', 'install /tmp/x src/a', 'mv -t src /tmp/x',
+      'echo x>out.txt', 'echo x &>out.txt', 'cat a>b', 'git checkout-index -a -f', 'git read-tree -u HEAD', 'git sparse-checkout set src',
+      'git submodule update --init', 'git diff --output=src/a.patch', "awk -i inplace '{print}' src/a.ts", 'patch -p1 < /tmp/fix.diff',
+      'find . -name "*.tmp" -delete', 'find src -exec rm {} +',
+    ]) {
+      expect([c, forbiddenInReview(c) !== '']).toEqual([c, true])
+    }
+    for (const c of ['cp -t /tmp/out src/a.ts', 'install src/a /tmp/a', 'echo x>/tmp/out.txt', 'node a.js 2>/dev/null', 'git submodule status', 'patch --dry-run -p1 < /tmp/f.diff', 'find src -name "*.ts"', 'echo "a => b"', 'git diff --stat']) {
+      expect([c, forbiddenInReview(c)]).toEqual([c, ''])
+    }
+  })
+
   test('MCP tools that change a remote are refused to the run\'s agents; reading ones are not', () => {
     for (const t of ['mcp__github__push_files', 'mcp__github__create_or_update_file', 'mcp__github__create_pull_request', 'mcp__github__merge_pull_request', 'mcp__github__create_branch', 'mcp__github__delete_file', 'mcp__vercel__deploy']) {
       expect([t, forbiddenTool(t) !== '']).toEqual([t, true])
@@ -1170,6 +1204,23 @@ describe('reviewers by the diff, a guard on what agents run, and a skeptic', () 
     // The failed start used to put the run back in review and send the findings to a builder.
     expect(builders()).toBe(before)
     expect(w.sends.length).toBe(sendsBefore)
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/Phase: stopped/)
+  })
+
+  test('a Stop while the spec answer is being handled sends no plan to goal-run', async ($, on) => {
+    // 2026-11-14 inspection: patch returned the stopped run unchanged, so onSpec's `if (r)` still
+    // submitted the plan prompt. A refused move now returns null to every caller.
+    const w = engine(on, { holdGoalCheck: true })
+    await startRun($)
+    w.armGoalCheck()
+    const sentBefore = w.sent.length
+    const done = $.turn.complete({ answer: SPEC_ANSWER, durationMs: 1000, isAborted: false, turnId: 't-a1', agentId: 'a1', reason: 'answer' } as never)
+    await settled()
+    expect(await command($, 'stop')).toMatch(/^Stopped/)
+    w.release()
+    await done
+    await settled()
+    expect(w.sent.slice(sentBefore).filter(t => t.includes(PLAN))).toEqual([])
     expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/Phase: stopped/)
   })
 })

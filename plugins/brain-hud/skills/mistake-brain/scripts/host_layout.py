@@ -72,7 +72,8 @@ _VALUE = r"""(?:"[^"]*"?|'[^']*'?|\S+)"""
 _SECRETS = [
     # The keyword alone or at the end of an env-style name (DB_PASSWORD=, GITHUB_TOKEN=): \b can't
     # match after an underscore, so the name's own prefix is part of the match.
-    (re.compile(r"(?i)\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key))(=|:\s*)" + _VALUE), r"\1\2[redacted]"),
+    # A JSON or YAML key in quotes ("password": "x") too: the quote between the name and the colon.
+    (re.compile(r"(?i)\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|auth))([\"']?)(=|:\s*)" + _VALUE), r"\1\2\3[redacted]"),
     (re.compile(r"(?i)(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)" + _VALUE), r"\1\2[redacted]"),
     # An Authorization header whatever its scheme (Bearer, Basic, token, or none): GitHub takes "token <x>".
     (re.compile(r"(?i)\b(authorization:\s*)(?:(?:bearer|basic|token)\s+)?[^\s\"']+"), r"\1[redacted]"),
@@ -83,7 +84,12 @@ _SECRETS = [
     (re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), "[redacted]"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "[redacted]"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[redacted]"),
-    (re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@"), r"\1[redacted]@"),
+    # Credentials in a URL of any scheme (postgres://, redis://, amqp://), the user part optional (redis://:pw@).
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]*:[^/\s@]+@"), r"\1[redacted]@"),
+    # A Cookie or Set-Cookie header: its whole value, to the end of the quote or the line.
+    (re.compile(r"(?i)\b((?:set-)?cookie:\s*)[^\n\"']+"), r"\1[redacted]"),
+    # redis-cli -a <password>.
+    (re.compile(r"(\bredis-cli\b[^|;&\n]*?\s-a)\s+\S+"), r"\1 [redacted]"),
 ]
 # mysql-style -p<pass> and -p <pass>: not in a git command, where -p is --patch and what follows is a path.
 _DASH_P = re.compile(r"(?<!\S)(-p)(\s+(?!-)\S+|\S+)")

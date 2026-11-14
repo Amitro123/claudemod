@@ -2,9 +2,9 @@ name: mistake-brain skill
 
 on:
   push:
-    paths: ['plugins/brain-hud/skills/**', 'plugins/brain-hud/tests/skill/**', 'plugins/brain-hud/hooks/hooks.json', '.github/workflows/skill.yml']
+    paths: ['plugins/brain-hud/skills/**', 'plugins/brain-hud/tests/skill/**', 'plugins/brain-hud/tests/redaction-cases.ts', 'plugins/brain-hud/hooks/hooks.json', '.github/workflows/skill.yml']
   pull_request:
-    paths: ['plugins/brain-hud/skills/**', 'plugins/brain-hud/tests/skill/**', 'plugins/brain-hud/hooks/hooks.json', '.github/workflows/skill.yml']
+    paths: ['plugins/brain-hud/skills/**', 'plugins/brain-hud/tests/skill/**', 'plugins/brain-hud/tests/redaction-cases.ts', 'plugins/brain-hud/hooks/hooks.json', '.github/workflows/skill.yml']
 
 jobs:
   pytest:
