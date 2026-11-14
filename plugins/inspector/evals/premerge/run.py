@@ -118,7 +118,7 @@ def main():
         results.append({"repo": Path(repo).name, "label": label, "sha": sha, "title": title, "cut": cut,
                         "pos": sorted(POS.get((repo, label), ())), "p": p, "cost": cost})
         print(f"{Path(repo).name} {label}: {len(p)} answers{' (cut)' if cut else ''}", file=sys.stderr)
-    (OUT / "results-2026-11-14.json").write_text(json.dumps(results, indent=1))
+    (OUT / "results-2026-11-14.json").write_text("[\n" + ",\n".join(json.dumps(r, separators=(",", ":")) for r in results) + "\n]\n")
 
 
 if __name__ == "__main__":
