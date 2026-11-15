@@ -109,31 +109,9 @@ def die(msg: str) -> int:
     return 2
 
 
-_ESC_RE = re.compile(r'\\(["\\/bfnrt]|u[0-9a-fA-F]{4})|\\')
 
 
-def _double_stray(m: "re.Match[str]") -> str:
-    return m.group(0) if m.group(1) else "\\\\"
-
-
-def repair_escapes(path: str, exc: Exception) -> bool:
-    """Double stray backslashes in `path` when `exc` is an invalid-escape error; True when repaired and re-parsed.
-
-    The original bytes are kept as `<path>.orig`; the file is rewritten only after the repaired text parses."""
-    if not isinstance(exc, json.JSONDecodeError) or "escape" not in exc.msg:
-        return False
-    with open(path, "rb") as f:
-        raw = f.read()
-    fixed = _ESC_RE.sub(_double_stray, raw.decode("utf-8-sig"))
-    try:
-        json.loads(fixed)
-    except ValueError:
-        return False
-    with open(path + ".orig", "wb") as f:
-        f.write(raw)
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        f.write(fixed)
-    return True
+_ESC_RE, _double_stray, repair_escapes = leadsio._ESC_RE, leadsio._double_stray, leadsio.repair_escapes
 
 
 def cap_unfinished(lead: dict) -> dict:

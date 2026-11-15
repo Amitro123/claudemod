@@ -826,3 +826,13 @@ def test_every_json_writing_prompt_asks_for_forward_slash_paths(tmp_path) -> Non
     assert len(prompts) >= 5
     for p in prompts:
         assert "forward slashes (C:/Users/...), never backslashes" in p.read_text(encoding="utf-8"), p.name
+
+
+def test_the_plan_turns_on_escape_repair_in_both_merges(tmp_path) -> None:
+    run = make_run(tmp_path, 12, [lead(1)])
+    assert plan(run)[0] == 0
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    assert "merge_cards.py" in md and md.split("merge_cards.py", 1)[1].split("\n", 1)[0].rstrip().endswith("--repair-escapes")
+    assert plan(run, "--phase", "verify")[0] == 0
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    assert md.split("merge_verdicts.py", 1)[1].split("\n", 1)[0].rstrip().endswith("--repair-escapes")

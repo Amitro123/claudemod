@@ -469,7 +469,7 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
             if c.parallel:
                 steps += [f"{c.script('merge_cards.py')} --cards \"{c.run}/cards\" --sweep "
                           + " ".join(f'"{c.run}/{f}"' for f in doc["sweeper_files"])
-                          + f" --expect {','.join(doc['reader_ids'])} --out \"{c.run}/leads.json\" --log \"{c.run}/dedupe.md\"",
+                          + f" --expect {','.join(doc['reader_ids'])} --out \"{c.run}/leads.json\" --log \"{c.run}/dedupe.md\" --repair-escapes",
                           f"{c.script('crosscheck.py')} --evidence \"{c.run}/evidence.json\" --cards \"{c.run}/cards\""]
             steps.append(f"{c.script('plan.py')} --run \"{c.run}\" --phase verify")
             L += ["", "Then, no agent, in order (on a nonzero exit fix its cause; never merge from memory):"]
@@ -480,7 +480,7 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
         if doc["verifier_chunks"]:
             L += ["After the verifiers (no agent):",
                   f"1. {c.script('merge_verdicts.py')} --leads \"{c.run}/leads.json\" --verdicts "
-                  + " ".join(f'"{c.run}/{ch["verdicts"]}"' for ch in doc["verifier_chunks"]) + f" --out \"{c.run}/merged.json\"",
+                  + " ".join(f'"{c.run}/{ch["verdicts"]}"' for ch in doc["verifier_chunks"]) + f" --out \"{c.run}/merged.json\" --repair-escapes",
                   f"2. {c.script('handoff.py')} --cards \"{c.run}/merged.json\" --out \"{c.run}/open-bugs.md\""]
             if doc["docs_checker"]["needed"]:
                 L += ["The docs-checker returns text, not a file: use its answers as references/verify.md step 3 says."]

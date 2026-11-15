@@ -174,3 +174,13 @@ def test_malformed_verdict_entries_exit_2_naming_each(tmp_path, capsys) -> None:
                         (json.dumps([{"verdict": "REAL"}]), "no `where`")):
         code, m, err = run(tmp_path, capsys, [lead("a.py:1")], bad)
         assert code == 2 and m is None and needle in err, (bad, err)
+
+
+def test_repair_escapes_fixes_a_windows_path_written_raw(tmp_path, capsys) -> None:
+    """2026-11-15: a verifier on Windows wrote C:\\Users raw; \\U is no JSON escape and the merge stopped."""
+    raw = '[{"where": "a.py:1", "verdict": "REAL", "evidence": "read C:\\Users\\amit\\a.py and C:\\x", "corrected": {}}]'
+    code, m, err = run(tmp_path, capsys, [lead("a.py:1")], raw)
+    assert code == 2 and m is None and "escape" in err, "without the flag a bad file still stops the merge"
+    code, m, err = run(tmp_path, capsys, [lead("a.py:1")], raw, "--repair-escapes")
+    assert code == 0 and m[0]["verdict"] == "REAL" and "C:\\Users\\amit\\a.py" in m[0]["verifier_evidence"]
+    assert "repaired stray backslashes" in err and (tmp_path / "v.json.orig").read_text(encoding="utf-8") == raw
