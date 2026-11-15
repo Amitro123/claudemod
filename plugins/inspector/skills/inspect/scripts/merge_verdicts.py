@@ -37,10 +37,17 @@ PROBE_ONLY = "the verdict rests on the reader's saved probe alone: no independen
 NOT_RECORDED = "the verifier recorded no check of the reader's saved probe and no independent check (probe_check)"
 
 
-def load_array(path: str, what: str) -> list:
+def load_array(path: str, what: str, repaired: list[str] | None = None) -> list:
     try:
-        with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                data = json.load(f)
+        except ValueError as e:
+            if repaired is None or not leadsio.repair_escapes(path, e):
+                raise
+            repaired.append(path)
+            with open(path, encoding="utf-8-sig") as f:
+                data = json.load(f)
     except (OSError, ValueError) as e:
         raise ValueError(f"{what} {path}: invalid JSON or unreadable ({e})") from e
     if not isinstance(data, list):
@@ -148,6 +155,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="verdict files; every occurrence of the flag counts (may be omitted only when leads.json is empty)")
     ap.add_argument("--out")
     ap.add_argument("--drop-not-real", action="store_true")
+    ap.add_argument("--repair-escapes", action="store_true",
+                    help="double stray backslashes in a verdicts file (an agent on Windows wrote C:\\Users raw); "
+                         "the original is kept as <file>.orig and each repair is printed")
     a = ap.parse_args(argv)
     try:
         leads = load_array(a.leads, "leads")
@@ -156,7 +166,10 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--verdicts is required when leads.json has leads")
         verdicts = []
         for p in a.verdicts:
-            one = load_array(p, "verdicts")
+            repaired: list[str] = []
+            one = load_array(p, "verdicts", repaired if a.repair_escapes else None)
+            for r in repaired:
+                print(f"merge_verdicts: repaired stray backslashes in {r} (original kept as {r}.orig)", file=sys.stderr)
             check_verdicts(one, p)
             print(f"verdicts file {p}: {len(one)} verdicts", file=sys.stderr)
             verdicts += one

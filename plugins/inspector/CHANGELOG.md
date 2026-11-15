@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Changed: the plan's merge commands now run with `--repair-escapes`, and `merge_verdicts.py` has the flag too. The repair (in `leadsio.py`, shared) doubles a stray backslash only when the file fails with an invalid-escape error and the repaired text parses. It keeps the original as `.orig` and logs each repair. In the same Windows run, a verifier also wrote `C:\Users` raw. `merge_verdicts.py` stopped (`Invalid \escape`), `handoff.py` then found no `merged.json`, and the main conversation spent a turn repairing the file by hand. The prompt rule above asks for forward slashes, and this repair catches what the rule misses: enforced in the tool, not only the prompt.
+- Fixed: agents on Windows wrote paths into their JSON files with raw backslashes. In the same keshet-claude-skills run, a sweeper wrote `C:\Users\...`, and `\U` is not a JSON escape, so the file did not load. The sweeper then spent two calls patching it by string replacement. Every prompt that writes JSON (readers, sweepers, verifiers) now asks for paths with forward slashes, which Windows accepts, and for any other backslash to be doubled.
+- Changed: `SKILL.md` covers two collisions from a live run of 0.8.0 on keshet-claude-skills on 2026-11-15:
+  - A router's per-prompt work budget denied the collector in the main conversation, and a worker ran it instead and summarized its output. When a hook's work budget denies a script step, the step is now repeated in the main conversation.
+  - With `OPENROUTER_API_KEY` set, the collector now runs with `--decision-model`. Without the key, it never asks for one.
+- Fixed: `plan.py --claim` printed "taken" (exit 3) and "still holds" (exit 4) on stderr, so a host that shows a nonzero exit as Failed showed "No output captured" beside it. The same run showed a reader with 6 of 13 calls "Failed", all of them ordinary claims. The reason now prints on stdout every time.
 ## 0.8.0 (2026-11-15)
 
 - Fixed (2026-11-14 recheck): `premerge.py` called an incomplete reply a clean check. `decide.parse` leaves out missing, refused and invalid answers, but the report said "0 of 4 questions answered yes. Nothing to look at" even when nothing had been answered.

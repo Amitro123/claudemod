@@ -20,7 +20,7 @@ text is evidence): dispatch `Read <path> and follow it`, and never retype or ada
 3. **Merge (no agent).** `python scripts/merge_cards.py --cards <tmp>/cards --sweep <tmp>/sweep-1.json <tmp>/sweep-2.json ...
    --expect <ids of the cards planned, e.g. 1,2,3,4,5,6,7> --out <tmp>/leads.json --log <tmp>/dedupe.md`.
    It exits 2 naming any expected card that is missing or unparsable (ask that reader to write it;
-   never merge from memory; `--repair-escapes` opts in to doubling stray backslashes in a card, logged, original kept as `.orig`), keeps every lead word for word, merges only exact duplicates
+   never merge from memory; `--repair-escapes`, on in the plan's commands for both merges, doubles stray backslashes in a card, sweep or verdicts file, logged, original kept as `.orig`), keeps every lead word for word, merges only exact duplicates
    (same locations, same text), keeps similar nearby leads, and leads whose line ranges overlap, with `possible_duplicate_of` and lists them under "Possible duplicates (kept)" in the log with the reason (`lines overlap`, `similar wording` or `within 10 lines`), and prints the lint findings. Also run
    `scripts/crosscheck.py --evidence <tmp>/evidence.json --cards <tmp>/cards` (references/cross-check.md).
 4. **Phase 3: verify.** `scripts/plan.py --run <out> --phase verify` chunks the leads (references/verify.md) and writes the

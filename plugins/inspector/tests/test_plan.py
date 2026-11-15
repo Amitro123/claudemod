@@ -667,7 +667,7 @@ def test_a_claim_hands_a_queued_case_to_exactly_one_reader(tmp_path) -> None:
     stub = json.loads((run / "cards" / "3.json").read_text(encoding="utf-8"))
     assert stub["status"] == "in-progress" and stub["case"] == "#12" and stub["unit"] == "#12"
     code, out, err = plan(run, "--claim", "3", "--reader", "1")
-    assert code == 3 and "is taken" in err
+    assert code == 3 and "is taken" in out and not err, "the reason prints on stdout, beside the nonzero exit"
     assert plan(run, "--claim", "99", "--reader", "1")[0] == 2 and plan(run, "--claim", "0", "--reader", "1")[0] == 2
     (run / "cards" / "4.json").write_text(done_card(4))
     assert plan(run, "--claim", "4", "--reader", "1")[0] == 3, "a finished case is never claimed again"
@@ -694,8 +694,8 @@ def test_a_reader_holding_an_unfinished_case_cannot_claim_another(tmp_path) -> N
     run = make_run(tmp_path, 7)
     assert plan(run)[0] == 0
     assert plan(run, "--claim", "1", "--reader", "1")[0] == 0
-    code, _, err = plan(run, "--claim", "2", "--reader", "1")
-    assert code == 4 and "still holds cards/1.json" in err
+    code, out, err = plan(run, "--claim", "2", "--reader", "1")
+    assert code == 4 and "still holds cards/1.json" in out
     assert not (run / "cards" / "2.json").exists(), "the refused claim wrote nothing"
     assert plan(run, "--claim", "2", "--reader", "2")[0] == 0, "another reader may claim"
     assert json.loads((run / "cards" / "1.json").read_text(encoding="utf-8"))["reader"] == 1
@@ -816,3 +816,23 @@ def test_only_a_finished_card_for_the_held_case_releases_the_hold(tmp_path) -> N
         assert pm.claim(str(run), 1, 1)[0] == 0
         (run / "cards" / "1.json").write_text(content)
         assert pm.claim(str(run), 2, 1)[0] == (0 if frees else 4), content
+
+
+def test_every_json_writing_prompt_asks_for_forward_slash_paths(tmp_path) -> None:
+    """2026-11-15, Windows: a sweeper wrote C:\\Users... raw into its sweep file; `\\U` is no JSON escape."""
+    run = make_run(tmp_path, 12)
+    assert plan(run)[0] == 0
+    prompts = [p for p in (run / "plan").glob("*.prompt.md") if p.name.startswith(("reader-", "sweeper-"))]
+    assert len(prompts) >= 5
+    for p in prompts:
+        assert "forward slashes (C:/Users/...), never backslashes" in p.read_text(encoding="utf-8"), p.name
+
+
+def test_the_plan_turns_on_escape_repair_in_both_merges(tmp_path) -> None:
+    run = make_run(tmp_path, 12, [lead(1)])
+    assert plan(run)[0] == 0
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    assert "merge_cards.py" in md and md.split("merge_cards.py", 1)[1].split("\n", 1)[0].rstrip().endswith("--repair-escapes")
+    assert plan(run, "--phase", "verify")[0] == 0
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    assert md.split("merge_verdicts.py", 1)[1].split("\n", 1)[0].rstrip().endswith("--repair-escapes")

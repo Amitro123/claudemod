@@ -167,3 +167,32 @@ def leads_of(items: list[dict]) -> list[dict]:
         for s in (sibs if isinstance(sibs, list) else [x] if "where" in x or "what" in x else []):
             out.append({**s, "case": x.get("case") or x.get("unit") or s.get("case") or ""})
     return out
+
+
+# Shared by merge_cards.py and merge_verdicts.py (--repair-escapes): an agent on Windows writes C:\Users raw,
+# and \U is no JSON escape (2026-11-15, a sweep file and a verdicts file of one run).
+_ESC_RE = re.compile(r'\\(["\\/bfnrt]|u[0-9a-fA-F]{4})|\\')
+
+
+def _double_stray(m: "re.Match[str]") -> str:
+    return m.group(0) if m.group(1) else "\\\\"
+
+
+def repair_escapes(path: str, exc: Exception) -> bool:
+    """Double stray backslashes in `path` when `exc` is an invalid-escape error; True when repaired and re-parsed.
+
+    The original bytes are kept as `<path>.orig`; the file is rewritten only after the repaired text parses."""
+    if not isinstance(exc, json.JSONDecodeError) or "escape" not in exc.msg:
+        return False
+    with open(path, "rb") as f:
+        raw = f.read()
+    fixed = _ESC_RE.sub(_double_stray, raw.decode("utf-8-sig"))
+    try:
+        json.loads(fixed)
+    except ValueError:
+        return False
+    with open(path + ".orig", "wb") as f:
+        f.write(raw)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(fixed)
+    return True
