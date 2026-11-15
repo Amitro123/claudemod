@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.2 (2026-11-15)
+
 - Fixed (review of #137, R137-01): the split budget was spent once per split, and each split sent two requests, so a fully refused 41-unit request made 81 calls against a documented 40 extra. `MAX_EXTRA` is now paid before each extra request is sent and shared across chunks. When it runs out, the error says how many units were not asked, and the answers so far are kept. `meta["attempts"]` counts every request sent, and `requests` stays the count that came back answered. Both go into `evidence.json`.
 - Fixed: a request-wide 400 or 422 (a model id the service doesn't know, a changed alpha API) was split down to every unit. 10 units cost 19 requests and read as 10 per-unit refusals with no error. Only 403 and 413 are split now. When no unit of a request is answered and the ones asked alone were refused, the run reports a request-wide error, not per-unit refusals.
 - Fixed (open since the 2026-11-14 recheck): a lost reply after a paid one left `cost_complete` true. Any error now leaves the total unknown (`cost: null`), and `known_cost` keeps the subtotal.
