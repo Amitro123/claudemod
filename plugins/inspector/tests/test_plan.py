@@ -816,3 +816,13 @@ def test_only_a_finished_card_for_the_held_case_releases_the_hold(tmp_path) -> N
         assert pm.claim(str(run), 1, 1)[0] == 0
         (run / "cards" / "1.json").write_text(content)
         assert pm.claim(str(run), 2, 1)[0] == (0 if frees else 4), content
+
+
+def test_every_json_writing_prompt_asks_for_forward_slash_paths(tmp_path) -> None:
+    """2026-11-15, Windows: a sweeper wrote C:\\Users... raw into its sweep file; `\\U` is no JSON escape."""
+    run = make_run(tmp_path, 12)
+    assert plan(run)[0] == 0
+    prompts = [p for p in (run / "plan").glob("*.prompt.md") if p.name.startswith(("reader-", "sweeper-"))]
+    assert len(prompts) >= 5
+    for p in prompts:
+        assert "forward slashes (C:/Users/...), never backslashes" in p.read_text(encoding="utf-8"), p.name

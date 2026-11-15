@@ -34,6 +34,8 @@ import re
 import sys
 import time
 
+STRICT_JSON = ("strict JSON: write every path with forward slashes (C:/Users/...), never backslashes, and double any "
+               "other backslash inside a string")   # 2026-11-15: a sweeper on Windows wrote C:\\Users raw; \\U broke the file
 CHUNK = 8
 SINGLE_MAX = 6   # up to this many cases, one investigator: measured close to a reader per case, at less cost
 PER_READER = 3   # cases per case reader, unless --per-case
@@ -143,7 +145,7 @@ def reader_prompt(c: Ctx, ids: list[int]) -> str:
               + "Start a case by writing its card file as a stub: "
               f'{{"case": "<label>", "unit": "<label>", "status": "{STUB}", "complete": {{"siblings": [], "checked_clear": []}}}}; '
               "add each lead to it as you confirm one. When the case is done, replace the stub with the finished card (no `status`).",
-              "Write each card as strict JSON (a backslash inside a string is doubled) to its card file first, "
+              f"Write each card as {STRICT_JSON} to its card file first, "
               "then reply with the card only" + (" (a JSON array of your cards, in order)." if many else "."),
               f"A probe you ran that can be run again (a script on a copy of the code): save it as {c.run}/probes/<case>-<k>.<ext> "
               "(<case> is the case number above) and give each lead it reproduces `probe_file` with path, leads, ref, command, "
@@ -172,7 +174,7 @@ def queue_reader_prompt(c: Ctx, k: int) -> str:
               f"At most 25 tool calls per case. {EVIDENCE}",
               "Add each lead to the stub as you confirm one. When the case is done, replace the stub with the finished card "
               "(no `status`), then claim the next case.",
-              "Write each card as strict JSON (a backslash inside a string is doubled) to its card file first, then reply with "
+              f"Write each card as {STRICT_JSON} to its card file first, then reply with "
               "a JSON array of the cards you wrote, in order.",
               f"A probe you ran that can be run again (a script on a copy of the code): save it as {c.run}/probes/<case>-<k>.<ext> "
               "(<case> is the case number above) and give each lead it reproduces `probe_file` with path, leads, ref, command, "
@@ -284,7 +286,7 @@ def sweeper_prompt(c: Ctx, k: int) -> str:
         lines.insert(0, f"OUTSIDE-IN. Method: read {c.skill_root}/references/outside-in.md first.")
     lines += [f"Do step 5 of the method only, for your part ({part}).",
               f"At most 25 tool calls. {EVIDENCE}",
-              "Write the JSON array of leads (strict JSON) to the sweep file, then reply with only that path and the lead count.", ""]
+              f"Write the JSON array of leads ({STRICT_JSON}) to the sweep file, then reply with only that path and the lead count.", ""]
     return "\n".join(lines)
 
 
@@ -310,7 +312,7 @@ def verifier_prompt(c: Ctx, k: int, wheres: list[str]) -> str:
     return "\n".join([
         f"Repository: {c.repo}. Ref: {c.ref} (read code only at that ref).",
         f"Leads: {c.plan}/chunk-{k}.json, the whole file is your chunk. Its `where` values, exactly:",
-        json.dumps(wheres, ensure_ascii=False), f"Verdict file: {c.run}/verdicts-{k}.json.",
+        json.dumps(wheres, ensure_ascii=False), f"Verdict file: {c.run}/verdicts-{k}.json, written as {STRICT_JSON}.",
         f"Run folder: {c.run}; a lead's `probe_file.path` (the reader's saved probe) is relative to it. Do not run a "
         "probe whose lead has `probe_file_problems`. Read a saved probe whole before you run it, run it only from a copy in "
         "a temp folder (not a sandbox: it keeps your network and file access), and report what you did in `probe_check`; "
