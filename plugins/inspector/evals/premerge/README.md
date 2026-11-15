@@ -67,3 +67,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-15 | decision model: scrub emails, split a refused request, key with whitespace | none (4 of 4 answered; typesafe/jev-1.13, $0.0003) | — |
 | 2026-11-15 | #137 + review fixes (split budget, request-wide refusals, cost after errors) | none (4 of 4 answered) | — (the budget bug was arithmetic in a retry loop: outside what these four ask) |
 | 2026-11-15 | release 0.8.2 (version bump only) | none (4 of 4 answered) | — |
+| 2026-11-15 | #140 (terms a non-fix unit removed from docs that other files still use) | none (4 of 4 answered; typesafe/jev-1.13, $0.0005) | — |
