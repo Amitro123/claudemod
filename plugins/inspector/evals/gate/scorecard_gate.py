@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -37,7 +38,16 @@ def check(row: dict, thresholds: dict, *, allow_missing: bool = False) -> list[d
     t = thresholds.get("thresholds", thresholds)
     results = []
 
-    def gate(name: str, actual, threshold, direction: str):
+    def number(v) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+    def gate(name: str, actual, threshold, direction: str, bounds: tuple[float, float] | None = None):
+        if threshold is not None and not number(threshold):
+            # NaN, infinity (1e999 in JSON) or a non-number never compares true, so it passed every check
+            # (2026-11-14 review, O114-02). It is refused, never passed.
+            results.append({"name": name, "status": "FAIL", "actual": actual, "threshold": threshold,
+                            "detail": f"invalid threshold {threshold!r}: not a finite number"})
+            return
         if threshold is None:
             results.append({"name": name, "status": "skipped", "actual": actual, "threshold": threshold})
             return
@@ -49,6 +59,11 @@ def check(row: dict, thresholds: dict, *, allow_missing: bool = False) -> list[d
                 results.append({"name": name, "status": "FAIL", "actual": actual, "threshold": threshold,
                                 "detail": "metric missing from row"})
             return
+        if not number(actual) or (bounds and not bounds[0] <= actual <= bounds[1]):
+            results.append({"name": name, "status": "FAIL", "actual": actual, "threshold": threshold,
+                            "detail": f"invalid value {actual!r}: not a finite number"
+                                      + (f" in [{bounds[0]}, {bounds[1]}]" if bounds else "")})
+            return
         if direction == "min" and actual < threshold:
             results.append({"name": name, "status": "FAIL", "actual": actual, "threshold": threshold,
                             "detail": f"{actual} < {threshold}"})
@@ -58,10 +73,10 @@ def check(row: dict, thresholds: dict, *, allow_missing: bool = False) -> list[d
         else:
             results.append({"name": name, "status": "pass", "actual": actual, "threshold": threshold})
 
-    gate("precision_min", row.get("precision"), t.get("precision_min"), "min")
+    gate("precision_min", row.get("precision"), t.get("precision_min"), "min", (0.0, 1.0))
 
     gold = row.get("gold") or {}
-    gate("recall_min", gold.get("recall"), t.get("recall_min"), "min")
+    gate("recall_min", gold.get("recall"), t.get("recall_min"), "min", (0.0, 1.0))
 
     gate("not_real_max", row.get("not_real"), t.get("not_real_max"), "max")
 

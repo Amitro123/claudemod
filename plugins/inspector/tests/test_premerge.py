@@ -21,7 +21,7 @@ def test_only_answers_at_or_over_the_cut_are_flagged_highest_first():
     assert [f["id"] for f in r["flagged"]] == ["failure-as-success", "untrusted-input"]
     assert r["meta"]["cost"] == 0.0004 and r["meta"]["answered"] == 4
     out = premerge.report(r)
-    assert "2 of 4 questions answered yes" in out and "Look:" in out and "not a finding" in out
+    assert "4 of 4 answered, 2 yes" in out and "Look:" in out and "not a finding" in out
 
 
 def test_the_request_carries_the_four_questions_and_cuts_a_long_diff():
@@ -37,8 +37,8 @@ def test_it_fails_open():
     for post in (boom, lambda *_: {"error": "bad key"}, lambda *_: ["not", "an", "object"]):
         r = premerge.check("+x\n", post=post)
         assert r["flagged"] == [] and "error" in r["meta"]
-        assert "nothing is flagged" in premerge.report(r)
-    assert premerge.check("   ", post=boom)["meta"]["note"].startswith("empty diff")
+        assert "nothing was checked" in premerge.report(r) and "INCOMPLETE" in premerge.report(r)
+    assert premerge.check("   ", post=boom)["meta"]["skipped"].startswith("empty diff")
 
 
 def test_the_cli_reads_a_branch_diff_and_always_exits_0(tmp_path, monkeypatch):
@@ -59,3 +59,37 @@ def test_the_cli_reads_a_branch_diff_and_always_exits_0(tmp_path, monkeypatch):
     assert "except Exception" in seen["b"]["state"]
     assert json.loads(out.read_text())["flagged"][0]["id"] == "failure-as-success"
     assert premerge.main(["--repo", str(tmp_path / "missing")]) == 0
+
+
+def test_missing_answers_are_reported_as_incomplete_never_as_a_clean_check():
+    """2026-11-14 recheck: parse() leaves out missing, refused and invalid answers, and the report called 0 of 4
+    answered a clean check. A missing answer is not a no."""
+    clean = "Nothing to look at from these four"
+    cases = {
+        "zero": ({}, 0, []),
+        "one negative": ({"cache-key": {"type": "noul", "noul": 0.1}}, 1, []),
+        "one positive, three missing": ({"failure-as-success": {"type": "noul", "noul": 0.9}}, 1, ["failure-as-success"]),
+        "refused and invalid": ({"cache-key": {"type": "refusal"}, "untrusted-input": {"type": "noul", "noul": 7},
+                                 "unreferenced-change": {"type": "noul", "noul": 0.2}}, 1, []),
+    }
+    for name, (answers, n, flagged) in cases.items():
+        r = premerge.check("+changed code\n", post=lambda *_, a=answers: {"answers": a})
+        out = premerge.report(r)
+        assert r["meta"]["answered"] == n and [f["id"] for f in r["flagged"]] == flagged, name
+        assert clean not in out and "INCOMPLETE" in out, (name, out)
+        assert f"{n} of 4 answered" in out, (name, out)
+        for q in premerge.QUESTIONS:
+            assert (q in r["meta"]["missing"]) == (q not in r["p"]), name
+            if q in r["meta"]["missing"]:
+                assert q in out, (name, q, out)
+    full = {q: {"type": "noul", "noul": 0.1} for q in premerge.QUESTIONS}
+    r = premerge.check("+x\n", post=lambda *_: {"answers": full})
+    assert clean in premerge.report(r) and r["meta"]["missing"] == [] and "INCOMPLETE" not in premerge.report(r)
+
+
+def test_an_empty_diff_is_skipped_without_a_call():
+    def boom(*_):
+        raise AssertionError("no call for an empty diff")
+    r = premerge.check("  \n", post=boom)
+    out = premerge.report(r)
+    assert "SKIPPED" in out and "Nothing to look at" not in out and r["meta"]["answered"] == 0

@@ -83,7 +83,8 @@ def check(diff: str, title: str = "", model: str = decide.DEFAULT_MODEL, cut: fl
     post = post or decide._post
     meta: dict = {"model": model, "cut": cut, "seconds": 0.0, "cost": None, "diff_cut": False}
     if not diff.strip():
-        return {"flagged": [], "p": {}, "meta": {**meta, "note": "empty diff: nothing asked"}}
+        return {"flagged": [], "p": {}, "meta": {**meta, "skipped": "empty diff: nothing asked", "answered": 0,
+                                               "missing": list(QUESTIONS)}}
     body, meta["diff_cut"] = request_body(diff, title, model)
     key = os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy"
     t0 = time.monotonic()
@@ -102,6 +103,8 @@ def check(diff: str, title: str = "", model: str = decide.DEFAULT_MODEL, cut: fl
         p = {}
     meta["seconds"] = round(time.monotonic() - t0, 2)
     meta["answered"] = len(p)
+    # decide.parse leaves out a missing, refused or invalid answer: that is no answer, never a no.
+    meta["missing"] = [k for k in QUESTIONS if k not in p]
     flagged = [{"id": k, "p": round(p[k], 2), "question": QUESTIONS[k][0], "look": QUESTIONS[k][1]}
                for k in QUESTIONS if p.get(k, 0) >= cut]
     return {"flagged": sorted(flagged, key=lambda f: -f["p"]), "p": p, "meta": meta}
@@ -109,12 +112,22 @@ def check(diff: str, title: str = "", model: str = decide.DEFAULT_MODEL, cut: fl
 
 def report(r: dict) -> str:
     m = r["meta"]
+    if m.get("skipped"):
+        return f"premerge: SKIPPED ({m['skipped']}). No question was asked, so nothing was checked.\n"
     if m.get("error"):
-        return f"premerge: no answer ({m['error']}); nothing is flagged. The check is advisory: merge on your own review.\n"
-    head = (f"premerge: {len(r['flagged'])} of {len(QUESTIONS)} questions answered yes (cut {m['cut']}; "
+        return (f"premerge: INCOMPLETE, no answer ({m['error']}); 0 of {len(QUESTIONS)} answered, so nothing was "
+                "checked. The check is advisory: merge on your own review.\n")
+    missing = m.get("missing", [])
+    n = len(QUESTIONS)
+    head = (f"premerge: {n - len(missing)} of {n} answered, {len(r['flagged'])} yes (cut {m['cut']}; "
             f"{m['model']}; {m['seconds']} s" + (f"; ${m['cost']:.4f}" if m.get("cost") is not None else "")
             + ("; the diff was cut at 40k characters" if m.get("diff_cut") else "") + ").")
+    if missing:
+        head += (f" INCOMPLETE: no answer for {', '.join(missing)} (missing, refused or invalid), which is not a no; "
+                 "those questions were not checked.")
     if not r["flagged"]:
+        if missing:
+            return head + "\n"
         return head + " Nothing to look at from these four; they don't cover awaits, guards or logic.\n"
     lines = [head, "A yes is a reason to look, not a finding. For each:"]
     for f in r["flagged"]:

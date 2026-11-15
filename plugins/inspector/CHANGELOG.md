@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fixed (2026-11-14 recheck): `premerge.py` called an incomplete reply a clean check. `decide.parse` leaves out missing, refused and invalid answers, but the report said "0 of 4 questions answered yes. Nothing to look at" even when nothing had been answered.
+  - The report now gives answered/total and names each question with no answer as INCOMPLETE.
+  - It keeps any valid yes, and states "nothing to look at" only when all four were answered no.
+  - An empty diff is SKIPPED without a call.
+- Fixed (O114-01): `decide.ask` reported an unknown cost as $0. `cost` is now the total only when every request reported one; otherwise it is `null`, with `known_cost` and `cost_complete`. A reported 0 stays 0, and `evidence.json`'s `decision_model` carries all three.
+- Fixed (O114-02): `scorecard_gate.py` passed NaN or infinity (`1e999` in JSON), because no comparison with them is true. A metric or threshold that is not a finite number now fails the gate, and so does precision or recall outside [0, 1]. A real 0 still passes.
 - Added: `premerge.py`, an opt-in pre-merge check. It asks a decision model four closed questions about a branch's diff and prints the ones answered yes, with what to look at. It is advisory, fails open and always exits 0. Each question is a kind of wrong assumption behind past culprits (`culprit.assumed` in the cards). On 107 changes of two repositories, the four ranked the known culprits at 0.92 to 1.00. Together they flagged 26 of the 107, including 6 of 7 known culprit cases, for $0.04 in all. Questions about awaits and pattern-based guards flagged half of all changes and were dropped (`evals/premerge/README.md`). The README no longer calls evidence.py offline when `--decision-model` is on.
 - Fixed (outside review of 2026-11-14, R114-01..03): the shared queue's resume and claim lifecycle.
   - **R114-01:** `--status` handed the same unfinished card to a reader in every wave of a queue with more than four readers, and a wave of one reader restarted it the per-agent way. Recovery owners are now assigned once across all waves, and a one-reader wave follows the queue's rules.
