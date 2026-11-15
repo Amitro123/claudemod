@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0 (2026-11-15)
+
 - Fixed (2026-11-14 recheck): `premerge.py` called an incomplete reply a clean check. `decide.parse` leaves out missing, refused and invalid answers, but the report said "0 of 4 questions answered yes. Nothing to look at" even when nothing had been answered.
   - The report now gives answered/total and names each question with no answer as INCOMPLETE.
   - It keeps any valid yes, and states "nothing to look at" only when all four were answered no.
