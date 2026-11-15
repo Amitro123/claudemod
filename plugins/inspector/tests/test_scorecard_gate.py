@@ -164,3 +164,26 @@ def test_report_shows_status_label(tmp_path):
     thr = {"thresholds": {"precision_min": 0.70}, "status": "provisional"}
     _, out, _ = run_gate(tmp_path, row=good_row(), thresholds=thr)
     assert "provisional" in out
+
+
+def test_non_finite_or_out_of_range_metrics_and_thresholds_fail(tmp_path):
+    """2026-11-14 review O114-02: NaN never compares true, so precision=NaN passed a minimum; 1e999 is inf."""
+    import importlib.util
+    import math
+    spec = importlib.util.spec_from_file_location("scorecard_gate", THRESHOLDS_FILE.parent / "scorecard_gate.py")
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    check = gate.check
+    t = {"precision_min": 0.5, "recall_min": 0.5, "not_real_max": 3, "cost_per_verified_lead_max": None,
+         "duplicate_clusters_max": None}
+    good = {"precision": 0.8, "gold": {"recall": 0.9}, "not_real": 1}
+    assert all(r["status"] in ("pass", "skipped") for r in check(good, t))
+    for bad in ({**good, "precision": math.nan}, {**good, "gold": {"recall": math.nan}}, {**good, "not_real": math.inf},
+                {**good, "precision": 1.5}, {**good, "precision": True}, {**good, "precision": "0.9"},
+                {**good, "gold": {"recall": json.loads("1e999")}}):
+        fails = [r for r in check(bad, t) if r["status"] == "FAIL"]
+        assert fails and "invalid value" in fails[0]["detail"], bad
+    fails = [r for r in check(good, {**t, "precision_min": math.nan}) if r["status"] == "FAIL"]
+    assert fails and "invalid threshold" in fails[0]["detail"]
+    assert [r["status"] for r in check({**good, "precision": 0.0}, {**t, "precision_min": 0.0})][0] == "pass", \
+        "a real zero is still a number"
