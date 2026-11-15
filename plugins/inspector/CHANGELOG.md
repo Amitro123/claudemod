@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Changed: `SKILL.md` covers two collisions from a live run of 0.8.0 on keshet-claude-skills on 2026-11-15:
+  - A router's per-prompt work budget denied the collector in the main conversation, and a worker ran it instead and summarized its output. When a hook's work budget denies a script step, the step is now repeated in the main conversation.
+  - With `OPENROUTER_API_KEY` set, the collector now runs with `--decision-model`. Without the key, it never asks for one.
+- Fixed: `plan.py --claim` printed "taken" (exit 3) and "still holds" (exit 4) on stderr, so a host that shows a nonzero exit as Failed showed "No output captured" beside it. The same run showed a reader with 6 of 13 calls "Failed", all of them ordinary claims. The reason now prints on stdout every time.
 ## 0.8.0 (2026-11-15)
 
 - Fixed (2026-11-14 recheck): `premerge.py` called an incomplete reply a clean check. `decide.parse` leaves out missing, refused and invalid answers, but the report said "0 of 4 questions answered yes. Nothing to look at" even when nothing had been answered.

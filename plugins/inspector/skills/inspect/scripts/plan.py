@@ -820,7 +820,7 @@ def main(argv=None) -> int:
         except (Invalid, OSError) as e:
             print(f"plan.py: {e}", file=sys.stderr)
             return 2
-        print(text, file=sys.stdout if code == 0 else sys.stderr)
+        print(text)    # stdout every time: a host shows a nonzero exit as Failed, and the reason must show beside it
         return code
     if a.status:
         try:

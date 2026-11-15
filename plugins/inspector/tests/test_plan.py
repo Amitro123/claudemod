@@ -667,7 +667,7 @@ def test_a_claim_hands_a_queued_case_to_exactly_one_reader(tmp_path) -> None:
     stub = json.loads((run / "cards" / "3.json").read_text(encoding="utf-8"))
     assert stub["status"] == "in-progress" and stub["case"] == "#12" and stub["unit"] == "#12"
     code, out, err = plan(run, "--claim", "3", "--reader", "1")
-    assert code == 3 and "is taken" in err
+    assert code == 3 and "is taken" in out and not err, "the reason prints on stdout, beside the nonzero exit"
     assert plan(run, "--claim", "99", "--reader", "1")[0] == 2 and plan(run, "--claim", "0", "--reader", "1")[0] == 2
     (run / "cards" / "4.json").write_text(done_card(4))
     assert plan(run, "--claim", "4", "--reader", "1")[0] == 3, "a finished case is never claimed again"
@@ -694,8 +694,8 @@ def test_a_reader_holding_an_unfinished_case_cannot_claim_another(tmp_path) -> N
     run = make_run(tmp_path, 7)
     assert plan(run)[0] == 0
     assert plan(run, "--claim", "1", "--reader", "1")[0] == 0
-    code, _, err = plan(run, "--claim", "2", "--reader", "1")
-    assert code == 4 and "still holds cards/1.json" in err
+    code, out, err = plan(run, "--claim", "2", "--reader", "1")
+    assert code == 4 and "still holds cards/1.json" in out
     assert not (run / "cards" / "2.json").exists(), "the refused claim wrote nothing"
     assert plan(run, "--claim", "2", "--reader", "2")[0] == 0, "another reader may claim"
     assert json.loads((run / "cards" / "1.json").read_text(encoding="utf-8"))["reader"] == 1
