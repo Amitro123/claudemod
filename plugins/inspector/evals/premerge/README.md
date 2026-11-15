@@ -65,3 +65,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-15 | SKILL: router budget + decision-model key; claim reasons on stdout | none (4 of 4 answered) | — |
 | 2026-11-15 | needs_host_check written as the text "false" is no flag | none (4 of 4 answered; typesafe/jev-1.13, $0.0001) | — |
 | 2026-11-15 | decision model: scrub emails, split a refused request, key with whitespace | none (4 of 4 answered; typesafe/jev-1.13, $0.0003) | — |
+| 2026-11-15 | #137 + review fixes (split budget, request-wide refusals, cost after errors) | none (4 of 4 answered) | — (the budget bug was arithmetic in a retry loop: outside what these four ask) |
