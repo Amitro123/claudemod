@@ -5,6 +5,7 @@ Run: python -m pytest plugins/inspector/tests/test_decision_model.py -q
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -168,3 +169,101 @@ def test_a_promoted_unit_whose_commits_say_fix_blames_only_those_commits():
                  {"sha": "3" * 40, "subject": "bump version to 0.2.0", "is_fix": False}]
     evidence.decision_phase([u], "m/x", 0.5, [], FakePost({"#73": 0.8}))
     assert u.is_fix and [c["is_fix"] for c in u.commits] == [False, True, False]
+
+
+# --- 2026-11-15: one email-like string voided all 89 answers (403 "content filter: [EMAIL]") ----------------------
+
+class FilterPost:
+    """Refuses (403) any request whose state holds a unit in `bad`; answers 0.3 for the rest."""
+
+    def __init__(self, bad=()):
+        self.bad, self.calls = set(bad), 0
+
+    def __call__(self, url, body, headers):
+        self.calls += 1
+        if any(f"## Unit {b}:" in body["state"] for b in self.bad):
+            raise RuntimeError('HTTP 403 Forbidden: {"error":{"message":"Request blocked by content filter: [EMAIL]","code":403}}')
+        return {"answers": {k: {"type": "noul", "noul": 0.3} for k in body["questions"]}, "usage": {"cost": 0.001}}
+
+
+def texts_of(n: int) -> dict[str, str]:
+    return {f"#{i}": f"## Unit #{i}: t{i}" for i in range(1, n + 1)}
+
+
+def test_scrub_replaces_emails_in_every_string_and_keeps_the_json_valid():
+    body = {"state": "## Unit 1: x - Co-Authored-By: Claude <noreply@anthropic.com>\nb\nuser@example.org",
+            "q": {"k": ["a.b+c@d.co.il", 3, None]}}
+    s = decide.scrub(body)
+    assert "@" not in json.dumps(s) and "<[address]>" in s["state"] and s["q"]["k"] == ["[address]", 3, None]
+    assert "\nb\n" in s["state"] and decide.scrub(s) == s       # a newline before an address survives; idempotent
+    assert json.loads(json.dumps(s)) == s
+
+
+def test_post_sends_the_scrubbed_body(monkeypatch):
+    sent = {}
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"answers": {}}'
+
+    def fake_urlopen(req, timeout=0):
+        sent["data"] = req.data
+        return Reply()
+
+    monkeypatch.setattr(decide.urllib.request, "urlopen", fake_urlopen)
+    decide._post(decide.DECISIONS_URL, {"state": "x <a@b.com>"}, {})
+    assert b"a@b.com" not in sent["data"] and b"[address]" in sent["data"]
+
+
+def test_one_refused_unit_costs_only_itself():
+    post = FilterPost(bad=["#13"])
+    out, meta = decide.ask(texts_of(20), "m/x", post)
+    assert set(out) == {f"#{i}" for i in range(1, 21)} - {"#13"} and meta["answered"] == 19
+    assert list(meta["skipped"]) == ["#13"] and "403" in meta["skipped"]["#13"] and "error" not in meta
+    assert post.calls <= 11                       # narrowing 20 units down to one takes about 2 * log2(20) requests
+
+
+def test_an_auth_failure_is_not_split():
+    post = FakePost(fail=RuntimeError("HTTP 401 Unauthorized: Missing Authentication header"))
+    out, meta = decide.ask(texts_of(10), "m/x", post)
+    assert out == {} and len(post.bodies) == 1 and meta["error"] and not meta["skipped"]
+
+
+def test_a_refusal_of_everything_stops_at_the_split_budget(monkeypatch):
+    monkeypatch.setattr(decide, "MAX_SPLITS", 5)
+    post = FilterPost(bad=[f"#{i}" for i in range(1, 51)])
+    out, meta = decide.ask(texts_of(50), "m/x", post)
+    assert out == {} and meta["error"] and post.calls <= 1 + 2 * 5
+
+
+def test_a_key_that_is_a_pasted_command_sends_nothing_and_is_not_echoed(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "$env:OPENROUTER_API_KEY = (Get-Clipboard).Trim()")
+    post = FakePost()
+    out, meta = decide.ask(texts_of(3), "m/x", post)
+    assert out == {} and post.bodies == [] and "whitespace" in meta["error"] and "Get-Clipboard" not in meta["error"]
+
+
+def test_a_key_with_a_trailing_newline_is_trimmed(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-abc\n")
+    seen = {}
+
+    def post(url, body, headers):
+        seen.update(headers)
+        return {"answers": {}}
+
+    decide.ask(texts_of(1), "m/x", post)
+    assert seen["Authorization"] == "Bearer sk-or-v1-abc"
+
+
+def test_the_collector_names_the_units_the_service_refused():
+    units, warnings = [unit(1, "b: a"), unit(2, "b: b"), unit(3, "b: c")], []
+    meta = evidence.decision_phase(units, "m/x", 0.5, warnings, FilterPost(bad=["#2"]))
+    assert list(meta["skipped"]) == ["#2"] and meta["answered"] == 2
+    assert units[1].model_p is None and units[0].model_p == 0.3 and units[2].model_p == 0.3
+    assert len(warnings) == 1 and "#2" in warnings[0] and "refused" in warnings[0]

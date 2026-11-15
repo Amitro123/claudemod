@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -71,8 +72,35 @@ def parse(res: dict, keys: dict[str, str]) -> dict[str, float]:
     return out
 
 
+EMAIL_RE = re.compile(r"[\w.+%-]+@[\w-]+(?:\.[\w-]+)+")
+# Statuses a service answers when it dislikes what ONE unit's text says (a content filter, a size limit): splitting
+# the request narrows it down. 401, 429, 5xx and a network error never get better by splitting.
+SPLITTABLE = (400, 403, 413, 422)
+MAX_SPLITS = 40      # at most this many extra requests per run spent narrowing a refusal down
+
+
+def scrub(x: object) -> object:
+    """Replace every email-like string with [address], walking the body, not its JSON text (a regex over the text
+    could eat the `n` of a `\n` escape and break the JSON). Measured on 2026-11-15: OpenRouter's content filter
+    answered `403 Request blocked by content filter: [EMAIL]` to a whole request of 89 units because two commit
+    subjects carried `Co-Authored-By: X <a@b.c>`: 0 of 89 answered, and the run went on silently with the regex alone.
+    The same text with `<[address]>` was answered by both models."""
+    if isinstance(x, str):
+        return EMAIL_RE.sub("[address]", x)
+    if isinstance(x, dict):
+        return {k: scrub(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [scrub(v) for v in x]
+    return x
+
+
+def _http_code(err: Exception) -> int | None:
+    m = re.match(r"HTTP (\d{3})\b", str(err))
+    return int(m.group(1)) if m else None
+
+
 def _post(url: str, body: dict, headers: dict, timeout: int = 120) -> dict:
-    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
+    req = urllib.request.Request(url, data=json.dumps(scrub(body)).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json", **headers})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -82,39 +110,69 @@ def _post(url: str, body: dict, headers: dict, timeout: int = 120) -> dict:
 
 
 def ask(texts: dict[str, str], model: str = DEFAULT_MODEL, post=None) -> tuple[dict[str, float], dict]:
-    """(unit label -> P(yes), meta). Never raises: on any failure the answers so far are returned and
-    meta["error"] says what failed."""
+    """(unit label -> P(yes), meta). Never raises. meta["error"] says what stopped the run; meta["skipped"] maps a
+    unit the service refused (after the request was split down to that one unit) to the reason: the other units
+    keep their answers."""
     post = post or _post
-    key = os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy"
+    key = (os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy").strip()
     labels = list(texts)
     out: dict[str, float] = {}
     # `cost` is the run's total only when every request reported one; otherwise None, with what is known in
     # `known_cost` (2026-11-14 review, O114-01: a reply without usage.cost read as $0). A reported 0 stays 0.
     meta: dict = {"model": model, "asked": len(labels), "requests": 0, "seconds": 0.0, "cost": None,
-                  "known_cost": 0.0, "cost_complete": True}
-    for i in range(0, len(labels), CHUNK):
-        body, keys = request_body({u: texts[u] for u in labels[i:i + CHUNK]}, model)
+                  "known_cost": 0.0, "cost_complete": True, "skipped": {}}
+    if re.search(r"\s", key):
+        # 2026-11-15: a pasted COMMAND (74 characters with spaces) sat in the variable, and the service answered
+        # 401 "Missing Authentication header", which reads as a wrong key. A header value with whitespace inside is
+        # never a key. Say so and send nothing; the value is never printed.
+        meta["error"] = (f"OPENROUTER_API_KEY holds {len(key)} characters with whitespace inside: that is not a key "
+                         f"(a pasted command?), so nothing was sent; set it again")
+        labels = []
+    headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+    splits = [MAX_SPLITS]
+
+    def send(batch: list[str]):
+        body, keys = request_body({u: texts[u] for u in batch}, model)
         t0 = time.monotonic()
         try:
-            res = post(DECISIONS_URL, body, {"Authorization": f"Bearer {key}", "Accept": "application/json"})
+            res = post(DECISIONS_URL, body, headers)
             if not isinstance(res, dict):
                 raise ValueError(f"a reply of type {type(res).__name__}, not an object")
             if "error" in res:
                 raise RuntimeError(str(res["error"])[:300])
-            got = parse(res, keys)
+            return parse(res, keys), res, None
         except (OSError, RuntimeError, ValueError, TypeError, AttributeError) as e:
-            meta["error"] = f"{type(e).__name__}: {e}"
-            break
+            return None, None, e
         finally:
             meta["seconds"] = round(meta["seconds"] + time.monotonic() - t0, 2)
-        meta["requests"] += 1
-        out.update(got)
-        usage = res.get("usage")
-        cost = usage.get("cost") if isinstance(usage, dict) else None
-        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            meta["known_cost"] += float(cost)
-        else:
-            meta["cost_complete"] = False   # a cost missing or of another shape: unknown, never fatal
+
+    def run(batch: list[str]) -> bool:
+        """False when the run must stop (the error is in meta)."""
+        got, res, err = send(batch)
+        if err is None:
+            meta["requests"] += 1
+            out.update(got)
+            usage = res.get("usage")
+            cost = usage.get("cost") if isinstance(usage, dict) else None
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                meta["known_cost"] += float(cost)
+            else:
+                meta["cost_complete"] = False   # a cost missing or of another shape: unknown, never fatal
+            return True
+        if _http_code(err) in SPLITTABLE:
+            if len(batch) == 1:
+                meta["skipped"][batch[0]] = f"{type(err).__name__}: {err}"[:200]
+                return True
+            if splits[0] > 0:
+                splits[0] -= 1
+                mid = len(batch) // 2
+                return run(batch[:mid]) and run(batch[mid:])
+        meta["error"] = f"{type(err).__name__}: {err}"
+        return False
+
+    for i in range(0, len(labels), CHUNK):
+        if not run(labels[i:i + CHUNK]):
+            break
     meta["answered"] = len(out)
     if meta["requests"] == 0:
         meta["cost_complete"] = False
