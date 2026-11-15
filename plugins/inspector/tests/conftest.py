@@ -7,8 +7,9 @@ Slow set: everything that builds a repository or runs the collector, one reposit
 import pytest
 
 # modules whose tests build repositories / run the collector, minus a few pure-logic tests inside them
-SLOW_MODULES = {"test_evidence", "test_collector_equality", "test_dossier_big", "test_github_enrich"}
-PURE = {"test_subject_verdict", "test_default_excludes_are_overridden_by_path_and_component_root",
+SLOW_MODULES = {"test_evidence", "test_collector_equality", "test_dossier_big", "test_github_enrich",
+                "test_design_changes"}
+PURE = {"test_subject_verdict", "test_terms_are_words_hyphenated_and_numbered_without_stop_words", "test_default_excludes_are_overridden_by_path_and_component_root",
         # test_github_enrich: mocked gh, no repository
         "test_one_call_per_pr_with_labels_closes_and_body", "test_an_issue_without_labels_costs_one_extra_call_only_for_that_issue",
         "test_merged_pr_is_cached_and_a_failure_is_not", "test_an_unmerged_pr_is_not_cached",

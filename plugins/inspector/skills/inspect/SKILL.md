@@ -127,7 +127,10 @@ What it gives, per unit:
 - for a fix commit, **copies left behind**: a line it changed (not moved, not a deleted block)
   that is still, word for word, in at most 3 places of today's code.
 
+Right after a batch of fix PRs merges, run a short `since <sha>` (the commit before the batch): the fixes' copies left behind and design changes are most useful while the batch is fresh, and the run takes seconds.
+
 The summary lists:
+- design changes: words, hyphenated terms and numbered terms (`4-tier`, `Tier 4`) that a unit which is not a fix removed from docs or instructions, and that other files still use. A refactor that renames a concept leaves the old name behind, and copies left behind only reads fix units. Read each place: a still-used term is a lead only if it now contradicts the new design;
 - fix-of-fix units (`↺`: a fix that changed 3 or more lines an earlier fix wrote);
 - fixes spanning 2+ components;
 - hotspot files (tests counted apart);

@@ -710,6 +710,161 @@ def left_behind(repo: str, commit: str, ref: str, cap: int = 8, removed: list[st
     return out
 
 
+# --- Design changes: vocabulary a non-fix unit removed from docs while other files still use it -------------------
+# A refactor that renames a concept in the docs it touches (a 4-tier table became 3 levels) leaves the old words
+# in files it did not touch. left_behind only reads lines deleted by FIX units, so nothing reported this.
+DOC_CLASS = re.compile(r"(^|/)README[^/]*\.(md|mdx|rst|txt)$|(^|/)templates?/.+\.(md|mdx|rst|txt)$", re.I)
+# Files that record what was said, not what is true now: their use of a term is not a still-user.
+HISTORY_FILE = re.compile(r"(^|/)(CHANGELOG|CHANGES|HISTORY|RELEASES?|RELEASE[-_ ]NOTES|DECISIONS?|TUNING[-_ ]?LOG|MISTAKES)[^/]*$"
+                          r"|(^|/)(history|decisions?|adr|changelog)/|tuning[-_ ]?log", re.I)
+DESIGN_CAP = 15             # entries in the section
+DESIGN_TERMS_PER_UNIT = 150  # candidate terms searched per unit (most removed first)
+DESIGN_MAX_USERS_WORD = 4  # the same for a word or hyphenated word with no digit or underscore
+DESIGN_MAX_USERS = 20       # a term used in more files than this is vocabulary of the language, not of the design
+_URL = re.compile(r"https?://\S+")
+_HYPH = re.compile(r"(?<![\w-])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![\w-])")
+_NUMPH = re.compile(r"(?<![\w-])[A-Za-z]{3,}\s\d+(?:\.\d+)*(?![\w-])")
+_WORD = re.compile(r"(?<![\w-])[A-Za-z][A-Za-z0-9_]{3,}(?![\w-])")
+STOP_WORDS = frozenset("""
+about above after again also always another because been before being below between both bring cannot could does doing done
+down during each else even ever every from further gets give goes going have having here hers herself himself into itself
+just keep know like made make many might more most must never next none only onto other ours over same shall should since
+some such take than that their them then there these they this those through thus under until upon used uses using very want
+were what when where which while whom whose will with within without would your yours
+true false null note notes example examples see use list item items step steps text value values default section sections
+case cases code data base able need needs needed run runs running call calls result results output input path paths tool
+tools word words work works working file files line lines name names type types
+""".split())
+
+
+SHORT_STOP = frozenset("the and for are but not you all can had her was one our out has his how its may new now old see two way who "
+                       "any did get let put say she too use top".split())
+TEXT_FILE = re.compile(r"\.(md|mdx|rst|txt)$", re.I)
+
+
+def is_doc(path: str) -> bool:
+    return bool(INSTRUCTIONS.search(path) or DOC_CLASS.search(path))
+
+
+def design_terms(text: str) -> list[str]:
+    """Words, hyphenated terms (`4-tier`) and number phrases (`Tier 4`) of one line, lower-cased, in order of appearance."""
+    text = _URL.sub(" ", text)
+    out = []
+    for rx in (_HYPH, _NUMPH):
+        for m in rx.finditer(text):
+            t = m.group(0)
+            if rx is _HYPH and not re.search(r"[A-Za-z]", t):
+                continue                       # a date or a range: 2026-11-06
+            if rx is _NUMPH and (t.split()[0].lower() in SHORT_STOP or t.split()[0].lower() in STOP_WORDS):
+                continue                       # "the 3", "about 40", "step 2"
+            out.append(" ".join(t.lower().split()))
+        text = rx.sub(" ", text)
+    out += [w.lower() for w in _WORD.findall(text) if w.lower() not in STOP_WORDS]
+    return out
+
+
+def _term_rx(term: str) -> re.Pattern:
+    return re.compile(r"(?<![\w-])" + r"\s+".join(re.escape(p) for p in term.split()) + r"(?![\w-])", re.I)
+
+
+def term_hits(repo: str, rev: str, terms: list[str], only: set[str] | None = None, excludes: list[str] = (),
+              history_ok: bool = True) -> dict[str, list[str]]:
+    """term -> `path:line` at `rev` of tracked text files that use it as a whole term (one `git grep -f`).
+    `only`: just these paths. `history_ok` False leaves out changelog/history/decision/tuning-log files and tests."""
+    terms = list(dict.fromkeys(terms))
+    if not terms:
+        return {}
+    fd, pf = tempfile.mkstemp(prefix="inspector-terms-")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(("\n".join(terms) + "\n").encode("utf-8"))
+        small = only is not None and len(only) <= 100
+        spec = ["--", *(f":(literal){p}" for p in sorted(only))] if small else ["--", ".", *excludes]
+        out = git(repo, "grep", "-n", "-i", "-w", "-F", "-I", "-f", pf, rev, *spec, ok_codes=(0, 1))
+    finally:
+        os.unlink(pf)
+    rxs = {t: _term_rx(t) for t in terms}
+    res: dict[str, list[str]] = {t: [] for t in terms}
+    for h in out.splitlines():
+        h = h.split(":", 1)[1] if h.startswith(rev + ":") else h
+        parts = h.split(":", 2)
+        if len(parts) < 3 or (only is not None and parts[0] not in only):
+            continue
+        if not history_ok and (TEST_PATH.search(parts[0]) or HISTORY_FILE.search(parts[0])):
+            continue
+        low = parts[2].lower()
+        for t, rx in rxs.items():
+            if t.split()[0] in low and rx.search(parts[2]):
+                res[t].append(f"{parts[0]}:{parts[1]}")
+    return res
+
+
+def doc_removals(repo: str, u: Unit) -> tuple[Counter, dict[str, list[str]]]:
+    """What this unit's diff removed from instruction/doc files that still exist: term -> times, term -> files it was
+    removed from. A deleted file is a removal of the file, not a change of vocabulary."""
+    docs = [f["path"] for f in u.files if f["del"] > 0 and is_doc(f["path"])]
+    counts: Counter = Counter()
+    where: dict[str, list[str]] = {}
+    if not docs or not u.base:
+        return counts, where
+    diff = git(repo, "diff", "-U0", "-M", "--no-color", u.base, u.sha, "--", *(f":(literal){p}" for p in docs))
+    path = None
+    for ln in diff.splitlines():
+        if ln.startswith("+++ "):
+            path = ln[6:] if ln.startswith("+++ b/") else None
+        elif ln.startswith("-") and not ln.startswith("--- ") and path:
+            for t in design_terms(ln[1:]):
+                counts[t] += 1
+                if path not in where.setdefault(t, []):
+                    where[t].append(path)
+    return counts, where
+
+
+def design_changes(repo: str, ref: str, worked: list[Unit], workers: int = 1, excludes: list[str] = ()) -> tuple[list[dict], int]:
+    """For every worked unit that is not a fix: terms its diff removed from docs (at least twice, or with a digit or
+    hyphen) that are gone from every file it changed and still used elsewhere at `ref`. Returns the entries, ranked by
+    removed count then fewest files using and capped at DESIGN_CAP, and how many there were before the cap."""
+    cands = [u for u in worked if not u.is_fix and not u.boundary and u.base
+             and any(f["del"] and is_doc(f["path"]) for f in u.files)]
+    removed = pmap(lambda u: doc_removals(repo, u), cands, workers)
+
+    def survivors(item) -> list[str]:
+        u, (counts, _) = item
+        # terms with a digit or hyphen first (a design name), then the most removed words
+        pool = sorted((t for t, n in counts.items() if n >= 2 or re.search(r"\d|-", t)),
+                      key=lambda t: (not re.search(r"\d|-|_", t), -counts[t], t))[:DESIGN_TERMS_PER_UNIT]
+        if not pool:
+            return []
+        gone = term_hits(repo, u.sha, pool, only={f["path"] for f in u.files})
+        return [t for t in pool if not gone.get(t)]
+
+    kept = pmap(survivors, list(zip(cands, removed)), workers)
+    still = term_hits(repo, ref, sorted({t for ts in kept for t in ts}), excludes=excludes, history_ok=False)
+    entries = []
+    for u, (counts, where), ts in zip(cands, removed, kept):
+        for t in ts:
+            hits = still.get(t, [])
+            files = {h.rsplit(":", 1)[0] for h in hits}
+            if not files or len(files) > DESIGN_MAX_USERS:
+                continue
+            if not re.search(r"\d|_", t) and (len(where[t]) < 2 or len(files) > DESIGN_MAX_USERS_WORD
+                                              or not any(is_doc(f) or TEXT_FILE.search(f) for f in files)):
+                continue    # a word without a digit or underscore is a design term only if it left 2+ files, a doc still says it, and few use it
+            n = counts[t]
+            # one place per file; first the files in folders the unit did not touch (the other places), then docs
+            tops = {f["path"].split("/")[0] for f in u.files}
+            first = {}
+            for h in sorted(hits):
+                first.setdefault(h.rsplit(":", 1)[0], h)
+            at = sorted(first.values(), key=lambda h: (h.split("/")[0] in tops, not is_doc(h.rsplit(":", 1)[0]), h))
+            entries.append({"unit": u.label(), "term": t, "removed": n, "files_using": len(files), "at": at[:3],
+                            "removed_from": where[t][:3],
+                            "why": f"removed {n} time{'s' if n != 1 else ''} by that unit, still used in "
+                                   f"{len(files)} file{'s' if len(files) != 1 else ''}"})
+    entries.sort(key=lambda e: (-e["removed"], e["files_using"], e["unit"], e["term"]))
+    return entries[:DESIGN_CAP], len(entries)
+
+
 def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: int = 200,
                 max_blame: int = 400, min_lines: int = 3, history: int = 500,
                 unit: str | None = None, path: str | list[str] | None = None,
@@ -848,6 +1003,8 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
                                  key=lambda e: -e["lines"])
         u.fix_of_fix = any(e["is_fix"] and e["lines"] >= min_lines for e in u.introduced_by)
     Timing.extra["blame cache hits/misses"] = f"{cache.hits}/{cache.misses}"
+    with phase("design"):
+        design, design_total = design_changes(repo, ref, worked, workers, excludes)
 
     fixes = [u for u in worked if u.is_fix]
     code_files = lambda u: [f["path"] for f in u.files if blamed(f["path"])]
@@ -887,6 +1044,8 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
         "most_blamed_units": blamed_units.most_common(10),
         "left_behind": [{"unit": u.label(), "commit": c["sha"][:12], **x} for u in fixes for c in u.commits
                         for x in c.get("left_behind", [])],
+        **({"design_changes": design} if design else {}),
+        **({"design_changes_omitted": design_total - len(design)} if design_total > len(design) else {}),
         **({"ignored_matches": im} if (im := [{"unit": u.label(), "commit": c["sha"][:12], **x} for u in fixes
                                               for c in u.commits for x in c.get("ignored_matches", [])]) else {}),
         "timeline": [unit_json(u) for u in worked],
@@ -1135,6 +1294,9 @@ def github_phase(repo: str, worked: list[Unit], workers: int, cache_dir: str | N
 
 
 
+NEAR_CUT = 0.05   # a promoted unit this close to the cut may fall under it on another run
+
+
 def decision_phase(worked: list[Unit], model: str, cut: float, warnings: list[str], post=None) -> dict:
     """Ask a decision model about each worked unit the regex calls no fix (code units only: a docs-only or
     removal unit has nothing to blame). A unit at or over `cut` becomes a fix whose `why` names the model:
@@ -1174,6 +1336,10 @@ def decision_phase(worked: list[Unit], model: str, cut: float, warnings: list[st
                 for c in u.commits:
                     c["is_fix"] = not (CHORE.search(c["subject"]) or BUMP.search(c["subject"]))
             meta["promoted"].append(u.label())
+    near = [{"unit": u.label(), "p": u.model_p} for u in asked if u.model_p is not None and "model-fix" in u.tags
+            and u.model_p - cut <= NEAR_CUT + 1e-9]
+    if near:
+        meta["near_cut"] = near
     return meta
 
 
@@ -1279,6 +1445,12 @@ def markdown(r: dict) -> str:
           f"- Fix-of-fix (a fix changed lines an earlier fix wrote) `↺`: {', '.join(r['fix_of_fix']) or 'none'}",
           f"- Fixes spanning 2+ components: {', '.join(r['multi_component_fixes']) or 'none'}",
           f"- Fix tags: {', '.join(f'{t} {n}' for t, n in r['fix_tags']) or 'none'}", ""]
+    near = (r.get("decision_model") or {}).get("near_cut")
+    if near:
+        cut = r["decision_model"]["cut"]
+        L += [f"> Decision model: {len(near)} promoted unit(s) sit within {NEAR_CUT} of the cut ({cut}): "
+              + ", ".join(f"{x['unit']} p={x['p']}" for x in near)
+              + ". The model is not deterministic: a second run can move them under the cut. Read them as unconfirmed.", ""]
     L += ["## Hotspots (code files changed by fixes; tests apart)", ""]
     L += [f"- `{p}`: {n}" for p, n in r["hotspot_files"]] or ["- none"]
     if r["hotspot_tests"]:
@@ -1293,6 +1465,13 @@ def markdown(r: dict) -> str:
     if r.get("ignored_matches"):
         L += ["", f"Not counted above: {len(r['ignored_matches'])} line(s) also appear in imports, comments or descriptions "
                   "(`ignored_matches` in evidence.json)."]
+    if r.get("design_changes"):
+        L += ["", "## Design changes: terms a unit removed that other files still use", "",
+              "A unit that is not a fix removed these words from docs or instructions, and no file it changed still has them. "
+              "They may be a concept renamed in some files and left behind in others: read each place and decide."]
+        L += [f"- {x['unit']} `{x['term']}`: {x['why']}; at {', '.join(x['at'])}" for x in r["design_changes"]]
+        if r.get("design_changes_omitted"):
+            L += [f"- ... and {r['design_changes_omitted']} more (`design_changes_omitted` in evidence.json)."]
     L += ["", "## Timeline (oldest first)", "",
           "| unit | date | fix? | why | tags | +/- | introduced by (lines) |", "|---|---|---|---|---|---|---|"]
     for u in r["timeline"]:
