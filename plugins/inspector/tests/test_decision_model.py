@@ -130,7 +130,26 @@ def test_the_cli_flag_defaults_to_the_measured_model(capsys):
 def test_an_odd_usage_never_stops_the_run(reply):
     u = unit(1, "a")
     meta = evidence.decision_phase([u], "m/x", 0.5, [], lambda *a: reply)
-    assert u.is_fix and meta["cost"] == 0.0 and "error" not in meta
+    assert u.is_fix and "error" not in meta
+    assert meta["cost"] is None and meta["known_cost"] == 0.0 and meta["cost_complete"] is False, \
+        "an unknown cost is not $0 (2026-11-14 review, O114-01)"
+
+
+def test_a_total_cost_only_when_every_request_reported_one():
+    def run(costs):
+        replies = iter([{"answers": {"q0": {"type": "noul", "noul": 0.1}}, **({"usage": {"cost": c}} if c is not None else {})}
+                        for c in costs])
+        texts = {f"#{i}": "x" for i in range(len(costs) * decide.CHUNK)}
+        return decide.ask(texts, "m/x", lambda *a: next(replies))[1]
+    known = run([0.001, 0.002])
+    assert known["cost"] == pytest.approx(0.003) and known["cost_complete"] is True
+    assert run([0.0])["cost"] == 0.0, "a reported zero stays zero"
+    missing = run([None, None])
+    assert missing["cost"] is None and missing["known_cost"] == 0.0 and missing["cost_complete"] is False
+    mixed = run([0.001, None])
+    assert mixed["cost"] is None and mixed["known_cost"] == pytest.approx(0.001) and mixed["cost_complete"] is False
+    failed = decide.ask({"#1": "x"}, "m/x", lambda *a: (_ for _ in ()).throw(OSError("down")))[1]
+    assert failed["cost"] is None and failed["cost_complete"] is False
 
 
 @pytest.mark.parametrize("reply", [[], "oops", {"answers": "none"}, {"answers": {"q0": "yes"}}])

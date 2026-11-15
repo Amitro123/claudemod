@@ -88,7 +88,10 @@ def ask(texts: dict[str, str], model: str = DEFAULT_MODEL, post=None) -> tuple[d
     key = os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy"
     labels = list(texts)
     out: dict[str, float] = {}
-    meta: dict = {"model": model, "asked": len(labels), "requests": 0, "seconds": 0.0, "cost": 0.0}
+    # `cost` is the run's total only when every request reported one; otherwise None, with what is known in
+    # `known_cost` (2026-11-14 review, O114-01: a reply without usage.cost read as $0). A reported 0 stays 0.
+    meta: dict = {"model": model, "asked": len(labels), "requests": 0, "seconds": 0.0, "cost": None,
+                  "known_cost": 0.0, "cost_complete": True}
     for i in range(0, len(labels), CHUNK):
         body, keys = request_body({u: texts[u] for u in labels[i:i + CHUNK]}, model)
         t0 = time.monotonic()
@@ -109,6 +112,11 @@ def ask(texts: dict[str, str], model: str = DEFAULT_MODEL, post=None) -> tuple[d
         usage = res.get("usage")
         cost = usage.get("cost") if isinstance(usage, dict) else None
         if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            meta["cost"] += float(cost)     # a cost of another shape is left out, never fatal
+            meta["known_cost"] += float(cost)
+        else:
+            meta["cost_complete"] = False   # a cost missing or of another shape: unknown, never fatal
     meta["answered"] = len(out)
+    if meta["requests"] == 0:
+        meta["cost_complete"] = False
+    meta["cost"] = meta["known_cost"] if meta["cost_complete"] else None
     return out, meta

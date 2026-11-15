@@ -1148,7 +1148,7 @@ def decision_phase(worked: list[Unit], model: str, cut: float, warnings: list[st
         texts = {u.label(): decide.unit_text(u.label(), u.title, [c["subject"] for c in u.commits], u.files,
                                              u.version_bumps) for u in asked}
         probs, m = decide.ask(texts, model, post)
-    meta.update({k: m[k] for k in ("answered", "requests", "seconds", "cost")})
+    meta.update({k: m[k] for k in ("answered", "requests", "seconds", "cost", "known_cost", "cost_complete")})
     if m.get("error"):
         meta["error"] = m["error"]
         warnings.append(f"decision model {model}: {m['error']}; "
