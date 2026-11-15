@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Changed: the collector starts fewer `git` processes, with the same results. A cold first run on this repository (50 units, 19 fixes, 12 cases, `--no-cache --no-github`) went from 538 calls to 332. The fix commits' diffs come from one `git log -p --no-walk` per 12 commits (it was one `git diff` per commit: 77 to 7). In a big fix's dossier, the culprit subjects come from one `git log --no-walk` per section (it was one `git log -1` per culprit: 70 to 17), the per-file culprits reuse what the blame phase of the same run already found (54 `git blame` calls to 0; a saved run read later with `--show` still asks git), and a unit's fix commits are printed by one `git log -p` (43 `git show` to 12). Each batched read falls back to the per-commit call if git refuses the set. `evidence.json`, `evidence.md` and every dossier are equal to the previous collector's on four inputs (`docs/perf-2026-11.md`). `tests/test_batched_git.py` holds a git-call budget on a synthetic history: a count, because seconds differ by 100x between machines and the number of processes does not.
+
 ## 0.8.2 (2026-11-15)
 
 - Fixed (review of #137, R137-01): the split budget was spent once per split, and each split sent two requests, so a fully refused 41-unit request made 81 calls against a documented 40 extra. `MAX_EXTRA` is now paid before each extra request is sent and shared across chunks. When it runs out, the error says how many units were not asked, and the answers so far are kept. `meta["attempts"]` counts every request sent, and `requests` stays the count that came back answered. Both go into `evidence.json`.

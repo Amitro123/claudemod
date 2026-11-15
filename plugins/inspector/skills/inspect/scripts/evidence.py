@@ -580,9 +580,39 @@ def blame_origins(repo: str, commit: str, budget: int, ignore: str | None, paren
             got = blame_ranges(repo, parent, old, ranges, ignore)
             if key:
                 cache.put(key, got)
+        if not ignore:
+            _BLAME_MEMO[(commit[:12], old, tuple(ranges))] = got
         for sha, n in got:
             origins[(sha, old)] += n
     return origins
+
+
+# What the blame phase of this process found, without an ignore file: (fix commit as evidence.json keeps it, 12
+# characters; file; ranges) -> [[sha, lines]].
+# The per-file section of a big fix's dossier asks the same question; it reads the answer here instead of running
+# `git blame` again. investigate() empties it, so nothing outlives a run.
+_BLAME_MEMO: dict[tuple, list] = {}
+
+
+def subjects(repo: str, shas: list[str]) -> dict[str, str]:
+    """sha -> subject, one `git log --no-walk` for all of them (one `git log -1` each if git refuses the set)."""
+    shas = list(dict.fromkeys(shas))
+    if not shas:
+        return {}
+    try:
+        out = git(repo, "log", "--no-walk=unsorted", "--format=%H%x1f%s%x1e", *shas)
+        got = dict((rec.strip("\n").split("\x1f") + [""])[:2] for rec in out.split("\x1e") if rec.strip("\n"))
+        if all(s in got for s in shas):
+            return got
+    except RuntimeError:
+        pass
+    got = {}
+    for s in shas:
+        try:
+            got[s] = git(repo, "log", "-1", "--format=%s", s).strip()
+        except RuntimeError:
+            pass
+    return got
 
 
 def blame_ranges(repo: str, parent: str, old: str, ranges: list[tuple[int, int]], ignore: str | None) -> list[list]:
@@ -610,6 +640,34 @@ def commit_diff(repo: str, parent: str, commit: str, excludes: list[str] = ()) -
     """The commit's whole diff once: raw status lines plus -U0 patch, rename-aware. Serves blame and the copies search."""
     tail = ["--", ".", *excludes] if excludes else []
     return git(repo, "diff", "-U0", "-M", "--no-color", "--patch-with-raw", parent, commit, *tail)
+
+
+DIFF_BATCH = 12               # fix commits per `git log -p` call: few calls, and only a few diffs in memory at once
+_BATCH_HEAD = re.compile(r"(?m)^\x1e([0-9a-f]{40,64})\n")
+
+
+def log_patches(repo: str, shas: list[str], flags: list[str], tail: list[str] = ()) -> dict[str, str]:
+    """Full sha -> patch text for several one-parent commits, from one `git log -p --no-walk`. A commit git prints
+    nothing for (no change inside the pathspec) is absent. Raises RuntimeError if git refuses the set."""
+    out = git(repo, "log", "--no-walk=unsorted", "--format=%x1e%H", "--no-color", *flags, *shas, *tail)
+    parts = _BATCH_HEAD.split(out)          # a diff line starts with ':', '+', '-', ' ', '@' or a word, never \x1e
+    return {sha: body.strip("\n") for sha, body in zip(parts[1::2], parts[2::2])}
+
+
+def commit_diffs(repo: str, pairs: list[tuple[str, str]], excludes: list[str] = ()) -> dict[str, str]:
+    """commit_diff for several (commit, first parent) pairs in one `git log -p --no-walk`. Every commit here has
+    one parent (a direct commit, or a `--no-merges` commit of a merged branch), so its `git log -p` patch is its
+    diff against that parent. A commit git prints nothing for (no change outside the excludes) has an empty diff.
+    If git refuses the batch, one `git diff` per commit as before."""
+    pairs = [(c, p) for c, p in pairs if p]
+    if len(pairs) == 1:
+        return {pairs[0][0]: commit_diff(repo, pairs[0][1], pairs[0][0], excludes)}
+    tail = ["--", ".", *excludes] if excludes else []
+    try:
+        got = log_patches(repo, [c for c, _ in pairs], ["-U0", "-M", "--patch-with-raw"], tail)
+    except RuntimeError:
+        return {c: commit_diff(repo, p, c, excludes) for c, p in pairs}
+    return {c: (got[c] + "\n" if got.get(c) else "") for c, _ in pairs}
 
 
 TRIVIAL = re.compile(r"^[\s{}()\[\];,]*$|^\s*(//|#|\*|/\*|--)|^\s*(return|else|end|fi|pass|break|continue)\s*;?\s*$")
@@ -800,23 +858,37 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
         decision_meta = decision_phase(worked, decision_model, decision_cut, gh_warnings, decide_post)
     jobs = [(u, c) for u in worked if u.is_fix and u.verdict != "removal" for c in u.commits if c.get("is_fix")]
 
-    def analyze(job):
-        # per fix commit: one diff, one blame per file touched; independent of every other commit
-        c = job[1]
+    def parent_of(c) -> str:
         parent = c.get("parent")
         if parent is None:                       # a commit dict built elsewhere: ask git
             try:
                 parent = git(repo, "rev-parse", f"{c['sha']}^").strip()
             except RuntimeError:
                 parent = ""
-        if not parent:
-            return Counter(), []
-        diff = commit_diff(repo, parent, c["sha"], excludes)
-        origins = blame_origins(repo, c["sha"], max_blame, ignore, parent, diff, excludes, cache, ignore_id)
-        return origins, removed_lines(split_patch(diff)[2])
+        return parent
 
+    def analyze(batch):
+        # per batch of fix commits: one `git log -p` for their diffs; per commit, one blame per file touched.
+        # Commits are independent of each other, so batches run side by side.
+        parents = {c["sha"]: parent_of(c) for _, c in batch}
+        diffs = commit_diffs(repo, list(parents.items()), excludes)
+        res = []
+        for _, c in batch:
+            parent = parents[c["sha"]]
+            if not parent:
+                res.append((Counter(), []))
+                continue
+            diff = diffs.pop(c["sha"], "")
+            origins = blame_origins(repo, c["sha"], max_blame, ignore, parent, diff, excludes, cache, ignore_id)
+            res.append((origins, removed_lines(split_patch(diff)[2])))
+        return res
+
+    _BLAME_MEMO.clear()
     with phase("blame"):
-        results = pmap(analyze, jobs, workers)
+        # batches no larger than DIFF_BATCH, and at least `workers` of them when there are enough commits
+        size = max(1, min(DIFF_BATCH, -(-len(jobs) // max(1, workers))))
+        results = [r for part in pmap(analyze, [jobs[i:i + size] for i in range(0, len(jobs), size)], workers)
+                   for r in part]
     with phase("copies"):
         ignored: dict[str, list[str]] = {}
         hits = grep_hits(repo, ref, [t for _, rem in results for t in rem], excludes, ignored)
@@ -1370,17 +1442,22 @@ def per_file_section(repo: str, u: dict, c: dict, code: list[str]) -> list[str]:
     L = [f"### Files in this fix: {len(files)} code files, {total} changed lines", "",
          "Hunk headers are the function context git prints after `@@`. Blame is on the fix's parent.", ""]
     parent = c["sha"] + "^"        # saved runs do not keep the parent; a squash or plain commit has one first parent
+    tops: dict[int, list] = {}
+    for i, f in enumerate(files[:BIG_FIX_BLAME_FILES]):
+        if f["old"]:
+            got = _BLAME_MEMO.get((c["sha"][:12], f["path"], tuple(f["old"])))
+            try:
+                tops[i] = sorted(got if got is not None else blame_ranges(repo, parent, f["path"], f["old"], None),
+                                 key=lambda x: -x[1])[:2]
+            except RuntimeError:
+                pass
+    subj_of = subjects(repo, [sha for top in tops.values() for sha, _ in top])
     for i, f in enumerate(files[:BIG_FIX_MAX_FILES]):
         ctx = ", ".join(f"`{x[:50]}`" for x in f["ctx"][:4]) + (f" (+{len(f['ctx']) - 4} more)" if len(f["ctx"]) > 4 else "")
         L.append(f"- `{f['path']}` +{f['add']}/-{f['del']}, {f['hunks']} hunks: {ctx or 'no function context'}")
-        if parent and f["old"] and i < BIG_FIX_BLAME_FILES:
-            try:
-                top = sorted(blame_ranges(repo, parent, f["path"], f["old"], None), key=lambda x: -x[1])[:2]
-                subj = [f"{sha[:8]} {git(repo, 'log', '-1', '--format=%s', sha).strip()[:50]} ({n} lines)" for sha, n in top]
-            except RuntimeError:
-                subj = []
-            if subj:
-                L.append("  - culprits: " + "; ".join(subj))
+        top = tops.get(i, [])
+        if top and all(sha in subj_of for sha, _ in top):       # a sha git cannot name: no culprit line, as before
+            L.append("  - culprits: " + "; ".join(f"{sha[:8]} {subj_of[sha].strip()[:50]} ({n} lines)" for sha, n in top))
     if len(files) > BIG_FIX_MAX_FILES:
         L.append(f"- ... {len(files) - BIG_FIX_MAX_FILES} more files")
     L += ["", f"One file's diff: `evidence.py --show '#{u['pr']}' --out <run folder> --file <path>` (a saved run) or "
@@ -1440,6 +1517,15 @@ def dossier(repo: str, u: dict, owner_sha: dict[str, str], diff_lines: int = 60,
     big = sum(f["ins"] + f["del"] for f in u["files"] if f["path"] in code) > BIG_FIX_DIFF_LINES
     if big:
         max_chars = max(max_chars, 24000)       # room for the per-file section
+    # the fix commits' diffs on the unit's code files: one `git log -p` for all of them when there are several
+    shown: dict[str, str] = {}
+    fix_shas = [c["sha"] for c in u["commits"] if c.get("is_fix")]
+    if code and len(fix_shas) > 1:
+        try:
+            shown = log_patches(repo, fix_shas, ["-U3"], ["--", *code])
+            shown = {s: next((d for full, d in shown.items() if full.startswith(s)), "") for s in fix_shas}
+        except RuntimeError:
+            shown = {}
     for c in u["commits"]:
         if path and not any(inside(f) for f in git(repo, "show", "--name-only", "--format=", c["sha"]).splitlines()):
             continue
@@ -1453,7 +1539,8 @@ def dossier(repo: str, u: dict, owner_sha: dict[str, str], diff_lines: int = 60,
             L.append(f"- copy left behind: `{x['line'][:100]}` at {', '.join(x['at'])}")
         if big and code:
             L += [""] + per_file_section(repo, u, c, code)
-        L += ["", "```diff", capped(git(repo, "show", "--format=", "-U3", "--no-color", c["sha"], "--", *code) if code else "", diff_lines), "```", ""]
+        L += ["", "```diff", capped("" if not code else shown[c["sha"]] if c["sha"] in shown
+                                     else git(repo, "show", "--format=", "-U3", "--no-color", c["sha"], "--", *code), diff_lines), "```", ""]
         top = (c.get("introduced_by") or [{}])[0].get("unit")
         if top and top in owner_sha:
             L += [f"Culprit {top}, on the same files:", "```diff",
