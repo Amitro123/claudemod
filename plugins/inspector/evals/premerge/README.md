@@ -61,3 +61,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-14 | #132 (R114-01..03, docs_question) | none | — (logic bugs: outside what these four ask) |
 | 2026-11-15 | premerge incomplete report, O114-01, O114-02 | none (4 of 4 answered) | — (the recheck's finding was in premerge's own reporting: outside what these four ask) |
 | 2026-11-15 | release 0.8.0 (version bump only) | none (4 of 4 answered) | — |
+| 2026-11-15 | SKILL: router budget + decision-model key; claim reasons on stdout | none (4 of 4 answered) | — |
