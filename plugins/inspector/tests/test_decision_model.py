@@ -235,11 +235,56 @@ def test_an_auth_failure_is_not_split():
     assert out == {} and len(post.bodies) == 1 and meta["error"] and not meta["skipped"]
 
 
-def test_a_refusal_of_everything_stops_at_the_split_budget(monkeypatch):
-    monkeypatch.setattr(decide, "MAX_SPLITS", 5)
-    post = FilterPost(bad=[f"#{i}" for i in range(1, 51)])
-    out, meta = decide.ask(texts_of(50), "m/x", post)
-    assert out == {} and meta["error"] and post.calls <= 1 + 2 * 5
+def test_the_extra_request_budget_counts_requests_sent_not_splits():
+    """2026-11-15 review R137-01: the budget was spent once per split and each split sent two requests, so a fully
+    refused 41-unit request made 81 calls against a documented 40 extra. It is now paid before each extra send."""
+    post = FilterPost(bad=[f"#{i}" for i in range(1, 42)])
+    out, meta = decide.ask(texts_of(41), "m/x", post)
+    assert post.calls <= 1 + decide.MAX_EXTRA, post.calls
+    assert meta["attempts"] == post.calls and meta["requests"] == 0, "attempts are visible; requests stay the answered ones"
+    assert out == {} and meta["error"] and not meta["skipped"]
+
+
+def test_the_budget_is_shared_across_chunks_and_answers_are_kept(monkeypatch):
+    monkeypatch.setattr(decide, "CHUNK", 10)
+    monkeypatch.setattr(decide, "MAX_EXTRA", 6)
+    post = FilterPost(bad=["#3", "#13", "#23", "#33"])
+    out, meta = decide.ask(texts_of(40), "m/x", post)
+    assert post.calls <= 4 + 6 and meta["attempts"] == post.calls
+    assert "#1" in out and "#3" not in out, "answers before the budget ran out are kept"
+    assert "used up" in meta["error"] and "not asked" in meta["error"]
+
+
+def test_a_request_wide_400_stops_at_once_and_blames_no_unit():
+    """A 400 for the whole request (a model id the service doesn't know) used to be split down to every unit:
+    10 units cost 19 requests and the run read as 10 per-unit refusals, with no error."""
+    post = FakePost(fail=RuntimeError('HTTP 400 Bad Request: {"error":"invalid model id m/x"}'))
+    out, meta = decide.ask(texts_of(10), "m/x", post)
+    assert len(post.bodies) == 1 and meta["error"].startswith("RuntimeError: HTTP 400") and not meta["skipped"]
+
+
+def test_every_unit_refused_on_its_own_is_a_request_wide_error():
+    post = FilterPost(bad=[f"#{i}" for i in range(1, 5)])
+    out, meta = decide.ask(texts_of(4), "m/x", post)
+    assert out == {} and not meta["skipped"] and "request-wide" in meta["error"]
+
+
+def test_a_lost_reply_after_a_paid_one_leaves_the_cost_incomplete():
+    """2026-11-14 recheck, still open in #137: a success then a lost response reported cost_complete True."""
+    calls = []
+
+    def post(url, body, headers):
+        calls.append(1)
+        if len(calls) == 1:
+            return {"answers": {k: {"type": "noul", "noul": 0.1} for k in body["questions"]}, "usage": {"cost": 0.001}}
+        raise OSError("response lost")
+    out, meta = decide.ask(texts_of(decide.CHUNK + 1), "m/x", post)
+    assert meta["cost"] is None and meta["known_cost"] == pytest.approx(0.001) and meta["cost_complete"] is False
+    assert len(out) == decide.CHUNK and meta["error"].startswith("OSError")
+
+
+def test_a_pinned_version_is_not_an_address():
+    assert decide.scrub("bump react@18.3.1, mail a.b@c-d.co.il") == "bump react@18.3.1, mail [address]"
 
 
 def test_a_key_that_is_a_pasted_command_sends_nothing_and_is_not_echoed(monkeypatch):

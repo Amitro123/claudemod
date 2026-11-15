@@ -72,11 +72,14 @@ def parse(res: dict, keys: dict[str, str]) -> dict[str, float]:
     return out
 
 
-EMAIL_RE = re.compile(r"[\w.+%-]+@[\w-]+(?:\.[\w-]+)+")
+# The domain ends in letters, so a pinned version (react@18.3.1) is not an address and stays in a title.
+EMAIL_RE = re.compile(r"[\w.+%-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b")
 # Statuses a service answers when it dislikes what ONE unit's text says (a content filter, a size limit): splitting
 # the request narrows it down. 401, 429, 5xx and a network error never get better by splitting.
-SPLITTABLE = (400, 403, 413, 422)
-MAX_SPLITS = 40      # at most this many extra requests per run spent narrowing a refusal down
+# 400 and 422 also come back for a request-wide fault (a model id the service doesn't know, a changed alpha API):
+# splitting those only spends requests and then blames every unit, so they stop the run like a 401.
+SPLITTABLE = (403, 413)
+MAX_EXTRA = 40       # at most this many requests per run beyond one per chunk, counted as they are sent
 
 
 def scrub(x: object) -> object:
@@ -129,10 +132,12 @@ def ask(texts: dict[str, str], model: str = DEFAULT_MODEL, post=None) -> tuple[d
                          f"(a pasted command?), so nothing was sent; set it again")
         labels = []
     headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
-    splits = [MAX_SPLITS]
+    meta["attempts"] = 0          # every request sent; `requests` stays the count that came back answered
+    extra = [MAX_EXTRA]
 
     def send(batch: list[str]):
         body, keys = request_body({u: texts[u] for u in batch}, model)
+        meta["attempts"] += 1
         t0 = time.monotonic()
         try:
             res = post(DECISIONS_URL, body, headers)
@@ -146,8 +151,15 @@ def ask(texts: dict[str, str], model: str = DEFAULT_MODEL, post=None) -> tuple[d
         finally:
             meta["seconds"] = round(meta["seconds"] + time.monotonic() - t0, 2)
 
-    def run(batch: list[str]) -> bool:
-        """False when the run must stop (the error is in meta)."""
+    def run(batch: list[str], is_extra: bool) -> bool:
+        """False when the run must stop (the error is in meta). An extra request is paid from the budget before it
+        is sent, so a run never sends more than one request per chunk plus MAX_EXTRA."""
+        if is_extra:
+            if extra[0] <= 0:
+                meta["error"] = (f"the {MAX_EXTRA} extra requests for narrowing refusals down are used up; "
+                                 f"{len(batch)} unit(s) and the rest of the run were not asked")
+                return False
+            extra[0] -= 1
         got, res, err = send(batch)
         if err is None:
             meta["requests"] += 1
@@ -163,16 +175,29 @@ def ask(texts: dict[str, str], model: str = DEFAULT_MODEL, post=None) -> tuple[d
             if len(batch) == 1:
                 meta["skipped"][batch[0]] = f"{type(err).__name__}: {err}"[:200]
                 return True
-            if splits[0] > 0:
-                splits[0] -= 1
-                mid = len(batch) // 2
-                return run(batch[:mid]) and run(batch[mid:])
+            mid = len(batch) // 2
+            return run(batch[:mid], True) and run(batch[mid:], True)
         meta["error"] = f"{type(err).__name__}: {err}"
         return False
 
     for i in range(0, len(labels), CHUNK):
-        if not run(labels[i:i + CHUNK]):
+        chunk = labels[i:i + CHUNK]
+        ok = run(chunk, False)
+        refused = [u for u in chunk if u in meta["skipped"]]
+        if len(chunk) > 1 and refused and not any(u in out for u in chunk):
+            # No unit of the request was answered and those asked alone were refused: the fault is the request's,
+            # not one unit's text. Report it as such, never as per-unit refusals that read as a run that worked.
+            first = meta["skipped"][refused[0]]
+            for u in refused:
+                del meta["skipped"][u]
+            meta["error"] = (f"the service refused the units of a {len(chunk)}-unit request on their own and answered "
+                             f"none, so the fault is request-wide, not in one unit's text ({first})"
+                             + (f"; also: {meta['error']}" if meta.get("error") else ""))
+            ok = False
+        if not ok:
             break
+    if meta.get("error"):
+        meta["cost_complete"] = False   # a request that failed or was never sent has no cost we know
     meta["answered"] = len(out)
     if meta["requests"] == 0:
         meta["cost_complete"] = False
