@@ -58,7 +58,7 @@ def level_of(s: dict) -> str:
 def host_check(s: dict) -> bool:
     flags = s.get("flags")
     flags = [flags] if isinstance(flags, str) else flags if isinstance(flags, list) else []
-    return bool(s.get("needs_host_check")) or "needs-host-check" in [str(f).strip().lower() for f in flags]
+    return leadsio.flag_set(s.get("needs_host_check")) or "needs-host-check" in [str(f).strip().lower() for f in flags]
 
 
 def is_security(s: dict) -> bool:

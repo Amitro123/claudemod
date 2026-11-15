@@ -18,6 +18,15 @@ import sys
 PROBE_DIR = "probes"
 PROBE_KEYS = ("path", "leads", "ref", "command", "requires", "expect")
 LEAD_SUFFIX_RE = re.compile(r" \[lead \d+\]$")
+# A flag a model wrote as text can be a spelling of false: the schema shows `false | true | the question`.
+NOT_SET = ("", "false", "no", "none", "null", "0")
+
+
+def flag_set(v: object) -> bool:
+    """True for a set flag: true, or a non-empty string that does not spell false ("false", "no", "none"...)."""
+    if isinstance(v, str):
+        return v.strip().lower() not in NOT_SET
+    return bool(v)
 
 
 class LeadsError(ValueError):

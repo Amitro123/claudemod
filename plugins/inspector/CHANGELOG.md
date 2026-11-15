@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed: `needs_host_check` written as the text `"false"` counted as set. In a live run (2026-11-15) 11 of 31 leads carried the string, and it is truthy and not in the `true`/`yes` skip list: `plan.py` sent the docs-checker 15 questions of which 11 read just `false` (it answered 4), and `handoff.py` and `lint_leads.py` printed `[needs-host-check]` on those 11 leads and treated their change as unverified. A string that spells false (`false`, `no`, `none`, `null`, `0`, empty) is now no flag, in one shared helper (`leadsio.flag_set`) used by `handoff.py` and `lint_leads.py`, and the same list in `plan.py`, which stays standalone.
+
 ## 0.8.1 (2026-11-15)
 
 - Changed: release 0.8.1: version bump so installed plugins pick up the fixes merged in #135.

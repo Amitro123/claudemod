@@ -723,6 +723,20 @@ def test_a_host_question_is_not_cut_mid_sentence():
         == [("c", "Kaggle docs: is aiofiles in the image?")], "a question written beside the flag still goes"
 
 
+def test_a_string_spelling_of_false_is_not_a_docs_question():
+    """2026-11-15 run: readers wrote needs_host_check as the TEXT "false" on 11 of 31 leads. A non-empty string is
+    truthy, so the docs-checker got 11 questions that read "false" and answered none of them."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("plan_questions_false", PLAN)
+    pm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm)
+    for spelled in ("false", "False", " no ", "none", "null", "0", ""):
+        assert pm.host_questions([{"where": "a.py:1", "needs_host_check": spelled}]) == [], spelled
+    real = "Claude Code docs: does the host emit the first step before the spawn resolves?"
+    assert pm.host_questions([{"where": "a.py:1", "needs_host_check": "false"},
+                              {"where": "b.py:2", "needs_host_check": real}]) == [("b.py:2", real)]
+
+
 def test_a_hold_survives_a_rewritten_stub_and_claims_at_the_same_moment(tmp_path) -> None:
     """Second 2026-11-14 inspection: held_by read the `reader` key from the stub, which the reader rewrites, and the
     hold check and the create were two steps, so simultaneous claims by one reader could both pass."""
