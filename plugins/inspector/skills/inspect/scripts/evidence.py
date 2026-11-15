@@ -1148,11 +1148,16 @@ def decision_phase(worked: list[Unit], model: str, cut: float, warnings: list[st
         texts = {u.label(): decide.unit_text(u.label(), u.title, [c["subject"] for c in u.commits], u.files,
                                              u.version_bumps) for u in asked}
         probs, m = decide.ask(texts, model, post)
-    meta.update({k: m[k] for k in ("answered", "requests", "seconds", "cost", "known_cost", "cost_complete")})
+    meta.update({k: m[k] for k in ("answered", "requests", "attempts", "seconds", "cost", "known_cost", "cost_complete") if k in m})
     if m.get("error"):
         meta["error"] = m["error"]
         warnings.append(f"decision model {model}: {m['error']}; "
                         f"{m['answered']} of {len(asked)} units answered, the rest stay as the regex judged them")
+    if m.get("skipped"):
+        meta["skipped"] = dict(m["skipped"])
+        warnings.append(f"decision model {model}: the service refused {len(m['skipped'])} unit(s) on their own "
+                        f"({', '.join(m['skipped'])}; first reason: {next(iter(m['skipped'].values()))}); "
+                        f"they stay as the regex judged them, the other units were answered")
     for u in asked:
         p = probs.get(u.label())
         if p is None:

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -71,8 +72,38 @@ def parse(res: dict, keys: dict[str, str]) -> dict[str, float]:
     return out
 
 
+# The domain ends in letters, so a pinned version (react@18.3.1) is not an address and stays in a title.
+EMAIL_RE = re.compile(r"[\w.+%-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b")
+# Statuses a service answers when it dislikes what ONE unit's text says (a content filter, a size limit): splitting
+# the request narrows it down. 401, 429, 5xx and a network error never get better by splitting.
+# 400 and 422 also come back for a request-wide fault (a model id the service doesn't know, a changed alpha API):
+# splitting those only spends requests and then blames every unit, so they stop the run like a 401.
+SPLITTABLE = (403, 413)
+MAX_EXTRA = 40       # at most this many requests per run beyond one per chunk, counted as they are sent
+
+
+def scrub(x: object) -> object:
+    """Replace every email-like string with [address], walking the body, not its JSON text (a regex over the text
+    could eat the `n` of a `\n` escape and break the JSON). Measured on 2026-11-15: OpenRouter's content filter
+    answered `403 Request blocked by content filter: [EMAIL]` to a whole request of 89 units because two commit
+    subjects carried `Co-Authored-By: X <a@b.c>`: 0 of 89 answered, and the run went on silently with the regex alone.
+    The same text with `<[address]>` was answered by both models."""
+    if isinstance(x, str):
+        return EMAIL_RE.sub("[address]", x)
+    if isinstance(x, dict):
+        return {k: scrub(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [scrub(v) for v in x]
+    return x
+
+
+def _http_code(err: Exception) -> int | None:
+    m = re.match(r"HTTP (\d{3})\b", str(err))
+    return int(m.group(1)) if m else None
+
+
 def _post(url: str, body: dict, headers: dict, timeout: int = 120) -> dict:
-    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
+    req = urllib.request.Request(url, data=json.dumps(scrub(body)).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json", **headers})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -82,39 +113,91 @@ def _post(url: str, body: dict, headers: dict, timeout: int = 120) -> dict:
 
 
 def ask(texts: dict[str, str], model: str = DEFAULT_MODEL, post=None) -> tuple[dict[str, float], dict]:
-    """(unit label -> P(yes), meta). Never raises: on any failure the answers so far are returned and
-    meta["error"] says what failed."""
+    """(unit label -> P(yes), meta). Never raises. meta["error"] says what stopped the run; meta["skipped"] maps a
+    unit the service refused (after the request was split down to that one unit) to the reason: the other units
+    keep their answers."""
     post = post or _post
-    key = os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy"
+    key = (os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy").strip()
     labels = list(texts)
     out: dict[str, float] = {}
     # `cost` is the run's total only when every request reported one; otherwise None, with what is known in
     # `known_cost` (2026-11-14 review, O114-01: a reply without usage.cost read as $0). A reported 0 stays 0.
     meta: dict = {"model": model, "asked": len(labels), "requests": 0, "seconds": 0.0, "cost": None,
-                  "known_cost": 0.0, "cost_complete": True}
-    for i in range(0, len(labels), CHUNK):
-        body, keys = request_body({u: texts[u] for u in labels[i:i + CHUNK]}, model)
+                  "known_cost": 0.0, "cost_complete": True, "skipped": {}}
+    if re.search(r"\s", key):
+        # 2026-11-15: a pasted COMMAND (74 characters with spaces) sat in the variable, and the service answered
+        # 401 "Missing Authentication header", which reads as a wrong key. A header value with whitespace inside is
+        # never a key. Say so and send nothing; the value is never printed.
+        meta["error"] = (f"OPENROUTER_API_KEY holds {len(key)} characters with whitespace inside: that is not a key "
+                         f"(a pasted command?), so nothing was sent; set it again")
+        labels = []
+    headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+    meta["attempts"] = 0          # every request sent; `requests` stays the count that came back answered
+    extra = [MAX_EXTRA]
+
+    def send(batch: list[str]):
+        body, keys = request_body({u: texts[u] for u in batch}, model)
+        meta["attempts"] += 1
         t0 = time.monotonic()
         try:
-            res = post(DECISIONS_URL, body, {"Authorization": f"Bearer {key}", "Accept": "application/json"})
+            res = post(DECISIONS_URL, body, headers)
             if not isinstance(res, dict):
                 raise ValueError(f"a reply of type {type(res).__name__}, not an object")
             if "error" in res:
                 raise RuntimeError(str(res["error"])[:300])
-            got = parse(res, keys)
+            return parse(res, keys), res, None
         except (OSError, RuntimeError, ValueError, TypeError, AttributeError) as e:
-            meta["error"] = f"{type(e).__name__}: {e}"
-            break
+            return None, None, e
         finally:
             meta["seconds"] = round(meta["seconds"] + time.monotonic() - t0, 2)
-        meta["requests"] += 1
-        out.update(got)
-        usage = res.get("usage")
-        cost = usage.get("cost") if isinstance(usage, dict) else None
-        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-            meta["known_cost"] += float(cost)
-        else:
-            meta["cost_complete"] = False   # a cost missing or of another shape: unknown, never fatal
+
+    def run(batch: list[str], is_extra: bool) -> bool:
+        """False when the run must stop (the error is in meta). An extra request is paid from the budget before it
+        is sent, so a run never sends more than one request per chunk plus MAX_EXTRA."""
+        if is_extra:
+            if extra[0] <= 0:
+                meta["error"] = (f"the {MAX_EXTRA} extra requests for narrowing refusals down are used up; "
+                                 f"{len(batch)} unit(s) and the rest of the run were not asked")
+                return False
+            extra[0] -= 1
+        got, res, err = send(batch)
+        if err is None:
+            meta["requests"] += 1
+            out.update(got)
+            usage = res.get("usage")
+            cost = usage.get("cost") if isinstance(usage, dict) else None
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                meta["known_cost"] += float(cost)
+            else:
+                meta["cost_complete"] = False   # a cost missing or of another shape: unknown, never fatal
+            return True
+        if _http_code(err) in SPLITTABLE:
+            if len(batch) == 1:
+                meta["skipped"][batch[0]] = f"{type(err).__name__}: {err}"[:200]
+                return True
+            mid = len(batch) // 2
+            return run(batch[:mid], True) and run(batch[mid:], True)
+        meta["error"] = f"{type(err).__name__}: {err}"
+        return False
+
+    for i in range(0, len(labels), CHUNK):
+        chunk = labels[i:i + CHUNK]
+        ok = run(chunk, False)
+        refused = [u for u in chunk if u in meta["skipped"]]
+        if len(chunk) > 1 and refused and not any(u in out for u in chunk):
+            # No unit of the request was answered and those asked alone were refused: the fault is the request's,
+            # not one unit's text. Report it as such, never as per-unit refusals that read as a run that worked.
+            first = meta["skipped"][refused[0]]
+            for u in refused:
+                del meta["skipped"][u]
+            meta["error"] = (f"the service refused the units of a {len(chunk)}-unit request on their own and answered "
+                             f"none, so the fault is request-wide, not in one unit's text ({first})"
+                             + (f"; also: {meta['error']}" if meta.get("error") else ""))
+            ok = False
+        if not ok:
+            break
+    if meta.get("error"):
+        meta["cost_complete"] = False   # a request that failed or was never sent has no cost we know
     meta["answered"] = len(out)
     if meta["requests"] == 0:
         meta["cost_complete"] = False

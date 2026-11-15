@@ -154,3 +154,19 @@ def test_an_empty_folder_is_refused_and_stdin_may_carry_a_bom(tmp_path, monkeypa
         assert "BOM" not in str(e) and "character 0" not in str(e), e
     else:
         assert items and items[0]["where"] == "a.py:1"
+
+
+def test_flag_set_reads_a_string_spelling_of_false_as_not_set() -> None:
+    for v in (False, None, 0, "", " ", "false", "False", " no ", "none", "null", "0"):
+        assert leadsio.flag_set(v) is False, repr(v)
+    for v in (True, "true", "does the tool trim the value?"):
+        assert leadsio.flag_set(v) is True, repr(v)
+
+
+def test_handoff_and_lint_leads_do_not_flag_a_host_check_on_the_text_false() -> None:
+    """The string "false" is truthy: before the fix, 11 of 31 leads of a real run printed [needs-host-check]."""
+    assert not handoff.needs_host_check({"needs_host_check": "false"})
+    assert not lint_leads.host_check({"needs_host_check": "false"})
+    assert handoff.needs_host_check({"needs_host_check": "does X hold on the host?"})
+    assert handoff.needs_host_check({"flags": ["needs-host-check"]})
+    assert lint_leads.host_check({"needs_host_check": True})

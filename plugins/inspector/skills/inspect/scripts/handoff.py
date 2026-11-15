@@ -44,7 +44,7 @@ def needs_host_check(s: dict) -> bool:
     """The lead's impact depends on host/runtime behaviour nobody observed: a boolean or a flag in `flags`."""
     flags = s.get("flags")
     flags = [flags] if isinstance(flags, str) else flags or []
-    return bool(s.get("needs_host_check")) or "needs-host-check" in [str(f).strip().lower() for f in flags]
+    return leadsio.flag_set(s.get("needs_host_check")) or "needs-host-check" in [str(f).strip().lower() for f in flags]
 
 
 def change_unverified(s: dict) -> bool:

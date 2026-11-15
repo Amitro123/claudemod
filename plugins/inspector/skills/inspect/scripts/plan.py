@@ -387,12 +387,16 @@ def chunks_of(leads: list) -> list[list]:
 
 
 QUESTION_CAP = 1200
+# A string spelling of false is no flag (same list as leadsio.NOT_SET; plan.py stays stdlib-only and standalone).
+NO_FLAG = ("", "false", "no", "none", "null", "0")
 
 
 def host_questions(leads: list) -> list[tuple[str, str]]:
     out = []
     for x in leads:
         v = x.get("needs_host_check")
+        if isinstance(v, str) and v.strip().lower() in NO_FLAG:
+            v = None
         # A reader that kept the flag a boolean (the schema's old example) and wrote its question beside it, as
         # `docs_question`: the 2026-11-14 rerun of UltimateDocResearcher lost three Kaggle docs questions that way.
         if v and isinstance(x.get("docs_question"), str) and x["docs_question"].strip():
