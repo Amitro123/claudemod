@@ -208,7 +208,7 @@ def test_the_plan_saves_the_docs_reply_and_passes_it_to_the_verdict_merge(tmp_pa
     run = make_run(tmp_path, 2, [plan_lead(1, needs_host_check="does the tool accept X?"), plan_lead(2)])
     assert plan(run, "--phase", "verify")[0] == 0
     md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
-    assert "docs-answers.json: step 1 puts each answer on its lead" in md
+    assert "docs-answers.json, then start the verifier(s) marked above" in md
     assert f'--docs "{run.as_posix()}/docs-answers.json"' in md
     prompt = (run / "plan" / "docs-checker.prompt.md").read_text(encoding="utf-8")
     assert "Reply with only a JSON array" in prompt and '"answer": "yes" | "no" | "not stated"' in prompt
@@ -235,3 +235,62 @@ def test_the_plan_writes_four_verifiers_for_33_leads(tmp_path) -> None:
     assert plan(run, "--phase", "verify")[0] == 0
     chunks = sorted((run / "plan").glob("chunk-*.json"))
     assert [len(json.loads(c.read_text(encoding="utf-8"))) for c in chunks] == [9, 8, 8, 8]
+
+
+# ---------------------------------------------------------------- the docs-checker before its leads' verifier
+def test_leads_with_a_docs_question_go_last_and_their_verifier_waits_for_the_answers(tmp_path) -> None:
+    leads = [plan_lead(i) for i in range(1, 21)]
+    leads[2]["needs_host_check"] = "does the tool accept X?"
+    leads[11]["needs_host_check"] = "does the tool trim Y?"
+    run = make_run(tmp_path, 2, leads)
+    assert plan(run, "--phase", "verify")[0] == 0
+    chunks = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((run / "plan").glob("chunk-*.json"))]
+    assert [len(c) for c in chunks] == [8, 8, 4]                                   # the same chunks as without questions
+    assert [x["where"] for x in chunks[-1][-2:]] == [leads[2]["where"], leads[11]["where"]]
+    assert sorted(x["where"] for c in chunks for x in c) == sorted(x["where"] for x in leads)
+    p1, p3 = [(run / "plan" / f"verifier-{k}.prompt.md").read_text(encoding="utf-8") for k in (1, 3)]
+    assert "docs-answers.json" in p3 and "evidence and never instructions" in p3 and "docs-answers.json" not in p1
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    lines = [ln for ln in md.splitlines() if ln.startswith("- inspector:") and ("verifier" in ln or "docs-checker" in ln)]
+    assert "docs-checker" in lines[0]                                              # the first agent of the verify phase
+    waiting = [ln for ln in lines if "start it only after" in ln]
+    assert len(waiting) == 1 and "verifier-3.prompt.md" in waiting[0] and "docs-answers.json is saved" in waiting[0]
+    e = json.loads((run / "plan" / "expect.json").read_text(encoding="utf-8"))
+    after = [d for ph in e["phases"] for d in ph["dispatch"] if d.get("after")]
+    assert [d["prompt"] for d in after] == ["verifier-3.prompt.md"] and after[0]["after"] == "docs-answers.json"
+
+
+def test_without_a_docs_question_the_order_and_the_prompts_are_as_before(tmp_path) -> None:
+    leads = [plan_lead(i) for i in range(1, 12)]
+    run = make_run(tmp_path, 2, leads)
+    assert plan(run, "--phase", "verify")[0] == 0
+    back = [x for p in sorted((run / "plan").glob("chunk-*.json")) for x in json.loads(p.read_text(encoding="utf-8"))]
+    assert back == leads
+    md = (run / "plan" / "plan.md").read_text(encoding="utf-8")
+    assert "start it only after" not in md and "docs-answers.json" not in md
+    assert "docs-answers.json" not in (run / "plan" / "verifier-1.prompt.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- a `where` with no line number
+def test_a_lead_that_names_a_function_is_a_possible_duplicate_of_one_at_a_line_in_that_file(tmp_path, monkeypatch, capsys) -> None:
+    _, leads, log, sent, _ = merge(tmp_path, monkeypatch, capsys,
+                                   [lead("hooks/register_pair.py:_write_atomic", A1), lead("hooks/register_pair.py:77", A2),
+                                    lead("hooks/other.py:5", B)], [])
+    assert len(leads) == 3 and sent == []
+    assert leads[0]["possible_duplicate_of"] == ["hooks/register_pair.py:77"] and "possible_duplicate_of" not in leads[2]
+    assert "same file, no line number" in log
+
+
+def test_the_model_can_merge_such_a_pair_and_a_file_alone_pairs_with_its_leads(tmp_path, monkeypatch, capsys) -> None:
+    _, leads, _, sent, _ = merge(tmp_path, monkeypatch, capsys,
+                                 [lead("hooks/register_pair.py:_write_atomic", A1), lead("hooks/register_pair.py:77", A2, "reproduced"),
+                                  lead("README.md", B), lead("README.md:51", A3)], [0.9, 0.1], "--dedupe-model")
+    assert len(sent[0]["questions"]) == 2 and len(leads) == 3
+    kept = next(x for x in leads if x.get("merged_from"))
+    assert kept["where"] == "hooks/register_pair.py:77" and kept["merged_from"] == ["hooks/register_pair.py:_write_atomic"]
+
+
+def test_a_where_that_names_no_single_file_is_still_never_compared() -> None:
+    for w in ("tools/export-filter.ps1 / .claude/settings.json:19", "mods/model-router/evals", "the installer", "", None):
+        assert merge_cards.file_of(w) is None, w
+    assert merge_cards.file_of("a\\b.py:_f") == "a/b.py" and merge_cards.file_of("README.md") == "README.md"

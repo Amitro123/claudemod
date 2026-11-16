@@ -86,7 +86,8 @@ Write a JSON array to the caller's file, one object per lead in the chunk:
 "unverifiable": ["<what would settle it>"]}]`. For a lead with `probe_file`, add
 `"probe_check": {"read_first": true, "ran": "yes | no: why", "exercises_claim": "yes | no | partly: why",
 "observed": "<what it printed>", "independent": "<your own probe or variation and what it printed, or the code path at path:line>"}`.
-Keep `where` exactly as given: it is the join key. Leave `corrected` empty when the labels hold.
+When your prompt names a `docs-answers.json`, read it first: where the documentation settles a lead's host doubt, give the
+verdict it supports and cite the source; `not stated` leaves the doubt. Keep `where` exactly as given: it is the join key. Leave `corrected` empty when the labels hold.
 A lead whose `change` holds a query that you ran read-only: put `"query_run": {"mode": "read-only", "status": "executed", "observed": "<result summary>"}` in `corrected`; if you did not run it, say so in `unverifiable`.
 
 Reply with a table (where, verdict, one line why, labels changed) and anything you could not

@@ -15,9 +15,9 @@ two checkers that did not write the leads. Run it before the leads go to anyone 
    leads. It is the most useful money in the run: it catches downgraded and mislabelled leads.
 3. **Public-tool doubts, once.** The plan starts one `docs-checker` with one question per lead flagged `needs_host_check`
    whose doubt is how a public tool is documented to behave (the flag's text is the question). It replies with a JSON
-   array: save the reply, unchanged, as `<out>/docs-answers.json`; `merge_verdicts.py --docs` (in the plan's command) puts
-   each answer on its lead and the handoff prints it beside the doubt (`docs: ...`). It changes no verdict: say in the
-   report which `UNVERIFIABLE` leads the documentation settled. A doubt about your own deployment or data is not a
+   array: save the reply, unchanged, as `<out>/docs-answers.json`, then start the verifier of the chunk that holds those
+   leads (the plan marks it): it judges them with the answers. `merge_verdicts.py --docs` (in the plan's command) also puts
+   each answer on its lead and the handoff prints it beside the doubt (`docs: ...`). A doubt about your own deployment or data is not a
    docs question; leave it `UNVERIFIABLE`.
 4. **Merge.**
 

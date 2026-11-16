@@ -10,7 +10,9 @@ file (an array) is kept field for field, plus `found_by` (card id or `sweeper`).
 only when they are exact duplicates: the same file and the same set of line ranges in `where`, and the
 same words and comparison operators (`<`, `>`, `<=`, `>=`, `==`, `!=`) in `what` (case, spacing and other punctuation ignored). The stronger level is kept (reproduced >
 read > suspect > inferred; tie: more filled fields, then first) and gets `also_found_by` and
-`merged_from`. A `where` that cannot be parsed is never merged. Every other same-file pair within 10
+`merged_from`. A `where` that cannot be parsed is never merged as an exact duplicate; when it still names a file
+(`path/file.py:_write_atomic`, or the file alone), it is logged as a possible duplicate of every other lead in that file
+(`same file, no line number`), so a person, or `--dedupe-model`, decides. Every other same-file pair within 10
 lines, and every pair whose line ranges intersect (`path:15` is 15-15), stays as two leads with all their
 fields; both get `possible_duplicate_of` (the other's `where`) and the log lists the pair with the
 reason (`lines overlap`, `similar wording` at word similarity 0.5 or more, else `within 10 lines`, plus the
@@ -49,6 +51,15 @@ NEAR = 10
 RANK = ("reproduced", "read", "suspect", "inferred")
 WHERE_RE = re.compile(r"^(?P<f>[^\s,]+?):(?P<r>L?\d+(?:\s*-\s*L?\d+)?(?:\s*,\s*L?\d+(?:\s*-\s*L?\d+)?)*)$")
 OVERLAP, SIMILAR, NEARBY = "lines overlap", "similar wording", "within 10 lines"
+NOLINE = "same file, no line number"
+# A `where` with no line range that still names a file: `path/file.py`, `path/file.py:_write_atomic`.
+FILE_RE = re.compile(r"^(?P<f>[^\s,:]+\.\w+)(?::\S.*)?$")
+
+
+def file_of(w: object) -> str | None:
+    """The file a `where` names when it has no line range that parse_where can read; None when it names none clearly."""
+    m = FILE_RE.match(w.strip()) if isinstance(w, str) else None
+    return m["f"].replace("\\", "/") if m else None
 SIMILAR_AT = 0.5  # word similarity from which a flagged pair is called "similar wording"
 OWN_KEYS = ("found_by", "also_found_by", "merged_from", "merged_variants", "possible_duplicate_of", "case",
             "card_status", "original_level")  # a stub's marks stay on its own lead, never copied to a finished one
@@ -284,9 +295,15 @@ def dedupe(raw: list[dict], same: dict[tuple[int, int], float] | None = None, cu
         merges.append((i, j, p))
         parent[gj] = gi
         by_model[i] = by_model[j] = max(p, by_model.get(i, 0.0), by_model.get(j, 0.0))
+    files = [p[0] if p else file_of(lead.get("where")) for p, lead in zip(parsed, raw)]
     for i in range(len(raw)):
         for j in range(i + 1, len(raw)):
-            if find(i) == find(j) or not parsed[i] or not parsed[j] or parsed[i][0] != parsed[j][0]:
+            if find(i) == find(j) or not files[i] or files[i] != files[j]:
+                continue
+            if not parsed[i] or not parsed[j]:
+                # One names the function or only the file, the other a line: the same defect was verified twice in a
+                # live run (2026-11-16) as `register_pair.py:_write_atomic` and `register_pair.py:77`, never compared.
+                possible.append((i, j, jaccard(toks[i], toks[j]), NOLINE))
                 continue
             g = gap(parsed[i][1], parsed[j][1])
             if g <= NEAR:  # kept apart whatever the wording; a person decides
