@@ -43,6 +43,7 @@ def merge_pr(repo: Path, n: int, branch: str, commits: list[tuple[dict, str]], t
 
 def new_repo(path: Path) -> Path:
     path.mkdir(parents=True)
+    _clock[0] = 1_700_000_000        # every repository starts at the same hour, whatever was built before it
     run(path, "init", "-q", "-b", "main")
     run(path, "config", "commit.gpgsign", "false")
     run(path, "config", "core.autocrlf", "false")

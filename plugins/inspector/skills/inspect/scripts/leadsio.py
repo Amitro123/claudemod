@@ -22,6 +22,54 @@ LEAD_SUFFIX_RE = re.compile(r" \[lead \d+\]$")
 NOT_SET = ("", "false", "no", "none", "null", "0")
 
 
+def utf8_stdio() -> None:
+    """Write stdout and stderr as UTF-8 whatever the console's codepage. These scripts print text agents wrote and lines of
+    the repository; a Windows console in cp1255 or cp1252 cannot encode a check mark or an arrow, and the script died
+    with UnicodeEncodeError before printing its report (crosscheck.py in a live run, 2026-11-16)."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
+CATEGORIES = ("security", "broken-flow", "hardening", "cost", "other")      # references/labels.md
+REACHES = ("default-on", "conditional", "opt-in", "unknown")
+
+
+def normalize_labels(lead: dict, who: str = "") -> list[str]:
+    """Bring `category` and `reach` back to the values references/labels.md allows, in place; returns one line per
+    change. A category outside the list becomes `other`; a reach outside it becomes `unknown`, and its text moves to
+    `reach_when` when that is empty. What was written stays under `category_as_written` / `reach_as_written`.
+    Measured on a live run (2026-11-15): 4 of 33 leads carried an invented category (`consistency`, `correctness`,
+    `hygiene`, `test-gap`) and 4 a sentence in `reach`; the counts per category and per reach then mean nothing.
+    A missing label is left missing: the handoff shows it as it always did."""
+    notes = []
+    tag = f"{who} " if who else ""
+    c = lead.get("category")
+    if isinstance(c, str) and c.strip():
+        norm = c.strip().lower().replace("_", "-").replace(" ", "-")
+        if norm in CATEGORIES:
+            lead["category"] = norm
+        else:
+            lead["category_as_written"], lead["category"] = c, "other"
+            notes.append(f"{tag}{lead.get('where')}: category '{c}' is not one of {', '.join(CATEGORIES)}; set to other")
+    r = lead.get("reach")
+    if isinstance(r, str) and r.strip():
+        head, _, tail = r.strip().partition(":")
+        norm = head.strip().lower().replace("_", "-").replace(" ", "-")
+        if norm in REACHES:
+            lead["reach"] = norm + (f": {tail.strip()}" if tail.strip() else "")
+        else:
+            lead["reach_as_written"], lead["reach"] = r, "unknown"
+            if not str(lead.get("reach_when") or "").strip():
+                lead["reach_when"] = " ".join(r.split())
+            notes.append(f"{tag}{lead.get('where')}: reach '{' '.join(r.split())[:60]}' is not one of {', '.join(REACHES)}; "
+                         "set to unknown, the text kept in reach_when")
+    return notes
+
+
 def flag_set(v: object) -> bool:
     """True for a set flag: true, or a non-empty string that does not spell false ("false", "no", "none"...)."""
     if isinstance(v, str):

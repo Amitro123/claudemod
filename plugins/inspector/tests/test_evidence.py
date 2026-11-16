@@ -300,7 +300,8 @@ def test_no_plan_pointer_when_nothing_is_saved(repo: Path, capsys, monkeypatch) 
         raise OSError("Read-only file system")
     monkeypatch.setattr(evidence, "default_out", no_write)
     assert evidence.main(["--repo", str(repo), "--min-lines", "1"]) == 0
-    assert "RUN PLAN" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "RUN PLAN: " not in out and "/plan/plan.md" not in out     # no pointer to a file; the plan itself is printed inline
 
 
 def test_a_plan_failure_never_breaks_the_collector(repo: Path, tmp_path: Path, capsys, monkeypatch) -> None:
@@ -357,3 +358,61 @@ def test_cli_fallback_is_pinned_and_shell_quoted(repo: Path, tmp_path: Path, cap
     assert args[args.index('--unit') + 1].startswith('#')
     saved = json.loads((tmp_path / 'saved' / 'evidence.json').read_text())
     assert saved['ref'] == saved['ref_sha'] == head
+
+
+def test_with_nothing_saved_the_plan_is_printed_inline_and_names_the_agent_to_start(repo: Path, capsys, monkeypatch) -> None:
+    """A sandbox that lets no command write: 'nothing saved' alone left the main conversation to work the cases itself."""
+    def no_write(*a, **k):
+        raise OSError("Read-only file system")
+    monkeypatch.setattr(evidence, "default_out", no_write)
+    assert evidence.main(["--repo", str(repo), "--min-lines", "1"]) == 0
+    out = capsys.readouterr().out
+    plan_text = out.split("nothing saved", 1)[1]
+    assert "RUN PLAN (inline: no folder could be written)" in plan_text
+    assert "Start ONE agent of type inspector:investigator" in plan_text and "do none of their work" in plan_text
+    assert plan_text.count("--dossier") >= 1 and "write no file" in plan_text
+    assert "inspector:verifier" in plan_text and "verification was skipped" in plan_text
+    assert "/plan/plan.md" not in out                      # no pointer to a file that does not exist
+
+
+def test_a_temporary_run_folder_gets_the_pointer_and_the_inline_plan(repo: Path, capsys, monkeypatch, tmp_path) -> None:
+    """Each command of a sandbox may have its own /tmp: the next command cannot read the plan this one saved there."""
+    import tempfile
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(evidence, "default_out", lambda repo: tempfile.mkdtemp(prefix="inspector-"))
+    assert evidence.main(["--repo", str(repo), "--min-lines", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "The run folder is a temporary one" in out and "Check once: `ls " in out
+    assert out.index("/plan/plan.md: read it now") < out.index("RUN PLAN (inline: for when that folder cannot be read)")
+    assert "inspector:investigator" in out and "Saved: " in out
+
+
+def test_a_run_folder_in_the_working_tree_gets_only_the_pointer(repo: Path, capsys, tmp_path) -> None:
+    assert evidence.main(["--repo", str(repo), "--min-lines", "1", "--out", str(tmp_path / "o")]) == 0
+    out = capsys.readouterr().out
+    assert "/plan/plan.md: read it now" in out and "RUN PLAN (inline" not in out and "temporary one" not in out
+
+
+def test_seven_or_more_cases_inline_plan_starts_case_readers() -> None:
+    cmds = [(f"#{i}", f"evidence.py --unit '#{i}' --dossier") for i in range(1, 9)]
+    text = evidence.inline_plan("/r", "a" * 40, cmds, "no folder could be written")
+    assert "Start 3 agents of type inspector:case-reader" in text and "inspector:investigator" not in text
+    assert text.count("--dossier") == 8 and "inspector:sweeper" in text and "inspector:verifier" in text
+
+
+def test_only_a_json_path_still_ends_with_a_plan(repo: Path, capsys, tmp_path) -> None:
+    """--json or --md without a run folder saved the evidence and printed no plan of either kind."""
+    assert evidence.main(["--repo", str(repo), "--min-lines", "1", "--json", str(tmp_path / "e.json")]) == 0
+    out = capsys.readouterr().out
+    assert "RUN PLAN (inline: no run folder: only --json or --md was given)" in out and "inspector:investigator" in out
+    assert out.rstrip().splitlines()[-1].startswith("Saved: ") and "3. Verify" in out
+
+
+def test_a_plan_that_cannot_be_written_is_printed_inline(repo: Path, capsys, monkeypatch, tmp_path) -> None:
+    def broken(run_dir):
+        raise evidence.plan.Invalid("no cases/ folder")
+    monkeypatch.setattr(evidence.plan, "build", broken)
+    assert evidence.main(["--repo", str(repo), "--min-lines", "1", "--out", str(tmp_path / "o")]) == 0
+    out = capsys.readouterr().out
+    assert "RUN PLAN: not written" in out and "RUN PLAN (inline: the plan file could not be written)" in out
+    assert out.rstrip().splitlines()[-1].startswith("Saved: ")

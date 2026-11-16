@@ -191,12 +191,12 @@ def test_more_than_four_verifiers_come_in_waves_all_named_verify(tmp_path) -> No
     assert "verify, wave 3 of 3" in (run / "plan" / "plan.md").read_text(encoding="utf-8")
 
 
-def test_seventeen_leads_make_three_chunks_and_keep_where_exactly(tmp_path) -> None:
-    leads = [lead(i) for i in range(17)]
+def test_nineteen_leads_make_three_chunks_and_keep_where_exactly(tmp_path) -> None:
+    leads = [lead(i) for i in range(19)]            # 17 would be two chunks of 9 and 8: one left-over lead gets no verifier of its own
     run = make_run(tmp_path, 4, leads)
     assert plan(run, "--phase", "verify")[0] == 0
     e = exp(run)
-    assert [c["size"] for c in e["verifier_chunks"]] == [8, 8, 1]
+    assert [c["size"] for c in e["verifier_chunks"]] == [8, 8, 3]
     v = e["phases"][-1]
     assert v["name"] == "verify" and v["agents"] == {"inspector:verifier": 3} and v["min_agents"] == 3
     assert v["outputs"] == ["verdicts-1.json", "verdicts-2.json", "verdicts-3.json"]
@@ -617,12 +617,12 @@ def test_planning_verify_again_with_the_same_leads_leaves_the_plan_and_finished_
 
 
 def test_a_changed_chunk_still_needs_its_verifier_again_and_an_obsolete_chunk_is_removed(tmp_path) -> None:
-    run = make_run(tmp_path, 1, [lead(i) for i in range(1, 10)])
+    run = make_run(tmp_path, 1, [lead(i) for i in range(1, 12)])
     assert plan(run, "--phase", "verify")[0] == 0
     assert (run / "plan" / "chunk-2.json").is_file() and (run / "plan" / "verifier-2.prompt.md").is_file()
     for p in (run / "plan").iterdir():
         age(p, 60)
-    for k, rng in ((1, range(1, 9)), (2, range(9, 10))):
+    for k, rng in ((1, range(1, 9)), (2, range(9, 12))):
         (run / f"verdicts-{k}.json").write_text(json.dumps([{"where": lead(i)["where"], "verdict": "REAL"} for i in rng]))
         age(run / f"verdicts-{k}.json", 30)
     (run / "leads.json").write_text(json.dumps([lead(1, what="lead 1, worded again")]), encoding="utf-8")

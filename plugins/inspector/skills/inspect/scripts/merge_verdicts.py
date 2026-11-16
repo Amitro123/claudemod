@@ -19,6 +19,13 @@ apart: a reader's probe that passes does not by itself confirm a lead. Two leads
 ` [lead N]` (a space, `[lead `, the number, `]`) on the `where` of each of them, in the verdict as well; the release gate
 (`evals/gate/check_run.py`) compares leads, verdicts and merged leads on the `where` without that suffix. Exit 2 on invalid JSON, a verdict matching no lead, two leads with the same `where`, or two
 different verdicts for one `where` (identical duplicates are fine).
+
+`--docs FILE`: the docs-checker's reply, a JSON array of {n, where, answer, text, source} (text around the array, such
+as a code fence, is ignored). Each answer is put on its lead as `docs_answer`, and handoff.py prints it beside the doubt;
+it never changes a verdict. The answer `yes`/`no` is to the question as the reader asked it, which may confirm the lead or
+refute it: a person reads it. A missing or unreadable file, or an answer for a `where` that is no lead, is a warning, not an
+error: the documentation check is advisory. Verdicts' corrected `category` / `reach` outside the values references/labels.md
+allows are normalized (leadsio.normalize_labels) with a warning.
 """
 from __future__ import annotations
 
@@ -75,6 +82,48 @@ def check_verdicts(items: list, path: str) -> None:
         raise ValueError(f"verdicts {path}: " + "; ".join(bad))
 
 
+def load_docs(path: str) -> tuple[list[dict], list[str]]:
+    """(answers, warnings) from the docs-checker's saved reply. Never raises."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            text = f.read()
+    except OSError as e:
+        return [], [f"docs answers {path}: not readable ({e}); the docs-checker's answers are not in the output"]
+    a, b = text.find("["), text.rfind("]")
+    try:
+        data = json.loads(text[a:b + 1]) if a != -1 and b > a else None
+    except ValueError:
+        data = None
+    if not isinstance(data, list):
+        return [], [f"docs answers {path}: no JSON array found; the docs-checker's answers are not in the output"]
+    out, warn = [], []
+    for i, x in enumerate(data):
+        if isinstance(x, dict) and str(x.get("where") or "").strip() and str(x.get("text") or x.get("answer") or "").strip():
+            out.append(x)
+        else:
+            warn.append(f"docs answers {path} [{i}]: needs an object with `where` and `text`; skipped")
+    return out, warn
+
+
+def add_docs(merged: list[dict], answers: list[dict]) -> list[str]:
+    """Put each docs answer on the lead it names (`where`, with or without a ` [lead N]` suffix). Returns warnings."""
+    by = {str(m.get("where")): m for m in merged}
+    bare: dict[str, list[dict]] = {}
+    for m in merged:
+        bare.setdefault(leadsio.LEAD_SUFFIX_RE.sub("", str(m.get("where"))), []).append(m)
+    warn = []
+    for x in answers:
+        w = str(x["where"]).strip()
+        hits = [by[w]] if w in by else bare.get(leadsio.LEAD_SUFFIX_RE.sub("", w), [])
+        if not hits:
+            warn.append(f"docs answer for {w}: no lead has that `where`; not used")
+            continue
+        ans = {k: " ".join(str(x[k]).split()) for k in ("answer", "text", "source") if str(x.get(k) or "").strip()}
+        for m in hits:
+            m.setdefault("docs_answers", []).append(ans)
+    return warn
+
+
 def as_list(v: object) -> list:
     if v is None or v == "" or v == []:
         return []
@@ -129,7 +178,18 @@ def merge(leads: list[dict], verdicts: list[dict], probe_only: list[str] | None 
                 probe_only.append(f"{lead.get('where')}: {m['verdict']} has no recorded independent check: the lead has a "
                                   "saved probe and the verdict no probe_check")
         changed = False
-        for k, val in (v.get("corrected") or {}).items():
+        corrected = dict(v.get("corrected") or {})
+        fixed = {k: corrected[k] for k in ("category", "reach") if corrected.get(k) not in (None, "")}
+        if fixed:
+            norm = {"where": lead.get("where"), **fixed}
+            probe_only += [f"corrected label normalized: {n}" for n in leadsio.normalize_labels(norm, "verifier")]
+            for k in fixed:
+                corrected[k] = norm[k]
+                if norm.get(f"{k}_as_written"):
+                    m[f"verifier_{k}_as_written"] = norm[f"{k}_as_written"]
+            if norm.get("reach_when") and not str(corrected.get("reach_when") or "").strip() and "reach_as_written" in norm:
+                corrected["reach_when"] = norm["reach_when"]
+        for k, val in corrected.items():
             if val in (None, ""):
                 continue
             if k in ("category", "reach") and m.get(k) != val:
@@ -149,12 +209,14 @@ def merge(leads: list[dict], verdicts: list[dict], probe_only: list[str] | None 
 
 
 def main(argv: list[str] | None = None) -> int:
+    leadsio.utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--leads", required=True)
     ap.add_argument("--verdicts", nargs="*", action="extend", default=[],
                     help="verdict files; every occurrence of the flag counts (may be omitted only when leads.json is empty)")
     ap.add_argument("--out")
     ap.add_argument("--drop-not-real", action="store_true")
+    ap.add_argument("--docs", help="the docs-checker's saved reply (a JSON array); each answer goes on its lead as docs_answers")
     ap.add_argument("--repair-escapes", action="store_true",
                     help="double stray backslashes in a verdicts file (an agent on Windows wrote C:\\Users raw); "
                          "the original is kept as <file>.orig and each repair is printed")
@@ -178,6 +240,12 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as e:
         print(f"merge_verdicts: {e}", file=sys.stderr)
         return 2
+    docs_used = 0
+    if a.docs:
+        answers, warn = load_docs(a.docs)
+        warn += add_docs(merged, answers)
+        docs_used = sum(len(m.get("docs_answers") or []) for m in merged)
+        probe_only += warn
     for w in probe_only:
         print(f"merge_verdicts: warning: {w}", file=sys.stderr)
     counts = Counter(m["verdict"] for m in merged)
@@ -190,7 +258,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         sys.stdout.write(text)
     print("merge_verdicts: " + ", ".join(f"{k}: {n}" for k, n in sorted(counts.items()))
-          + f"; relabelled: {relabelled}; written: {len(merged)}", file=sys.stderr)
+          + f"; relabelled: {relabelled}; written: {len(merged)}"
+          + (f"; docs answers on leads: {docs_used}" if a.docs else ""), file=sys.stderr)
     return 0
 
 

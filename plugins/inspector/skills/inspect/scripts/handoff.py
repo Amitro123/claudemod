@@ -107,6 +107,18 @@ def verification_of(s: dict) -> str:
     return out + (f" verifier: {ev}" if ev else "")
 
 
+def docs_of(s: dict) -> str:
+    """` docs: yes: <text> (<url>)` for each answer the docs-checker gave about this lead (merge_verdicts --docs)."""
+    out = []
+    for a in s.get("docs_answers") or []:
+        if isinstance(a, dict) and (a.get("text") or a.get("answer")):
+            head = cell(a.get("answer")) if a.get("answer") else ""
+            body = cell(a.get("text")) if a.get("text") else ""
+            src = f" ({cell(a['source'])})" if a.get("source") else ""
+            out.append(": ".join(x for x in (head, body) if x) + src)
+    return (" docs: " + " | ".join(out)) if out else ""
+
+
 def probe_file_of(s: dict) -> str:
     """` probe file: probes/x (run: cmd; expect: y)` plus merge_cards' problems with it; '' for a lead with none."""
     pf = s.get("probe_file")
@@ -199,7 +211,7 @@ def build(leads: list[dict], lower: dict[str, str], drop: set[str], notes: dict[
             warnings.append(f"{where}: level {lvl} but no probe; give the exact input and output, the command run, "
                             "or the path:line read (for a claim about an external tool, its --help), or lower the "
                             "level / move the claim to not_verified")
-        impact_cell = (f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}{would_settle_of(s)}{verification_of(s)}"
+        impact_cell = (f"{impact} [{ilvl}{': ' + src if src and ilvl != 'unverified' else ''}]{not_verified_of(s)}{would_settle_of(s)}{docs_of(s)}{verification_of(s)}"
                        + (f" probe: {probe}" if probe else "") + saved)
         rec = cell(s.get("reconcile")) if isinstance(s.get("reconcile"), (str, int, float)) else ""
         if rec:
@@ -260,6 +272,7 @@ def pairs(values: list[str]) -> dict[str, str]:
 
 
 def main(argv=None) -> int:
+    leadsio.utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cards", required=True, help="a folder of cards (*.json), a .json file, or - for stdin (cards or leads)")
     ap.add_argument("--out", help="write the list here too")

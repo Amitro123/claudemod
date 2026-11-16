@@ -6,19 +6,19 @@ two checkers that did not write the leads. Run it before the leads go to anyone 
 **Required.** Verification is a required step before leads are presented as findings. Skipping it means saying so in the first line of the report; `handoff.py` also puts an `UNVERIFIED: N of M ...` banner first when any lead has no verdict. Start `inspector:verifier` by type (references/parallel.md), from the prompts `plan.py` wrote.
 
 1. **Chunk.** `python3 "<skill_root>/scripts/plan.py" --run <out> --phase verify` splits `<out>/leads.json` into chunks of
-   at most 8, keeping `where` exactly as written, and writes `plan/chunk-<k>.json` and `plan/verifier-<k>.prompt.md` (and
+   8 (9 when one or two would be left over), keeping `where` exactly as written, and writes `plan/chunk-<k>.json` and `plan/verifier-<k>.prompt.md` (and
    `plan/docs-checker.prompt.md` when a lead needs a host check). The investigator's JSON block or the cards'
    `complete.siblings` become `leads.json` first (merge_cards.py, or the investigator's own file).
 2. **Verify, in parallel.** Start one `verifier` per chunk, all in one message: `Read <out>/plan/verifier-<k>.prompt.md and follow it`.
    The prompt gives the repository, the ref (`Investigated through <sha>`), the chunk and the file to write,
    `<out>/verdicts-<k>.json`. Cost: about 100k tokens per 11
    leads. It is the most useful money in the run: it catches downgraded and mislabelled leads.
-3. **Public-tool doubts, once.** Collect the leads flagged `needs_host_check` whose doubt is about
-   how a public tool is documented to behave (a variable format, a query function, a file
-   syntax). Start one `docs-checker` with one precise question per lead (the lead's
-   `needs_host_check` text says what would confirm it). Pass its answers to the verifier's
-   `unverifiable` entries by hand, or re-run the affected verifier with the answers. A doubt
-   about your own deployment or data is not a docs question; leave it `UNVERIFIABLE`.
+3. **Public-tool doubts, once.** The plan starts one `docs-checker` with one question per lead flagged `needs_host_check`
+   whose doubt is how a public tool is documented to behave (the flag's text is the question). It replies with a JSON
+   array: save the reply, unchanged, as `<out>/docs-answers.json`, then start the verifier of the chunk that holds those
+   leads (the plan marks it): it judges them with the answers. `merge_verdicts.py --docs` (in the plan's command) also puts
+   each answer on its lead and the handoff prints it beside the doubt (`docs: ...`). A doubt about your own deployment or data is not a
+   docs question; leave it `UNVERIFIABLE`.
 4. **Merge.**
 
 ```bash

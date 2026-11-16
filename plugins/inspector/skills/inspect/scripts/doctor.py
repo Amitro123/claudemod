@@ -18,6 +18,9 @@ import snapshot  # noqa: E402
 
 
 def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):      # a console in a legacy codepage cannot encode what agents write
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--repo', default='.')
     ap.add_argument('--compare-plugin', type=Path)
