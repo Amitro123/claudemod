@@ -312,3 +312,24 @@ def test_the_collector_names_the_units_the_service_refused():
     assert list(meta["skipped"]) == ["#2"] and meta["answered"] == 2
     assert units[1].model_p is None and units[0].model_p == 0.3 and units[2].model_p == 0.3
     assert len(warnings) == 1 and "#2" in warnings[0] and "refused" in warnings[0]
+
+
+def test_promoted_units_near_the_cut_are_noted_and_nothing_else_changes():
+    units = [unit(1, "b: a"), unit(2, "b: b"), unit(3, "b: c"), unit(4, "b: d")]
+    meta = evidence.decision_phase(units, "m/x", 0.5, [], FakePost({"#1": 0.52, "#2": 0.9, "#3": 0.48, "#4": 0.55}))
+    assert meta["promoted"] == ["#1", "#2", "#4"]
+    assert meta["near_cut"] == [{"unit": "#1", "p": 0.52}, {"unit": "#4", "p": 0.55}]   # 0.48 is not promoted; 0.9 is far
+    assert units[0].why == ["decision model: p=0.52 (inferred)"] and units[0].tags == ["model-fix"]
+    far = evidence.decision_phase([unit(5, "b: e")], "m/x", 0.5, [], FakePost({"#5": 0.9}))
+    assert "near_cut" not in far
+
+
+def test_the_summary_says_so_only_when_a_promoted_unit_is_near_the_cut(repo, tmp_path):
+    def summary(p):
+        res = evidence.investigate(str(repo), "main", min_lines=1, decision_model="m/x", decide_post=FakePost({"#4": p}))
+        return evidence.markdown(res), res
+    near_md, near = summary(0.52)
+    assert near["decision_model"]["near_cut"] == [{"unit": "#4", "p": 0.52}]
+    assert "Decision model: 1 promoted unit(s) sit within 0.05 of the cut (0.5): #4 p=0.52" in near_md
+    far_md, far = summary(0.9)
+    assert "near_cut" not in far["decision_model"] and "within 0.05" not in far_md
