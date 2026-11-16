@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import posixpath
 import re
 import sys
 from collections import Counter
@@ -53,13 +54,13 @@ WHERE_RE = re.compile(r"^(?P<f>[^\s,]+?):(?P<r>L?\d+(?:\s*-\s*L?\d+)?(?:\s*,\s*L
 OVERLAP, SIMILAR, NEARBY = "lines overlap", "similar wording", "within 10 lines"
 NOLINE = "same file, no line number"
 # A `where` with no line range that still names a file: `path/file.py`, `path/file.py:_write_atomic`.
-FILE_RE = re.compile(r"^(?P<f>[^\s,:]+\.\w+)(?::\S.*)?$")
+FILE_RE = re.compile(r"^(?P<f>(?:[A-Za-z]:)?[^\s,:]+\.\w+)(?::\S.*)?$")     # a Windows drive letter may lead the path
 
 
-def file_of(w: object) -> str | None:
+def file_of(w: object, root: str | None = None) -> str | None:
     """The file a `where` names when it has no line range that parse_where can read; None when it names none clearly."""
     m = FILE_RE.match(w.strip()) if isinstance(w, str) else None
-    return m["f"].replace("\\", "/") if m else None
+    return norm_file(m["f"], root) if m else None
 SIMILAR_AT = 0.5  # word similarity from which a flagged pair is called "similar wording"
 OWN_KEYS = ("found_by", "also_found_by", "merged_from", "merged_variants", "possible_duplicate_of", "case",
             "card_status", "original_level")  # a stub's marks stay on its own lead, never copied to a finished one
@@ -69,7 +70,21 @@ STUB = "in-progress"  # a card's `status` while its reader is still on the case
 UNFINISHED = "the case reader stopped before finishing this case"
 
 
-def parse_where(w: object):
+def norm_file(f: str, root: str | None = None) -> str:
+    """One spelling for a file, for comparing two leads: forward slashes, `.` and `..` resolved, and the repository's
+    root taken off the front when the path is absolute and inside it (the root's letters in any case: a drive letter).
+    A lead's own `where` is never rewritten. In a live run on Windows (2026-11-16) one defect was listed two and three
+    times: a sweeper wrote `C:/Users/.../clone/.claude/skills/x/../../settings.json:6`, a reader `.claude/settings.json:6`,
+    and the two were never compared."""
+    p = posixpath.normpath(f.replace("\\", "/"))
+    if root:
+        r = posixpath.normpath(root.replace("\\", "/")).rstrip("/")
+        if r and p.lower().startswith(r.lower() + "/"):
+            p = p[len(r) + 1:]
+    return p
+
+
+def parse_where(w: object, root: str | None = None):
     """(file, [(start, end), ...]) or None when the string cannot be read safely."""
     if not isinstance(w, str):
         return None
@@ -80,7 +95,7 @@ def parse_where(w: object):
     for tok in m["r"].split(","):
         nums = [int(n) for n in re.findall(r"\d+", tok)]
         rs.append((min(nums), max(nums)))
-    return m["f"].replace("\\", "/"), rs
+    return norm_file(m["f"], root), rs
 
 
 def gap(a, b) -> int:
@@ -258,12 +273,13 @@ def ask_pairs(raw: list[dict], possible: list[tuple], model: str, post=None) -> 
     return out, meta
 
 
-def dedupe(raw: list[dict], same: dict[tuple[int, int], float] | None = None, cut: float = DEDUPE_CUT):
+def dedupe(raw: list[dict], same: dict[tuple[int, int], float] | None = None, cut: float = DEDUPE_CUT,
+           root: str | None = None):
     """Return (final leads, merges, possible duplicates); merges are (i, j, score), possible are (i, j, score, reason) over raw.
     `same` maps a pair of raw indices to a decision model's P(same defect): a pair at or over `cut` is merged like an exact
     duplicate (its score in `merges` is that probability, under 1.0), unless that would put two leads the model called
     different (under DEDUPE_APART) into one lead."""
-    parsed = [parse_where(lead.get("where")) for lead in raw]
+    parsed = [parse_where(lead.get("where"), root) for lead in raw]       # `root`: the repository, to compare paths
     toks = [words(lead.get("what")) for lead in raw]
     parent = list(range(len(raw)))
 
@@ -295,7 +311,7 @@ def dedupe(raw: list[dict], same: dict[tuple[int, int], float] | None = None, cu
         merges.append((i, j, p))
         parent[gj] = gi
         by_model[i] = by_model[j] = max(p, by_model.get(i, 0.0), by_model.get(j, 0.0))
-    files = [p[0] if p else file_of(lead.get("where")) for p, lead in zip(parsed, raw)]
+    files = [p[0] if p else file_of(lead.get("where"), root) for p, lead in zip(parsed, raw)]
     for i in range(len(raw)):
         for j in range(i + 1, len(raw)):
             if find(i) == find(j) or not files[i] or files[i] != files[j]:
@@ -360,6 +376,16 @@ def dedupe(raw: list[dict], same: dict[tuple[int, int], float] | None = None, cu
     return [o for _, o in final], merges, possible
 
 
+def run_root(run_dir: str) -> str | None:
+    """The repository's path from `<run>/evidence.json` (`repo_path`), or None: paths are then compared as written."""
+    try:
+        with open(os.path.join(run_dir, "evidence.json"), encoding="utf-8-sig") as f:
+            root = json.load(f).get("repo_path")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return root if isinstance(root, str) and root else None
+
+
 def run_ref(run_dir: str) -> str | None:
     """The run's ref from `<run>/evidence.json`, or None when there is none to compare a probe's ref with."""
     try:
@@ -416,7 +442,8 @@ def main(argv=None) -> int:
     run_dir = os.path.dirname(os.path.abspath(a.cards))
     saved = check_probes(raw, run_dir, run_ref(run_dir))
     relabelled = [n for lead in raw for n in leadsio.normalize_labels(lead, str(lead.get("found_by")))]
-    final, merges, possible = dedupe(raw)
+    root = run_root(run_dir)
+    final, merges, possible = dedupe(raw, root=root)
     asked: dict[tuple[int, int], float] = {}
     model_note = ""
     if a.dedupe_model and possible:
@@ -428,7 +455,7 @@ def main(argv=None) -> int:
             model_note = (f"dedupe model: {meta['answered']} of {meta['asked']} pairs answered ({a.dedupe_model}; {meta['seconds']} s"
                           + (f"; ${meta['cost']:.4f}" if meta.get("cost") is not None else "") + f"; cut {a.dedupe_cut})")
         if asked:
-            final, merges, possible = dedupe(raw, asked, a.dedupe_cut)
+            final, merges, possible = dedupe(raw, asked, a.dedupe_cut, root)
 
     def ref(i: int) -> str:
         return f"{raw[i]['found_by']} {raw[i].get('where')}"
