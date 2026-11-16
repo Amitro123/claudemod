@@ -11,7 +11,7 @@ import merge_verdicts  # noqa: E402
 
 
 def lead(where, **kw):
-    return {"where": where, "what": "w", "category": "P1", "reach": "default-on", **kw}
+    return {"where": where, "what": "w", "category": "hardening", "reach": "default-on", **kw}
 
 
 def verdict(where, v="REAL", **kw):
@@ -39,15 +39,15 @@ def test_match_and_merge(tmp_path, capsys) -> None:
 
 def test_relabel_keeps_original(tmp_path, capsys) -> None:
     code, m, err = run(tmp_path, capsys, [lead("a.py:1")],
-                       [verdict("a.py:1", corrected={"category": "P3", "reach": "opt-in", "test_kind": "behavioral"})])
-    assert m[0]["category"] == "P3" and m[0]["original_category"] == "P1"
+                       [verdict("a.py:1", corrected={"category": "broken-flow", "reach": "opt-in", "test_kind": "behavioral"})])
+    assert m[0]["category"] == "broken-flow" and m[0]["original_category"] == "hardening"
     assert m[0]["reach"] == "opt-in" and m[0]["original_reach"] == "default-on"
     assert m[0]["test_kind"] == "behavioral"
     assert "relabelled: 1" in err
 
 
 def test_same_label_is_not_a_relabel(tmp_path, capsys) -> None:
-    _, m, err = run(tmp_path, capsys, [lead("a.py:1")], [verdict("a.py:1", corrected={"category": "P1"})])
+    _, m, err = run(tmp_path, capsys, [lead("a.py:1")], [verdict("a.py:1", corrected={"category": "hardening"})])
     assert "original_category" not in m[0] and "relabelled: 0" in err
 
 

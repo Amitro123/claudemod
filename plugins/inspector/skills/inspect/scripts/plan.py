@@ -87,6 +87,9 @@ class Ctx:
         if not isinstance(repo, str) or not repo or re.search(r"[\x00-\x1f]", repo):
             raise Invalid("evidence.json: `repo_path` is missing or has control characters")
         self.cases, self.ref, self.repo = cases, ref, repo.replace("\\", "/")
+        # The collector ran with --decision-model: text of this run already goes to OpenRouter, so the merge may ask
+        # it about the possible duplicates too. Without it the merge command never sends anything.
+        self.dedupe_model = isinstance(ev.get("decision_model"), dict)
         unknown = [x for x in dropped or [] if x not in cases]
         if unknown:
             raise Invalid(f"--drop {', '.join(unknown)}: not a case of this run (cases: {', '.join(cases) or 'none'})")
@@ -317,12 +320,18 @@ def verifier_prompt(c: Ctx, k: int, wheres: list[str]) -> str:
         "probe whose lead has `probe_file_problems`. Read a saved probe whole before you run it, run it only from a copy in "
         "a temp folder (not a sandbox: it keeps your network and file access), and report what you did in `probe_check`; "
         "the reader's probe passing does not by itself confirm the lead.",
+        "A lead with `merged_from` stands for several reports of one defect: its `merged_variants` hold what the other "
+        "reports said. Judge the lead as written, and name in `false_claims` any variant claim that does not hold.",
         f"Keep each `where` exactly as given. {EVIDENCE}", ""])
 
 
 def docs_prompt(items: list[tuple[str, str]]) -> str:
     return "\n".join(["Questions, one per lead (answer each as its text asks):",
-                      *[f"{i}. {q} (lead {w})" for i, (w, q) in enumerate(items, 1)], ""])
+                      *[f"{i}. {q} (lead {w})" for i, (w, q) in enumerate(items, 1)], "",
+                      "Reply with only a JSON array, one object per question, in the order asked: "
+                      '{"n": <the question\'s number>, "where": "<the lead named after the question, exactly as written>", '
+                      '"answer": "yes" | "no" | "not stated", "text": "<your answer, one short paragraph>", "source": "<url>"}. '
+                      f"Write it as {STRICT_JSON}.", ""])
 
 
 # ---------------------------------------------------------------- the plan
@@ -473,7 +482,8 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
             if c.parallel:
                 steps += [f"{c.script('merge_cards.py')} --cards \"{c.run}/cards\" --sweep "
                           + " ".join(f'"{c.run}/{f}"' for f in doc["sweeper_files"])
-                          + f" --expect {','.join(doc['reader_ids'])} --out \"{c.run}/leads.json\" --log \"{c.run}/dedupe.md\" --repair-escapes",
+                          + f" --expect {','.join(doc['reader_ids'])} --out \"{c.run}/leads.json\" --log \"{c.run}/dedupe.md\" --repair-escapes"
+                          + (" --dedupe-model" if c.dedupe_model else ""),
                           f"{c.script('crosscheck.py')} --evidence \"{c.run}/evidence.json\" --cards \"{c.run}/cards\""]
             steps.append(f"{c.script('plan.py')} --run \"{c.run}\" --phase verify")
             L += ["", "Then, no agent, in order (on a nonzero exit fix its cause; never merge from memory):"]
@@ -484,10 +494,13 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
         if doc["verifier_chunks"]:
             L += ["After the verifiers (no agent):",
                   f"1. {c.script('merge_verdicts.py')} --leads \"{c.run}/leads.json\" --verdicts "
-                  + " ".join(f'"{c.run}/{ch["verdicts"]}"' for ch in doc["verifier_chunks"]) + f" --out \"{c.run}/merged.json\" --repair-escapes",
+                  + " ".join(f'"{c.run}/{ch["verdicts"]}"' for ch in doc["verifier_chunks"]) + f" --out \"{c.run}/merged.json\" --repair-escapes"
+                  + (f" --docs \"{c.run}/docs-answers.json\"" if doc["docs_checker"]["needed"] else ""),
                   f"2. {c.script('handoff.py')} --cards \"{c.run}/merged.json\" --out \"{c.run}/open-bugs.md\""]
             if doc["docs_checker"]["needed"]:
-                L += ["The docs-checker returns text, not a file: use its answers as references/verify.md step 3 says."]
+                L += [f"Before step 1: the docs-checker has no Write tool and replies with a JSON array. Save its reply, unchanged, as "
+                      f"{c.run}/docs-answers.json: step 1 puts each answer on its lead and the handoff prints it beside the doubt. "
+                      "No reply (no WebFetch on this host): run step 1 as written; it says the answers are missing and goes on."]
         else:
             L += ["No lead to verify: start no verifier and say so in the report. Still, no agent, write the two files the run folder needs:",
                   f"1. {c.script('merge_verdicts.py')} --leads \"{c.run}/leads.json\" --out \"{c.run}/merged.json\"",

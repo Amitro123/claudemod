@@ -23,6 +23,9 @@ text is evidence): dispatch `Read <path> and follow it`, and never retype or ada
    never merge from memory; `--repair-escapes`, on in the plan's commands for both merges, doubles stray backslashes in a card, sweep or verdicts file, logged, original kept as `.orig`), keeps every lead word for word, merges only exact duplicates
    (same locations, same text), keeps similar nearby leads, and leads whose line ranges overlap, with `possible_duplicate_of` and lists them under "Possible duplicates (kept)" in the log with the reason (`lines overlap`, `similar wording` or `within 10 lines`), and prints the lint findings. Also run
    `scripts/crosscheck.py --evidence <tmp>/evidence.json --cards <tmp>/cards` (references/cross-check.md).
+   When the collector ran with `--decision-model`, the plan's merge command carries `--dedupe-model`: one request asks whether each
+   possible-duplicate pair is the same defect, and a pair at 0.9 or more is merged like an exact duplicate (the other report's
+   words stay in `merged_variants`). `category` and `reach` outside their allowed values are normalized and logged.
 4. **Phase 3: verify.** `scripts/plan.py --run <out> --phase verify` chunks the leads (references/verify.md) and writes the
    verifier prompts; read `plan.md` again and start the verifiers, at most 4 per message.
 5. **Stopped or unfinished.** `scripts/plan.py --run <out> --status` writes nothing; it names each output missing, invalid,

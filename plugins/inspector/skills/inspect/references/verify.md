@@ -13,12 +13,12 @@ two checkers that did not write the leads. Run it before the leads go to anyone 
    The prompt gives the repository, the ref (`Investigated through <sha>`), the chunk and the file to write,
    `<out>/verdicts-<k>.json`. Cost: about 100k tokens per 11
    leads. It is the most useful money in the run: it catches downgraded and mislabelled leads.
-3. **Public-tool doubts, once.** Collect the leads flagged `needs_host_check` whose doubt is about
-   how a public tool is documented to behave (a variable format, a query function, a file
-   syntax). Start one `docs-checker` with one precise question per lead (the lead's
-   `needs_host_check` text says what would confirm it). Pass its answers to the verifier's
-   `unverifiable` entries by hand, or re-run the affected verifier with the answers. A doubt
-   about your own deployment or data is not a docs question; leave it `UNVERIFIABLE`.
+3. **Public-tool doubts, once.** The plan starts one `docs-checker` with one question per lead flagged `needs_host_check`
+   whose doubt is how a public tool is documented to behave (the flag's text is the question). It replies with a JSON
+   array: save the reply, unchanged, as `<out>/docs-answers.json`; `merge_verdicts.py --docs` (in the plan's command) puts
+   each answer on its lead and the handoff prints it beside the doubt (`docs: ...`). It changes no verdict: say in the
+   report which `UNVERIFIABLE` leads the documentation settled. A doubt about your own deployment or data is not a
+   docs question; leave it `UNVERIFIABLE`.
 4. **Merge.**
 
 ```bash
