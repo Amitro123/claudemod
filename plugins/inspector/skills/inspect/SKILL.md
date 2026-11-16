@@ -74,17 +74,14 @@ With no RUN PLAN (nothing saved), follow references/parallel.md by hand.
 
 Read, in this order, until each file has given you its promises:
 
-- the root `README.md`, and the README of each folder that holds code (a `package.json`,
-  `pyproject.toml`, `Cargo.toml`, `go.mod` or `plugin.json` marks one). Changelog entries are
-  direct evidence of symptoms: "X no longer does Y", with a version.
+- the root `README.md`, and the README of each code folder (marked by a `package.json`,
+  `pyproject.toml`, `Cargo.toml`, `go.mod` or `plugin.json`). Changelog entries are
+  direct evidence of symptoms: "X no longer does Y".
 - `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, `.claude/rules/`: the rules the project set itself.
-- `docs/` (titles first; read what touches the promises), specs, ADRs, post-mortems, issue or
-  findings files, manifests.
-- memory the project keeps, if any: `MISTAKES.md`, `.agent-brain/shared/MEMORY.md`,
-  `docs/FOLLOW-UPS.md`. A past lesson is a prior case: link it, don't redo it.
+- `docs/` (titles first), specs, ADRs, post-mortems, findings files, manifests.
+- project memory (`MISTAKES.md`, `.agent-brain/shared/MEMORY.md`, `docs/FOLLOW-UPS.md`): a past lesson is a prior case; link it.
 
-Write the brief (in your notes; a file is not needed) as a list of **promises**, numbered `P1`,
-`P2`..., each one short, testable, with
+Write the brief (in your notes) as numbered **promises** `P1`, `P2`..., each short, testable, with
 its component and the file it came from ("a hook never blocks a tool call", component `hooks`,
 from README:42), and a list of **seams**: where components meet (a shared file or folder, a
 generated copy, one component's output parsed by another, a shared UI slot, a shared state file
@@ -99,12 +96,11 @@ python3 "<skill_root>/scripts/evidence.py" --repo . [--out "<scratch>"] [--budge
 It prints the summary. The summary opens with **Cases to work, in order**: the triage of step 3,
 already done, and for each case the command that prints its **dossier** (`--unit '#N' --dossier`; a fix over 400 changed lines also lists its files, and `--file <path>` prints one).
 When it can, it also saves `evidence.json`, `evidence.md` and each dossier in `cases/` (in
-`--out`, else `.inspector-run/<time>/`). Some sandboxes let no command write anywhere: then it
-says "nothing saved", and the commands are all you need. Never spend calls hunting for a
-writable folder.
+`--out`, else `.inspector-run/<time>/`). If no folder is writable it says "nothing saved": use the
+printed commands, never hunt for a folder.
 `--budget` is the case budget (12 unless the user set one). Run it once. With `OPENROUTER_API_KEY` set, add `--decision-model`; without it, don't ask for a key. On a repository with more than about
 1,000 commits, run it in the background with a 10-minute timeout. The summary starts with any
-**Warning** lines. Never open the JSON: for one unit, the **dossier** is one call,
+**Warning** lines. Never open the JSON: one unit's **dossier** is one call,
 
 ```bash
 python3 "<skill_root>/scripts/evidence.py" --show '#N' --json <the saved evidence.json>
@@ -120,14 +116,17 @@ What it gives, per unit:
   root, else the top folder; pass `--component-root <folder>` for another);
 - its version bumps;
 - whether it looks like a fix, and **why** (the title or most commit subjects say fix in strong
-  words; a patch version bump is recorded but is not a fix signal);
+  words; a patch bump is recorded, not a signal);
 - tags: `tests-only`, `docs-only`, `instructions-only`, `adds-only`, `multi-component`;
 - for a fix, **introduced_by**, per unit and per commit: the earlier units that last wrote the
   lines the fix's own commits deleted or changed;
 - for a fix commit, **copies left behind**: a line it changed (not moved, not a deleted block)
   that is still, word for word, in at most 3 places of today's code.
 
+After a batch of fix PRs merges, run a short `since <sha>` (the commit before it): copies left behind show up while fresh.
+
 The summary lists:
+- design changes: terms (`4-tier`, `Tier 4`) a non-fix unit removed from docs while other files still use them: a renamed concept's old name. A lead only if the place now contradicts the new design;
 - fix-of-fix units (`↺`: a fix that changed 3 or more lines an earlier fix wrote);
 - fixes spanning 2+ components;
 - hotspot files (tests counted apart);
@@ -162,9 +161,9 @@ It is a lead sheet, not a verdict:
   fooled by a reformat across files, a copy, or a move between files. A fix that only adds lines
   (tag `adds-only`, a missing check) blames nothing: find its culprit by reading where the
   missing case arrived, or mark it unknown.
-- **Copies left behind are hints, not leads.** Most are an idiom that happens to repeat, or code
-  the fix moved. Some are the copy the fix missed: check each one in step 5. A bug the fix left in
-  its own new line (a branch it didn't cover) is never in this list: only reading finds it.
+- **Copies left behind are hints, not leads.** Most are a repeated idiom or code the fix moved.
+  Some are the copy the fix missed: check each in step 5. A bug in the fix's own new line is
+  never listed: only reading finds it.
 - **Not blamed:** Markdown that isn't instructions (READMEs, changelogs, docs), lockfiles,
   plugin manifests and images. Their lines name a release, not a bug. Instructions an agent
   reads (`SKILL.md`, `CLAUDE.md`, `AGENTS.md`, `.md` under `skills/`, `agents/`, `commands/`,
@@ -277,7 +276,7 @@ whose "Complete?" found a gap:
 
 A lead about data that is missing or stale: trace the producer first (references/producers.md). A repository with a data pipeline gets a reconciliation check in the case file (references/reconcile.md).
 
-- the summary's **copies left behind**: check each one in the worked units and decide it;
+- the summary's **copies left behind**: decide each in the worked units;
 - the expression or call the fix replaced, searched in every file type, generated copies too;
 - the other readers of a format or file that a contract fix changed;
 - the other components on the same seam, lifecycle hook or parser;
