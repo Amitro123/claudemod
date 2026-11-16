@@ -1965,7 +1965,9 @@ def finish(a, r: dict, owner_sha: dict) -> int:
         out, saved_note = None, "nothing saved: no folder could be written; every command below prints to stdout"
     # The last fallback of default_out is a temporary folder: a sandbox may give each command its own /tmp, so the next
     # command cannot read what this one saved there. The plan is then printed too, not only pointed at.
-    in_temp = bool(out) and not a.out and os.path.realpath(out).startswith(os.path.realpath(tempfile.gettempdir()) + os.sep)
+    # (Recognized as default_out's own mkdtemp, not by living under the temp folder: a repository may itself be there.)
+    in_temp = (bool(out) and not a.out and os.path.basename(out).startswith("inspector-")
+               and os.path.realpath(os.path.dirname(out)) == os.path.realpath(tempfile.gettempdir()))
     jpath = a.json or (os.path.join(out, "evidence.json") if out else None)
     mpath = a.md or (os.path.join(out, "evidence.md") if out else None)
     case_dir = out or (os.path.dirname(os.path.abspath(jpath)) if jpath else None)
@@ -2020,21 +2022,26 @@ def finish(a, r: dict, owner_sha: dict) -> int:
                 saved_note = saved_note or f"nothing saved: {path_} could not be written"
                 jpath = None
     sys.stdout.write(md)
+    # Whoever reads this output must end up with a plan: a file it can read, or the plan as text. Every path that
+    # leaves no plan file (nothing saved, only --json or --md given, a plan that failed to write) prints it inline.
+    why = "no folder could be written" if saved_note else "no run folder: only --json or --md was given" if not out else ""
     if jpath:
         if out and r["cases"]:
             pointer = print_run_plan(out)
-            if in_temp:
+            if pointer.startswith("RUN PLAN: not written"):
+                why = "the plan file could not be written"
+            elif in_temp:
+                why = "for when that folder cannot be read"
                 sys.stdout.write(f"\nThe run folder is a temporary one ({plan.posix(out)}): a sandbox may hide it from your next "
                                  f"command. Check once: `ls {plan.posix(out)}/plan/plan.md`. If it is listed, follow the line "
                                  "below; if not, follow the inline plan under it and use no file of that folder.\n")
             sys.stdout.write("\n" + pointer)
-            if in_temp:
-                sys.stdout.write("\n" + inline_plan(r["repo_path"], r["ref_sha"], cmds, "for when that folder cannot be read"))
-        sys.stdout.write(f"\nSaved: {jpath}\n")
     elif saved_note:
         sys.stdout.write(f"\n{saved_note}\n")
-        if cmds:
-            sys.stdout.write("\n" + inline_plan(r["repo_path"], r["ref_sha"], cmds, "no folder could be written"))
+    if why and cmds:
+        sys.stdout.write("\n" + inline_plan(r["repo_path"], r["ref_sha"], cmds, why))
+    if jpath:
+        sys.stdout.write(f"\nSaved: {jpath}\n")       # always the last line: SKILL.md reads the run folder from it
     return 0
 
 

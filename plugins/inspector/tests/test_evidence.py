@@ -398,3 +398,21 @@ def test_seven_or_more_cases_inline_plan_starts_case_readers() -> None:
     text = evidence.inline_plan("/r", "a" * 40, cmds, "no folder could be written")
     assert "Start 3 agents of type inspector:case-reader" in text and "inspector:investigator" not in text
     assert text.count("--dossier") == 8 and "inspector:sweeper" in text and "inspector:verifier" in text
+
+
+def test_only_a_json_path_still_ends_with_a_plan(repo: Path, capsys, tmp_path) -> None:
+    """--json or --md without a run folder saved the evidence and printed no plan of either kind."""
+    assert evidence.main(["--repo", str(repo), "--min-lines", "1", "--json", str(tmp_path / "e.json")]) == 0
+    out = capsys.readouterr().out
+    assert "RUN PLAN (inline: no run folder: only --json or --md was given)" in out and "inspector:investigator" in out
+    assert out.rstrip().splitlines()[-1].startswith("Saved: ") and "3. Verify" in out
+
+
+def test_a_plan_that_cannot_be_written_is_printed_inline(repo: Path, capsys, monkeypatch, tmp_path) -> None:
+    def broken(run_dir):
+        raise evidence.plan.Invalid("no cases/ folder")
+    monkeypatch.setattr(evidence.plan, "build", broken)
+    assert evidence.main(["--repo", str(repo), "--min-lines", "1", "--out", str(tmp_path / "o")]) == 0
+    out = capsys.readouterr().out
+    assert "RUN PLAN: not written" in out and "RUN PLAN (inline: the plan file could not be written)" in out
+    assert out.rstrip().splitlines()[-1].startswith("Saved: ")
