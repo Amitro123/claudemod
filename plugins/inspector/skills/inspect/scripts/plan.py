@@ -522,7 +522,9 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
                 L += [f"The docs-checker has no Write tool and replies with a JSON array. As soon as it replies, save its reply, unchanged, as "
                       f"{c.run}/docs-answers.json, then start the verifier(s) marked above: they judge their leads with the answers. "
                       "Step 1 also puts each answer on its lead and the handoff prints it beside the doubt. "
-                      "No reply (no WebFetch on this host): save `[]` there and start those verifiers anyway."]
+                      "It is a tracked output: --status keeps the docs-checker unfinished, and those verifiers blocked, until the "
+                      "file holds at least one answer. No reply (no WebFetch on this host): save one entry per question with "
+                      '`"answer": "not stated"` and a `text` that says the documentation could not be fetched, then start those verifiers.']
         else:
             L += ["No lead to verify: start no verifier and say so in the report. Still, no agent, write the two files the run folder needs:",
                   f"1. {c.script('merge_verdicts.py')} --leads \"{c.run}/leads.json\" --out \"{c.run}/merged.json\"",
@@ -554,12 +556,14 @@ def build_verify(c: Ctx, files: dict) -> dict:
     dispatch = [("inspector:verifier", f"verifier-{m['id']}.prompt.md", [m["verdicts"]]) for m in meta]
     if qs:
         files["docs-checker.prompt.md"] = docs_prompt(qs)
-        dispatch.insert(0, ("inspector:docs-checker", "docs-checker.prompt.md", []))      # first: its answers are waited for
+        # First: its answers are waited for. They are a tracked output (the main conversation saves its reply there), so
+        # --status can tell its work is unfinished: with no output it could not, and resume named only the verifier.
+        dispatch.insert(0, ("inspector:docs-checker", "docs-checker.prompt.md", [DOCS_ANSWERS]))
     phases = waves("verify", dispatch)
     for p in phases:
         for d in p["dispatch"]:
             if d["prompt"] in waits:
-                d["after"] = "docs-answers.json"
+                d["after"] = DOCS_ANSWERS
     return {"phases": phases, "chunks": meta, "docs": {"needed": bool(qs), "questions": len(qs)},
             "leads_sha256": file_sha256(lp)}
 
@@ -703,6 +707,20 @@ def card_state(data, n: int, labels: list[str]) -> str:
     return "done"
 
 
+DOCS_ANSWERS = "docs-answers.json"
+
+
+def docs_state(data) -> str:
+    """`done` when the saved docs-checker reply holds at least one usable answer: an array with an object that has a
+    `where` and a `text` (merge_verdicts.py's rule for an answer it can put on a lead). An empty array is not an
+    answer: nothing was learned, and the verifier that waits for it would start with no documentation reading."""
+    if not isinstance(data, list):
+        return "holds no answer (expected a JSON array of {n, where, answer, text, source})"
+    if not any(isinstance(x, dict) and str(x.get("where") or "").strip() and str(x.get("text") or "").strip() for x in data):
+        return "holds no answer (each needs `where` and `text`)"
+    return "done"
+
+
 def output_state(run: str, rel: str, labels: list[str] | None = None) -> str:
     path = os.path.join(run, *rel.split("/"))
     if not os.path.isfile(path):
@@ -720,6 +738,8 @@ def output_state(run: str, rel: str, labels: list[str] | None = None) -> str:
         data = json.loads(text)
     except ValueError:
         return "not valid JSON"
+    if rel == DOCS_ANSWERS:
+        return docs_state(data)
     m = CARD_RE.match(rel)
     if m:
         return card_state(data, int(m[1]), labels or [])
@@ -781,7 +801,7 @@ def status(run: str) -> tuple[int, str]:
                           "Nothing in the folder is counted as done; plan again (plan.py --run <run>)")
     labels = exp.get("case_labels") if isinstance(exp.get("case_labels"), list) else []
     plan_dir = f"{posix(run)}/plan"
-    L, left = [], 0
+    L, left, n_held = [], 0, 0
     # Readers sharing one queue, in every wave: a gap is the queue's, not one reader's, so the unfinished cards
     # are handed out once across all waves (2026-11-14 review, R114-01: each wave handed out the same stub, and a
     # wave of one reader took the per-agent path). A stub, another case's card or an unreadable file blocks a
@@ -800,6 +820,7 @@ def status(run: str) -> tuple[int, str]:
             done = [o for o, st in states if st == "done"]
             queue_line = (f"  queue: to do: {'; '.join(f'{o} {st}' for o, st in states if st != 'done')}"
                           + (f"; finished, leave as is: {', '.join(done)}" if done else ""))
+    waited = {d["after"] for p in exp["phases"] for d in (p.get("dispatch") or []) if isinstance(d.get("after"), str)}
     for i, p in enumerate(exp["phases"], 1):
         wave = f", wave {p['wave']} of {p['waves']}" if "wave" in p else ""
         head = f"Phase {i}: {p.get('name')}{wave}"
@@ -808,7 +829,7 @@ def status(run: str) -> tuple[int, str]:
             per_agent = [(d, d["outputs"]) for d in dispatch]
         else:  # a plan written before outputs were recorded per agent: any gap restarts the whole phase
             per_agent = [(d, p.get("outputs") or []) for d in dispatch]
-        todo, queued = [], []
+        todo, queued, held = [], [], []
         if shared:
             readers = [d for d, _ in per_agent if d.get("agent") == "inspector:case-reader"]
             per_agent = [(d, o) for d, o in per_agent if d not in readers]
@@ -823,22 +844,38 @@ def status(run: str) -> tuple[int, str]:
                               f"`Read {plan_dir}/{d.get('prompt')} and follow it` ({first}claim from the queue: "
                               f"{len(missing)} case{'s' if len(missing) != 1 else ''} unclaimed)")
         for d, outs in per_agent:
+            # A plan written before the docs-checker's reply was a tracked output (0.8.2): its work is still the file
+            # some agent of the plan waits for.
+            if d.get("agent") == "inspector:docs-checker" and not outs and DOCS_ANSWERS in waited:
+                outs = [DOCS_ANSWERS]
             states = [(o, output_state(run, o, labels)) for o in outs]
             gaps = [f"{o} {s}" for o, s in states if s != "done"]
             if gaps:
                 done = [o for o, s in states if s == "done"]
-                todo.append((d, gaps, done))
-        if not todo and not queued:
+                need = d.get("after")
+                need_state = output_state(run, need, labels) if isinstance(need, str) and need else "done"
+                if need_state != "done":
+                    held.append((d, gaps, done, f"{need} {need_state}"))     # unfinished, and not to be started yet
+                else:
+                    todo.append((d, gaps, done))
+        if not todo and not queued and not held:
             L.append(f"{head}: done.")
             continue
         k = len(todo) + sum(1 for q in queued if q.startswith("- "))
-        left += k
-        L.append(f"{head}: {k} agent{'s' if k != 1 else ''} to start again, in ONE message:")
+        left += k + len(held)
+        n_held += len(held)
+        if k:
+            L.append(f"{head}: {k} agent{'s' if k != 1 else ''} to start again, in ONE message:")
+        else:
+            L.append(f"{head}: nothing to start yet.")
         L += queued
         for d, gaps, done in todo:
             keep = f"; finished, leave as is: {', '.join(done)}" if done else ""
             model = f" (model: {d['model']})" if d.get("model") else ""
             L.append(f"- {d.get('agent')}{model}: `Read {plan_dir}/{d.get('prompt')} and follow it` (to do: {'; '.join(gaps)}{keep})")
+        for d, gaps, done, why in held:
+            L.append(f"  blocked, do not start yet: {d.get('agent')} `{plan_dir}/{d.get('prompt')}` waits for {why} "
+                     f"(then to do: {'; '.join(gaps)})")
     steps = script_steps(run, exp)
     if steps:
         L.append("Script steps left (no agent; plan.md gives each command, in order; run them after the agents above):")
@@ -847,7 +884,8 @@ def status(run: str) -> tuple[int, str]:
         L.append("Complete: every planned agent output and script step is present and current. "
                  "Next: the release gate, evals/gate/check_run.py on this run folder.")
     else:
-        L.append(f"Left: {left} agent{'s' if left != 1 else ''} to start again, {len(steps)} script step{'s' if len(steps) != 1 else ''}. "
+        waiting = f" ({n_held} of them held until a file they wait for is saved)" if n_held else ""
+        L.append(f"Left: {left} agent{'s' if left != 1 else ''} to start again{waiting}, {len(steps)} script step{'s' if len(steps) != 1 else ''}. "
                  "Start agents in the order above (a later phase needs the files of the one before).")
     return (1 if left or steps else 0), "\n".join(L) + "\n"
 
