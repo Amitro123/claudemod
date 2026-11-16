@@ -65,9 +65,9 @@ def test_a_pair_the_model_calls_the_same_defect_is_merged_and_nothing_it_said_is
 
 
 def test_under_the_cut_a_pair_stays_two_leads_and_the_log_gives_its_probability(tmp_path, monkeypatch, capsys) -> None:
-    _, leads, log, _, _ = merge(tmp_path, monkeypatch, capsys, [lead("a.py:320", A1), lead("a.py:322", A2)], [0.85], "--dedupe-model")
+    _, leads, log, _, _ = merge(tmp_path, monkeypatch, capsys, [lead("a.py:320", A1), lead("a.py:322", A2)], [0.6], "--dedupe-model")
     assert len(leads) == 2 and leads[0]["possible_duplicate_of"] == ["a.py:322"]
-    assert "p=0.85" in log and "- none" in log.split("## Merges")[1].split("##")[0]
+    assert "p=0.60" in log and "- none" in log.split("## Merges")[1].split("##")[0]
 
 
 def test_two_leads_the_model_calls_different_never_end_in_one_lead_through_a_third(tmp_path, monkeypatch, capsys) -> None:
@@ -105,6 +105,16 @@ def test_a_line_break_in_a_lead_cannot_forge_another_pairs_heading(tmp_path, mon
     _, _, _, sent, _ = merge(tmp_path, monkeypatch, capsys, [lead("a.py:143", forged), lead("a.py:143", A2)], [0.2], "--dedupe-model")
     state = sent[0]["state"]
     assert state.count("\n## Pair ") == 1 and state.count("\nLead A\n") == 1 and "## Pair 7 Lead A where: x.py:1" in state
+
+
+def test_the_cut_merges_what_two_live_runs_scored_for_one_defect_and_keeps_the_rest_apart() -> None:
+    """The 14 pairs of the two live runs: one defect scored 0.79 to 0.95, different defects at most 0.16."""
+    assert 0.16 < merge_cards.DEDUPE_APART < merge_cards.DEDUPE_CUT <= 0.79
+
+
+def test_a_pair_at_079_is_merged(tmp_path, monkeypatch, capsys) -> None:
+    _, leads, _, _, _ = merge(tmp_path, monkeypatch, capsys, [lead("a.py:128", A1), lead("a.py:128", A2)], [0.79], "--dedupe-model")
+    assert len(leads) == 1
 
 
 # ---------------------------------------------------------------- labels
@@ -203,3 +213,25 @@ def test_the_plan_saves_the_docs_reply_and_passes_it_to_the_verdict_merge(tmp_pa
     prompt = (run / "plan" / "docs-checker.prompt.md").read_text(encoding="utf-8")
     assert "Reply with only a JSON array" in prompt and '"answer": "yes" | "no" | "not stated"' in prompt
     assert "merged_variants" in (run / "plan" / "verifier-1.prompt.md").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- verifier chunks
+def test_one_or_two_leads_left_over_do_not_get_a_verifier_of_their_own() -> None:
+    sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "inspect" / "scripts"))
+    import plan as plan_mod
+    sizes = lambda n: [len(c) for c in plan_mod.chunks_of(list(range(n)))]  # noqa: E731
+    assert sizes(33) == [9, 8, 8, 8]            # both live runs: it was 8, 8, 8, 8, 1
+    assert sizes(34) == [9, 9, 8, 8]
+    assert sizes(9) == [9] and sizes(10) == [8, 2]      # two left over need two full chunks to go to
+    assert sizes(18) == [9, 9] and sizes(19) == [8, 8, 3]
+    assert sizes(8) == [8] and sizes(1) == [1] and sizes(0) == [] and sizes(16) == [8, 8]
+    for n in range(0, 60):                      # every lead once, in order, and never more than 9 in a chunk
+        flat = [x for c in plan_mod.chunks_of(list(range(n))) for x in c]
+        assert flat == list(range(n)) and all(len(c) <= 9 for c in plan_mod.chunks_of(list(range(n))))
+
+
+def test_the_plan_writes_four_verifiers_for_33_leads(tmp_path) -> None:
+    run = make_run(tmp_path, 2, [plan_lead(i) for i in range(1, 34)])
+    assert plan(run, "--phase", "verify")[0] == 0
+    chunks = sorted((run / "plan").glob("chunk-*.json"))
+    assert [len(json.loads(c.read_text(encoding="utf-8"))) for c in chunks] == [9, 8, 8, 8]

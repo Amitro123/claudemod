@@ -6,7 +6,7 @@ two checkers that did not write the leads. Run it before the leads go to anyone 
 **Required.** Verification is a required step before leads are presented as findings. Skipping it means saying so in the first line of the report; `handoff.py` also puts an `UNVERIFIED: N of M ...` banner first when any lead has no verdict. Start `inspector:verifier` by type (references/parallel.md), from the prompts `plan.py` wrote.
 
 1. **Chunk.** `python3 "<skill_root>/scripts/plan.py" --run <out> --phase verify` splits `<out>/leads.json` into chunks of
-   at most 8, keeping `where` exactly as written, and writes `plan/chunk-<k>.json` and `plan/verifier-<k>.prompt.md` (and
+   8 (9 when one or two would be left over), keeping `where` exactly as written, and writes `plan/chunk-<k>.json` and `plan/verifier-<k>.prompt.md` (and
    `plan/docs-checker.prompt.md` when a lead needs a host check). The investigator's JSON block or the cards'
    `complete.siblings` become `leads.json` first (merge_cards.py, or the investigator's own file).
 2. **Verify, in parallel.** Start one `verifier` per chunk, all in one message: `Read <out>/plan/verifier-<k>.prompt.md and follow it`.

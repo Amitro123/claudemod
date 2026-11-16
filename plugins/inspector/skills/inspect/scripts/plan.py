@@ -14,7 +14,7 @@ left its files (a slot is free), so the slowest agent of a wave does not hold th
 `--status` writes nothing: per phase and wave it names the outputs that are missing, invalid or still
 a reader's stub card, and prints the dispatch lines of only the agents to start again (exit 0 when
 nothing is left, 1 when something is).
-`--phase verify` (after merge_cards.py wrote `<run>/leads.json`) also chunks the leads, at most 8 each
+`--phase verify` (after merge_cards.py wrote `<run>/leads.json`) also chunks the leads, 8 each (9 where that saves a verifier for one or two left-over leads)
 and each `where` kept exactly, into `plan/chunk-<k>.json` and `verifier-<k>.prompt.md` (plus
 `docs-checker.prompt.md` when a lead needs a host check), and extends plan.md and expect.json.
 `--drop '#N'` (repeatable) leaves out a case whose fix verdict the main conversation corrected; the other
@@ -37,6 +37,7 @@ import time
 STRICT_JSON = ("strict JSON: write every path with forward slashes (C:/Users/...), never backslashes, and double any "
                "other backslash inside a string")   # 2026-11-15: a sweeper on Windows wrote C:\\Users raw; \\U broke the file
 CHUNK = 8
+CHUNK_SPILL = 2     # at most this many left-over leads are spread over full chunks instead of getting a verifier
 SINGLE_MAX = 6   # up to this many cases, one investigator: measured close to a reader per case, at less cost
 PER_READER = 3   # cases per case reader, unless --per-case
 WAVE = 4         # agents started at once; hosts stop wider fan-outs
@@ -392,7 +393,20 @@ def phases_collect(c: Ctx) -> list[dict]:
 
 
 def chunks_of(leads: list) -> list[list]:
-    return [leads[i:i + CHUNK] for i in range(0, len(leads), CHUNK)]
+    """Chunks of CHUNK leads, in order. One or two leads left over do not get a verifier of their own: they are spread
+    over the first chunks, which then hold CHUNK + 1. Measured on two live runs (2026-11-15/16): 33 leads made chunks of
+    8, 8, 8, 8 and 1, and the verifier for that one lead cost 80k and 85k tokens, as much as one for eight."""
+    n = len(leads)
+    full, rest = divmod(n, CHUNK)
+    if full and 0 < rest <= min(CHUNK_SPILL, full):
+        sizes = [CHUNK + 1] * rest + [CHUNK] * (full - rest)
+    else:
+        sizes = [CHUNK] * full + ([rest] if rest else [])
+    out, i = [], 0
+    for s in sizes:
+        out.append(leads[i:i + s])
+        i += s
+    return out
 
 
 QUESTION_CAP = 1200
