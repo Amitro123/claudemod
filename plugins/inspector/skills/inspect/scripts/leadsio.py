@@ -22,6 +22,18 @@ LEAD_SUFFIX_RE = re.compile(r" \[lead \d+\]$")
 NOT_SET = ("", "false", "no", "none", "null", "0")
 
 
+def utf8_stdio() -> None:
+    """Write stdout and stderr as UTF-8 whatever the console's codepage. These scripts print text agents wrote and lines of
+    the repository; a Windows console in cp1255 or cp1252 cannot encode a check mark or an arrow, and the script died
+    with UnicodeEncodeError before printing its report (crosscheck.py in a live run, 2026-11-16)."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 CATEGORIES = ("security", "broken-flow", "hardening", "cost", "other")      # references/labels.md
 REACHES = ("default-on", "conditional", "opt-in", "unknown")
 

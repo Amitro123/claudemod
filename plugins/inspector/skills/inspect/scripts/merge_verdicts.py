@@ -209,6 +209,7 @@ def merge(leads: list[dict], verdicts: list[dict], probe_only: list[str] | None 
 
 
 def main(argv: list[str] | None = None) -> int:
+    leadsio.utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--leads", required=True)
     ap.add_argument("--verdicts", nargs="*", action="extend", default=[],

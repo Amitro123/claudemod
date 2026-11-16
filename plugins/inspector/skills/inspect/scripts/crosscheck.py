@@ -162,6 +162,7 @@ def read_cards(src: str) -> tuple[list[dict], list[str]]:
 
 
 def main(argv=None) -> int:
+    leadsio.utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--evidence", help="the collector's evidence.json; without it, the evidence is collected again")
     ap.add_argument("--repo", help="with no --evidence: the repository")

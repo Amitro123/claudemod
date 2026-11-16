@@ -272,6 +272,7 @@ def pairs(values: list[str]) -> dict[str, str]:
 
 
 def main(argv=None) -> int:
+    leadsio.utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cards", required=True, help="a folder of cards (*.json), a .json file, or - for stdin (cards or leads)")
     ap.add_argument("--out", help="write the list here too")

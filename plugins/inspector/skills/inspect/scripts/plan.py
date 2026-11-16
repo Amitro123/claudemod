@@ -853,6 +853,9 @@ def status(run: str) -> tuple[int, str]:
 
 
 def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):      # a console in a legacy codepage cannot encode what agents write
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--run", required=True, help="the run folder (the collector's --out)")
     ap.add_argument("--phase", choices=("collect", "verify"), default="collect")

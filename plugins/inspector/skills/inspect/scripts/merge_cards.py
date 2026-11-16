@@ -389,6 +389,7 @@ def tally(leads: list[dict], key: str) -> str:
 
 
 def main(argv=None) -> int:
+    leadsio.utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cards", required=True, help="folder holding <id>.json cards")
     ap.add_argument("--sweep", nargs="*", action="extend", default=[],
