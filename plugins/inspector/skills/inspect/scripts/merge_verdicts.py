@@ -20,6 +20,12 @@ apart: a reader's probe that passes does not by itself confirm a lead. Two leads
 (`evals/gate/check_run.py`) compares leads, verdicts and merged leads on the `where` without that suffix. Exit 2 on invalid JSON, a verdict matching no lead, two leads with the same `where`, or two
 different verdicts for one `where` (identical duplicates are fine).
 
+When the leads file sits in a run folder with a plan (`<folder>/plan/expect.json`), every verdict file the plan names
+(`verifier_chunks`) must be among `--verdicts` and exist: otherwise exit 2, naming the missing ones, and nothing is
+written. In a live run (2026-11-16) the merge was run before the last verifier had finished and wrote a merged.json
+with 7 leads `unverified` and no stop. `--partial` merges what exists on purpose. Leads with no plan beside them merge
+as before.
+
 `--docs FILE`: the docs-checker's reply, a JSON array of {n, where, answer, text, source} (text around the array, such
 as a code fence, is ignored). Each answer is put on its lead as `docs_answer`, and handoff.py prints it beside the doubt;
 it never changes a verdict. The answer `yes`/`no` is to the question as the reader asked it, which may confirm the lead or
@@ -124,6 +130,23 @@ def add_docs(merged: list[dict], answers: list[dict]) -> list[str]:
     return warn
 
 
+def planned_but_missing(leads_path: str, given: list[str]) -> list[str]:
+    """Verdict files the run's plan names that were not passed, or do not exist. Empty when there is no plan to read."""
+    run = os.path.dirname(os.path.abspath(leads_path))
+    try:
+        with open(os.path.join(run, "plan", "expect.json"), encoding="utf-8") as f:
+            chunks = json.load(f).get("verifier_chunks")
+    except (OSError, ValueError, AttributeError):
+        return []
+    have = {os.path.realpath(p) for p in given if os.path.isfile(p)}
+    out = []
+    for c in chunks if isinstance(chunks, list) else []:
+        name = c.get("verdicts") if isinstance(c, dict) else None
+        if isinstance(name, str) and name and os.path.realpath(os.path.join(run, name)) not in have:
+            out.append(name)
+    return out
+
+
 def as_list(v: object) -> list:
     if v is None or v == "" or v == []:
         return []
@@ -216,6 +239,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="verdict files; every occurrence of the flag counts (may be omitted only when leads.json is empty)")
     ap.add_argument("--out")
     ap.add_argument("--drop-not-real", action="store_true")
+    ap.add_argument("--partial", action="store_true",
+                    help="merge although the run's plan names verdict files that are missing or were not passed "
+                         "(their leads stay `unverified`); without it that is exit 2")
     ap.add_argument("--docs", help="the docs-checker's saved reply (a JSON array); each answer goes on its lead as docs_answers")
     ap.add_argument("--repair-escapes", action="store_true",
                     help="double stray backslashes in a verdicts file (an agent on Windows wrote C:\\Users raw); "
@@ -226,6 +252,14 @@ def main(argv: list[str] | None = None) -> int:
         leadsio.validate_leads(leads, "leads")
         if leads and not a.verdicts:
             raise ValueError("--verdicts is required when leads.json has leads")
+        missing = planned_but_missing(a.leads, a.verdicts)
+        if missing and not a.partial:
+            raise ValueError(f"the run's plan names {len(missing)} verdict file(s) that are missing or not among --verdicts: "
+                             f"{', '.join(missing)}. A verifier has not finished (plan.py --status says which), or a file "
+                             "was left out. Nothing was written. Pass every planned file, or --partial to merge what "
+                             "exists and leave those leads unverified")
+        if missing:
+            print(f"merge_verdicts: warning: --partial: merging what exists; no verdicts from {', '.join(missing)}", file=sys.stderr)
         verdicts = []
         for p in a.verdicts:
             repaired: list[str] = []

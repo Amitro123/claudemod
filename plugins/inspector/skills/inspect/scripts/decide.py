@@ -171,6 +171,10 @@ def ask(texts: dict[str, str], model: str = DEFAULT_MODEL, post=None) -> tuple[d
             else:
                 meta["cost_complete"] = False   # a cost missing or of another shape: unknown, never fatal
             return True
+        # Any attempt that failed has no cost we know, also one the run then recovers from by splitting: the subtotal
+        # of the answered requests stays in known_cost, and the total is unknown from here on. Absent cost data is not
+        # a measured zero (review of 4ad47bd: a 413, then two answered halves, reported their subtotal as complete).
+        meta["cost_complete"] = False
         if _http_code(err) in SPLITTABLE:
             if len(batch) == 1:
                 meta["skipped"][batch[0]] = f"{type(err).__name__}: {err}"[:200]

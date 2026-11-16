@@ -333,3 +333,43 @@ def test_the_summary_says_so_only_when_a_promoted_unit_is_near_the_cut(repo, tmp
     assert "Decision model: 1 promoted unit(s) sit within 0.05 of the cut (0.5): #4 p=0.52" in near_md
     far_md, far = summary(0.9)
     assert "near_cut" not in far["decision_model"] and "within 0.05" not in far_md
+
+
+def test_a_refused_request_recovered_by_splitting_leaves_the_cost_incomplete():
+    """Review of 4ad47bd: a 413 on the combined request, then both halves answered with a cost. The run reported the two
+    successes' subtotal as a complete cost. The refused attempt has no cost we know: absent data is not a measured zero."""
+    calls = []
+
+    def post(url, body, headers, timeout=120):
+        calls.append(len(body["questions"]))
+        if len(body["questions"]) > 1:
+            raise RuntimeError('HTTP 413 Payload Too Large: {"error":{"message":"request too large","code":413}}')
+        cost = 0.001 if len(calls) == 2 else 0.002
+        return {"answers": {k: {"type": "noul", "noul": 0.9} for k in body["questions"]}, "usage": {"cost": cost}}
+    out, meta = decide.ask(texts_of(2), "m/x", post)
+    assert out == {"#1": 0.9, "#2": 0.9}, "both answers survive"
+    assert calls == [2, 1, 1] and meta["attempts"] == 3 and meta["requests"] == 2
+    assert abs(meta["known_cost"] - 0.003) < 1e-9
+    assert meta["cost"] is None and meta["cost_complete"] is False
+    assert not meta.get("error") and not meta["skipped"]
+
+
+def test_completeness_is_not_restored_by_later_successful_requests(monkeypatch):
+    monkeypatch.setattr(decide, "CHUNK", 2)
+    seen = []
+
+    def post(url, body, headers, timeout=120):
+        seen.append(len(body["questions"]))
+        if len(seen) == 1:
+            raise RuntimeError("HTTP 413 Payload Too Large")
+        return {"answers": {k: {"type": "noul", "noul": 0.2} for k in body["questions"]}, "usage": {"cost": 0.001}}
+    out, meta = decide.ask(texts_of(4), "m/x", post)      # chunk 1 refused then split; chunk 2 answered whole
+    assert len(out) == 4 and seen == [2, 1, 1, 2]
+    assert meta["cost"] is None and meta["cost_complete"] is False and abs(meta["known_cost"] - 0.003) < 1e-9
+
+
+def test_all_successful_measured_costs_and_a_measured_zero_stay_complete():
+    def post(url, body, headers, timeout=120):
+        return {"answers": {k: {"type": "noul", "noul": 0.7} for k in body["questions"]}, "usage": {"cost": 0}}
+    out, meta = decide.ask(texts_of(3), "m/x", post)
+    assert len(out) == 3 and meta["cost"] == 0 and meta["cost_complete"] is True and meta["attempts"] == 1

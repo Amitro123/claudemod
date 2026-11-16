@@ -75,7 +75,8 @@ verdict. No `probe_file`: leave `probe_check` out.
   public tool's documented behaviour). Say what would settle it. Never guess.
 
 Correct the labels with the rules in references/labels.md: `category`, `reach` (and `reach_when`),
-`test_kind`. Name each claim that does not hold in `false_claims`. A lead you cannot disprove is
+`test_kind`. `category` takes only `security`, `broken-flow`, `hardening`, `cost`, `other`: a docs drift or a test gap is
+`other`, never a word of your own (in live runs verifiers wrote `docs`, `test-gap`, `doc-drift`, `hygiene`, `correctness`). Name each claim that does not hold in `false_claims`. A lead you cannot disprove is
 not thereby verified; a verdict needs evidence you ran or read.
 
 ## Output
