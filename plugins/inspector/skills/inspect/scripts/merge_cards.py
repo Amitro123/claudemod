@@ -204,7 +204,10 @@ PAIR_CRITERIA = {
 def _pair_text(lead: dict) -> str:
     imp = lead.get("impact")
     imp = imp.get("text") or imp.get("what") or json.dumps(imp, ensure_ascii=False) if isinstance(imp, dict) else imp
-    return f"where: {lead.get('where')}\nwhat: {str(lead.get('what') or '')[:1500]}\nimpact: {str(imp or '')[:600]}"
+    # One line per field: a lead's text comes from an agent that read the repository, and a line break inside it could
+    # forge a "## Pair N" heading or a "Lead B" line and move its words into another pair's question.
+    one = lambda v, cap: " ".join(str(v or "").split())[:cap]  # noqa: E731
+    return f"where: {one(lead.get('where'), 300)}\nwhat: {one(lead.get('what'), 1500)}\nimpact: {one(imp, 600)}"
 
 
 def ask_pairs(raw: list[dict], possible: list[tuple], model: str, post=None) -> tuple[dict[tuple[int, int], float], dict]:
