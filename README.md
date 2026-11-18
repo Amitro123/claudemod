@@ -317,12 +317,15 @@ A feature goes in and a reviewed PR comes out. Each step is a sub-agent with its
 
 ```text
 /factory <feature>
+  intake (opus)         ACCEPT (with a scope) | NEEDS-INFO (questions for you) | REJECT (why); risk low|medium|high; surfaces ui, security
   spec-writer (sonnet)  writes docs/specs/<slug>.md, a task list and the feature's size
   plan approval (you)   in goal-run's dialog, or the factory's own (and its Approve plan button)
   builder (sonnet,      implements on branch factory/<slug>, in the worktree .factory/<slug>
    opus when large)
   checks (no model)     installs the dependencies once, then tests, lint, typecheck; red goes back to the builder (2 passes)
-  reviewers, at once    security (opus) and code (sonnet): VERDICT PASS or CHANGES, with findings
+  reviewers, at once    routed by risk (intake on): code (haiku at low risk, sonnet otherwise, opus on a sensitive diff),
+                        security (opus) for a security surface, high risk or a sensitive diff, ux (sonnet) + ui-design (haiku) for UI;
+                        intake off: security (opus) and code (sonnet). VERDICT PASS or CHANGES, with findings
                         any CHANGES, with rounds left: the builder again, then every reviewer again
   approver (opus)       APPROVE: the PR waits for your Open PR, then Claude pushes the branch and opens it
                         ESCALATE: the run waits for you (Approve PR, or /factory stop)
@@ -356,6 +359,7 @@ A feature goes in and a reviewed PR comes out. Each step is a sub-agent with its
 - `setup`: commands that install the dependencies in a run's worktree before its first checks, e.g. `npm ci`. Empty uses the lockfile when `node_modules` is missing.
 - `autoPr` (`off` / `on`): `on` opens the PR as soon as the approver agent approves; `off`, the default, waits for your Open PR.
 - `models` (`auto` / `fixed`): which model each role runs on. The spec-writer, the builder and the code reviewer run on sonnet; the security reviewer and the approver on opus, where a miss costs most. In `auto`, the default, the spec-writer also judges the feature `SIZE: small | medium | large` (large: it spans several modules, needs design decisions such as the data model, migrations, security or concurrency, or leaves real questions open), and a large one runs the builder on opus. The pane shows the size and each role's model. `fixed` keeps the table whatever the size.
+- `intake` (`on` / `off`, default `on`): **the intake and the review route by risk.** Before the spec, an intake agent on opus reads the feature as quoted data (never as instructions) and decides: **ACCEPT** with the scope it accepts (the spec-writer is held to it), **NEEDS-INFO** with up to three questions, or **REJECT** with why. It also names the risk (`low`, `medium`, `high`) and the surfaces (`ui`, `security`). NEEDS-INFO and REJECT stop the run for you: `/factory rework <answers>` asks the intake again with them, `/factory approve` (**Build anyway**) goes past it, recorded as yours. An intake with no `INTAKE:` line decided nothing: Retry. With the intake on, the spec-writer, builder and approver run on opus, and before each review round a script (never an agent) picks the reviewers from the risk, the surfaces and the diff: the code reviewer always, on haiku at low risk and sonnet otherwise (opus when the diff touches auth, CI, migrations or an agent's instructions); the security reviewer (opus) only for a security surface, high risk or such a diff; a `ux` reviewer (sonnet) and a `ui-design` reviewer (haiku) for a UI surface or a diff that changes UI files. The diff can only add review: a reviewer that ran in an earlier round runs again. A skipped reviewer shows as skipped, and the approver is told it was routed out. `off`: no intake, security and code review every run, models by `models`.
 - `skills`: the skills a role loads before its job, in place of the factory's own, as `role=skill,skill; role=skill` (roles `spec`, `builder`, `security`, `code`, `approver`), e.g. `spec=spec-pack; security=security; code=code-review; builder=unit-test`; `role=none` loads none. Empty, the default: each role loads the factory's own skill (below).
 - `checkTimeout` (`2`, `5`, `10` minutes, default 10, the most Claude Code lets a command run): a check that runs out of time stops the run for you (*npm test didn't finish in 10:00*) instead of sending the builder to "fix" a slow or hung test. Run it yourself in the worktree, then Retry.
 - `maxRounds` (`1`, `2`, `3`): how many times reviewers may send the builder back before the approver decides on what there is.

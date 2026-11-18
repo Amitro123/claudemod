@@ -2,14 +2,23 @@
 export type StepState = 'wait' | 'run' | 'pass' | 'changes' | 'fail' | 'skip'
 // skeptic: before the builder is sent back, it tries to refute the round's blocker and major findings.
 // extra: a reviewer the main Claude added for this run (a lens of the factory's, or an agent of its own).
-export type Role = 'spec' | 'builder' | 'security' | 'code' | 'approver' | 'skeptic' | 'extra'
+// intake: before the spec, decides whether the feature is worth building, at what scope, and how risky it is.
+export type Role = 'intake' | 'spec' | 'builder' | 'security' | 'code' | 'approver' | 'skeptic' | 'extra'
 // How big the spec-writer judged the feature: what the models of the later roles follow.
 export type Size = 'small' | 'medium' | 'large'
 // security and code always review; an extra reviewer is named by the main Claude (frontend, finops...).
 export type Reviewer = string
 // An extra reviewer: its name, what it looks at, and the agent type that runs it (the factory's own
 // generic reviewer when none is named).
-export type Extra = { name: string; focus: string; agent?: string }
+// model: the model it runs on, when the review route picked one (ux on sonnet, ui-design on haiku).
+// routed: the review route added it (from the intake's surfaces or the diff), not the main Claude.
+export type Extra = { name: string; focus: string; agent?: string; model?: string; routed?: boolean }
+// The intake's judgment of a feature: whether to build it, how risky it is, and which surfaces it
+// touches. The review route follows risk and surfaces: which reviewers run, and on which models.
+export type IntakeVerdict = 'ACCEPT' | 'NEEDS-INFO' | 'REJECT'
+export type Risk = 'low' | 'medium' | 'high'
+export type Surface = 'ui' | 'security'
+export type Intake = { verdict: IntakeVerdict; risk: Risk; surfaces: Surface[]; scope: string; reason: string; questions: string[] }
 export type Severity = 'blocker' | 'major' | 'minor'
 export type Finding = { severity: Severity; where: string; text: string }
 // A task of the spec's breakdown: what goes to goal-run's plan.
@@ -26,11 +35,13 @@ export type Check = { cmd: string; ok: boolean; tail: string; isMissing?: boolea
 export type Review = { role: Reviewer; state: StepState; findings: Finding[]; tokens: number; round: number; agentId: string | null; understood?: string; notChecked?: string[] }
 // Where the run is: each phase waits on one thing (an agent, the checks, the person).
 // 'ready': the approver said APPROVE; the PR waits for the person's Open PR.
-export type Phase = 'spec' | 'plan' | 'build' | 'checks' | 'review' | 'approve' | 'ready' | 'needs-human' | 'done' | 'stopped'
+export type Phase = 'intake' | 'spec' | 'plan' | 'build' | 'checks' | 'review' | 'approve' | 'ready' | 'needs-human' | 'done' | 'stopped'
 // Why a run is at needs-human: what stopped it decides what the person can do (Approve only after an
 // ESCALATE; Retry for the rest).
 export type Blocked =
   | { on: 'escalate' }
+  // The intake said NEEDS-INFO or REJECT: the person answers (rework), overrides (approve) or stops.
+  | { on: 'intake' }
   | { on: 'spec' }
   // why: the builder stopped mid-job (not just failed to commit): Retry sends it on.
   | { on: 'builder'; why?: string }
@@ -145,6 +156,11 @@ export type Run = {
   skepticTokens?: number
   // Reviewers the main Claude added for this run, beside security and code.
   extras?: Extra[]
+  // The intake's judgment (runs with the intake option on), and its tokens.
+  intake?: Intake
+  intakeTokens?: number
+  // What the person added for the intake after a NEEDS-INFO: its next pass reads it.
+  intakeAnswers?: string[]
 }
 
 declare module 'claude-code' {

@@ -1,6 +1,6 @@
 {
   "name": "factory",
-  "version": "0.23.3",
+  "version": "0.24.0",
   "description": "A software factory: /factory <feature> writes a spec, has you approve its plan (in goal-run when it's installed), builds it on a branch, runs the checks and parallel reviews, and has an approver agent decide; you then press Open PR and Claude opens it. Its pane draws where the run is",
   "author": {
     "name": "Amit Rosen",
@@ -66,6 +66,13 @@
         "auto",
         "fixed"
       ]
+    },
+    "intake": {
+      "type": "string",
+      "title": "Intake and risk routing",
+      "description": "on: an intake agent (opus) first decides whether the feature is worth building, at what scope, its risk (low, medium, high) and surfaces (ui, security); NEEDS-INFO and REJECT stop for you. Its route then picks the reviewers: code on haiku at low risk, sonnet otherwise (opus when the diff calls for depth); security (opus) only for a security surface, high risk or a sensitive diff; ux (sonnet) and ui-design (haiku) for a UI surface or UI files. Spec-writer, builder and approver run on opus. off: no intake; security and code always review, models by the models option",
+      "default": "on",
+      "options": ["on", "off"]
     },
     "skills": {
       "type": "string",
