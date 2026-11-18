@@ -743,10 +743,10 @@ describe('the person decides', () => {
     expect(w.sent.at(-1)).toMatch(/call mcp__followups__done with id "k3x-1a2b3"/)
   })
 
-  test('a second run waits for the first', async ($, on) => {
+  test('with one slot, a second run waits for the first', { options: { concurrency: '1' } } as never, async ($: Engine, on: On) => {
     engine(on)
     await startRun($)
-    expect(await command($, 'Something else')).toMatch(/already going: Rate limiter/)
+    expect(await command($, 'Something else')).toMatch(/1 factory run is already working \(the concurrency option allows 1\): Rate limiter/)
   })
 
   test('the roles are hidden from the model', async ($, on) => {
@@ -1752,7 +1752,8 @@ describe("the builder marks goal-run's tasks only when they are the factory's", 
     await startRun($)
     await answer($, 'a1', OUT_OF_ORDER)
     expect(await command($, 'plan-approve')).toMatch(/^"\/factory plan-approve" isn't a factory command\. .*plan-approved/)
-    expect(await command($, 'Add a cache to the API')).toMatch(/^A factory run is already going/)
+    // A run that waits on the person (its plan) holds no slot: a feature is a new run beside it.
+    expect(await command($, 'Add a cache to the API')).toMatch(/^Factory run started: Add a cache to the API/)
   })
 
   test('/factory approve on a plan goal-run holds says how to start it if goal-run already approved it', async ($, on) => {
@@ -2925,7 +2926,7 @@ describe('GitHub issues are the queue (intake on)', () => {
     expect(w.spawned).toHaveLength(0)
   })
 
-  test('/factory run drains the queue: NEEDS-INFO asks on the issue and parks it, the next starts; the answer resumes it', ON as never, async ($: Engine, on: On) => {
+  test('/factory run drains the queue: NEEDS-INFO asks on the issue and parks it, the next starts; the answer resumes it', { options: { intake: 'on', skeptic: 'off', concurrency: '1' } } as never, async ($: Engine, on: On) => {
     const issues: Record<number, ReturnType<typeof issue>> = { 1: issue(1), 2: issue(2) }
     const w = engine(on, { issues })
     await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
@@ -2958,5 +2959,50 @@ describe('GitHub issues are the queue (intake on)', () => {
     await answer($, 'a2', 'INTAKE: REJECT\nRISK: low\nSURFACES: none\nREASON: already built')
     expect(await command($, 'status')).toMatch(/blocked on intake/)
     expect(await command($, 'approve')).toMatch(/Past the intake/)
+  })
+})
+
+describe('several runs at once (concurrency)', () => {
+  test('/factory run starts as many issues as there are slots; each agent answers into its own run', { options: { intake: 'on', skeptic: 'off', concurrency: '2' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on, { issues: { 1: issue(1), 2: issue(2), 3: issue(3) } })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    const said = await command($, 'run')
+    expect(said).toMatch(/1 more wait for a free slot \(2 at once\)/)
+    expect(w.spawned.map(x => x.subagentType)).toEqual(['factory:intake', 'factory:intake'])
+    expect(w.spawned[0]!.prompt).toContain('issues/1.md')
+    expect(w.spawned[1]!.prompt).toContain('issues/2.md')
+    // Issue 2's intake answers first: its spec-writer starts, in issue 2's worktree; issue 1's run waits as it was.
+    await answer($, 'a2', INTAKE('ACCEPT'))
+    expect(last(w)).toMatchObject({ id: 'a3', subagentType: 'factory:spec-writer' })
+    expect(last(w).cwd).toMatch(/github-issue-2-/)
+    const status = await command($, 'status')
+    expect(status).toMatch(/Runs \(2 working of 2 at once/)
+    expect(status).toMatch(/github-issue-1-[\w-]+ \(#1\): intake/)
+    expect(status).toMatch(/github-issue-2-[\w-]+ \(#2\): spec/)
+    // The band has a line per run.
+    // The newest first; an issue's run by its number and title.
+    expect(await bandText($)).toMatch(/🏭 #2 Rate limiter 2[\s\S]*🏭 #1 Rate limiter 1/)
+    // Issue 1 parks on a question: its slot frees, and issue 3 starts.
+    await answer($, 'a1', 'INTAKE: NEEDS-INFO\nRISK: low\nSURFACES: none\nREASON: open\nQUESTIONS:\n- Which?')
+    await w.clock.advance(5)
+    await settled()
+    expect(last(w)).toMatchObject({ subagentType: 'factory:intake' })
+    expect(last(w).prompt).toContain('issues/3.md')
+  })
+
+  test('a command names its run with @#<issue> or @<run>; stop ends only that one', { options: { intake: 'on', skeptic: 'off' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on, { issues: { 1: issue(1), 2: issue(2) } })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'run')
+    expect(w.spawned).toHaveLength(2)
+    expect(await command($, 'stop @#1')).toMatch(/^Stopped\. The branch factory\/github-issue-1-/)
+    expect(await command($, 'stop @#9')).toMatch(/No factory run for issue #9/)
+    // Run 2 goes on: its intake's answer still moves it.
+    await answer($, 'a2', INTAKE('ACCEPT'))
+    expect(last(w)).toMatchObject({ id: 'a3', subagentType: 'factory:spec-writer' })
+    // Run 1 was stopped: a late answer from its intake moves nothing.
+    await answer($, 'a1', INTAKE('ACCEPT'))
+    expect(w.spawned).toHaveLength(3)
+    expect(JSON.parse(w.written['/repo/.factory/queue.json']!)['1'].state).toBe('stopped')
   })
 })

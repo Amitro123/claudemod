@@ -181,7 +181,8 @@ export type Run = {
 declare module 'claude-code' {
   interface PluginState {
     factory: {
-      run: Run | null
+      // Every run of the session, by slug, in the order they started.
+      runs: Record<string, Run>
       frame: number
       theme: 'dark' | 'light'
       now: number
