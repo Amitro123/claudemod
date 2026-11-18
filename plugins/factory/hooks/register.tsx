@@ -78,7 +78,9 @@ import {
   progressNote,
   resumePrompt,
 } from './flow'
-import { intakeNote, intakePrompt, parseIntake, reviewPlan, ROUTED_MODELS, touchesUi, UI_REVIEWERS } from './intake'
+import { intakeNote, intakePrompt, parseIntake, reviewPlan, ROUTED_MODELS, touchesUi } from './intake'
+import { addUsage, costOf, DEFAULT_CONFIG, parseConfig, protectedHits, usd } from './config'
+import type { FactoryConfig } from './config'
 import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from './route'
 import { FACTORY_START_TOOL, factoryArgs, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, parsePlanResultArgs, toolText } from './texts'
 
@@ -117,6 +119,19 @@ let modelsOption: 'auto' | 'fixed' = 'auto'
 let skillsOption: Partial<Record<Role, string[]>> = {}
 // The intake before the spec, and the review route by its risk and surfaces (the intake option).
 let intakeOn = true
+// Once the approver approves, the PR is merged as soon as it is open (the autoMerge option).
+let autoMerge = false
+
+// The run's API-equivalent cost so far, for the band and the pane: nothing until a priced model ran.
+const costTag = (r: Run) => {
+  const c = r.usage ? costOf(r.usage, r.prices ?? DEFAULT_CONFIG.prices).usd : 0
+  return c > 0 ? ` · ${usd(c)}` : ''
+}
+
+// The repository's .factory/config.json, read from the main checkout: a branch can't change it.
+async function configOf($: EngineInterface, root: string): Promise<FactoryConfig> {
+  return parseConfig(await $.fs.read(`${root}/.factory/config.json`).then(t => String(t), () => null))
+}
 // A role's skills: the option's for it, else the factory's own.
 // The skeptic has no skill of the factory's own: only one the skills option names.
 const skillsOf = (role: Role) => skillsOption[role] ?? (role === 'skeptic' || role === 'extra' ? [] : [builtinSkill(role)])
@@ -314,6 +329,8 @@ async function start($: EngineInterface, args: string, extras: Extra[] = []): Pr
   }
   await keepOutOfGit($, root)
   await readTheme($)
+  const cfg = await configOf($, root)
+  created.prices = cfg.prices
   await update($, run, () => created)
   await ensureTicking($)
   void $.ui.open({ id: PANE, title: PANE_TITLE })
@@ -753,6 +770,14 @@ async function runChecks($: EngineInterface) {
     }
     results.push({ cmd: argv.join(' '), ok: out.exitCode === 0, tail: out.exitCode === 0 ? '' : tailOf(`${out.stdout}\n${out.stderr}`), ...(out.notStarted ? { isMissing: true } : {}), ...(out.timedOut ? { isTimedOut: true } : {}) })
   }
+  // The repository's protected paths: a branch that modified or deleted one fails the checks, and
+  // the builder is sent back with the list. Only a run's branch: a review changes nothing.
+  if (r.kind !== 'review') {
+    const patterns = (await configOf($, rootOf(r))).protectedPaths
+    const names = patterns.length ? await git($, ['diff', '--name-status', '-z', r.base, 'HEAD'], r.worktree) : null
+    const hits = names ? (names.exitCode === 0 ? protectedHits(names.stdout, patterns) : [`git could not list the branch's changes: ${tailOf(names.stderr, 1)}`]) : []
+    if (hits.length) results.unshift({ cmd: 'protected paths', ok: false, tail: `The branch changed files the repository protects (.factory/config.json protected_paths); undo these changes:\n${hits.join('\n')}` })
+  }
   const timedOut = results.filter(c => c.isTimedOut)
   const failed = results.filter(c => !c.ok && !c.isMissing)
   const missing = results.filter(c => c.isMissing)
@@ -797,22 +822,23 @@ async function startReviews($: EngineInterface) {
   const found = before ? await routeOf($, before) : null
   const route = found ? { deep: found.deep, focus: found.focus } : null
   // With the intake's risk and surfaces: which reviewers run this round, and on which models.
-  const plan = before?.intake && route ? reviewPlan(before.intake, route, found!.uiTouched) : null
+  const plan = before?.intake && route ? reviewPlan(before.intake, route, found!.uiTouched, await configOf($, rootOf(before))) : null
   if (route?.focus.length || plan) await record($, `review route, round ${(before?.round ?? 0) + 1}`, [...(plan ? plan.why.map(w => `- ${w}`) : route?.deep ? ['Deep review (the code reviewer on opus too).'] : []), ...(route?.focus ?? []).map(f => `- ${f}`)].join('\n'))
   const r = await patch($, cur => {
     const round = cur.round + 1
     // The UI reviewers the route adds, once: they stay for later rounds (a fix is new code for them too).
-    const uiExtras = plan?.ui ? UI_REVIEWERS.filter(u => !cur.extras?.some(e => e.name === u.name)).map(u => ({ name: u.name, focus: u.focus, model: u.model, routed: true })) : []
+    const uiExtras = (plan?.extras ?? []).filter(u => !cur.extras?.some(e => e.name === u.name)).map(u => ({ name: u.name, focus: u.focus, model: u.model, routed: true }))
     const extras = [...(cur.extras ?? []), ...uiExtras]
     const reviews = [...cur.reviews, ...uiExtras.map(e => reviewOf(e.name))]
     // A reviewer the route leaves out this round is skipped, not run: the security review without a
     // security surface. Rules only add review, so one that ran in an earlier round runs again.
     const skip = (role: string) => !!plan && role === 'security' && !plan.security && !cur.reviews.some(x => x.role === 'security' && x.round > 0 && x.state !== 'skip')
+    const securityModel = plan?.security ?? (cur.reviews.some(x => x.role === 'security' && x.round > 0 && x.state !== 'skip') ? modelOf(cur, 'security') : null)
     return {
       ...moveTo(cur, 'review', `reviewing, round ${round}`),
       round,
       ...(route ? { route } : {}),
-      models: plan ? { ...cur.models, code: plan.codeModel } : route?.deep ? { ...cur.models, code: 'opus' } : cur.models,
+      models: plan ? { ...cur.models, code: plan.codeModel, ...(securityModel ? { security: securityModel } : {}) } : route?.deep ? { ...cur.models, code: 'opus' } : cur.models,
       ...(uiExtras.length ? { extras } : {}),
       checkRound: 0,
       reviews: reviews.map(x => ({ ...x, state: skip(x.role) ? 'skip' : 'run', findings: [], round, agentId: null, understood: undefined, notChecked: undefined })),
@@ -953,7 +979,7 @@ async function onApprover($: EngineInterface, answer: string, why: string) {
     return
   }
   // The approver is an agent: the PR, outward-facing, waits for the person unless autoPr is on.
-  if (autoPr) return finish($, reason)
+  if (autoPr) return finish($, reason, true)
   const ready = await patch($, r => ({ ...moveTo(r, 'ready', `approved${reason ? `: ${reason}` : ''}. Open the PR when you're ready`), steps: { ...r.steps, approver: { ...r.steps.approver, state: 'pass' } } }))
   if (ready?.phase !== 'ready') return
   $.ui.toast('The approver approved the change: Open PR in the factory band, /factory approve, or /factory rework <what to change>')
@@ -1067,7 +1093,60 @@ async function prOpened($: EngineInterface, url: string): Promise<string> {
 // Approved by the person (or by the approver, with autoPr on): the main Claude opens the PR.
 // The PR is only requested here (L3): it reads as opened once the main Claude reports its link (the
 // control tool's pr-opened). A feature that says not to push gets the commands, for the person.
-async function finish($: EngineInterface, reason: string) {
+// Before the PR: the branch is synced with the latest base and the checks run again on it, since
+// other work may have landed since the run was tested. Nothing to sync (no remote base, or it is
+// already in the branch): straight on. A conflict, or a check that fails on the synced branch, stops
+// the run for the person. `byApprover`: the approver approved (not the person over an escalation).
+async function finish($: EngineInterface, reason: string, byApprover = false) {
+  const r0 = await read($, run)
+  if (!r0 || !isLive(r0.phase)) return
+  if (r0.kind !== 'review' && !(await syncWithBase($, r0))) return
+  await openPr($, reason, byApprover)
+}
+
+async function syncWithBase($: EngineInterface, r: Run): Promise<boolean> {
+  const base = prBaseOf(r)
+  if (!base || forbidsPush(r.feature)) return true
+  const remote = `origin/${base}`
+  await git($, ['fetch', 'origin', base], r.worktree)
+  const there = await git($, ['rev-parse', '--verify', '--quiet', `${remote}^{commit}`], r.worktree)
+  if (there.exitCode !== 0 || !there.stdout.trim()) return true
+  const tip = there.stdout.trim()
+  if ((await git($, ['merge-base', '--is-ancestor', tip, 'HEAD'], r.worktree)).exitCode === 0) {
+    await patch($, cur => ({ ...cur, synced: tip }))
+    return true
+  }
+  const m = await patch($, cur => moveTo(cur, 'merging', `syncing with the latest ${remote} and running the checks again`))
+  if (m?.phase !== 'merging') return false
+  const merged = await git($, ['merge', '--no-edit', remote], r.worktree)
+  if (merged.exitCode !== 0) {
+    await git($, ['merge', '--abort'], r.worktree)
+    await record($, 'merge with the base', `git merge ${remote} failed:\n${tailOf(`${merged.stdout}\n${merged.stderr}`, 20)}`)
+    await block($, { on: 'merge' }, `The branch conflicts with the latest ${remote}: resolve it in ${r.worktree} (or /factory rework to have the builder do it), then Retry.`)
+    return false
+  }
+  const found = await checkCommands($, r)
+  const results: Check[] = []
+  for (const [k, argv] of found.checks.entries()) {
+    if (!(await stillIn($, 'merging'))) return false
+    await nowRunning($, argv, k, found.checks.length)
+    const out = await run$($, argv, r.worktree)
+    results.push({ cmd: argv.join(' '), ok: out.exitCode === 0, tail: out.exitCode === 0 ? '' : tailOf(`${out.stdout}\n${out.stderr}`), ...(out.notStarted ? { isMissing: true } : {}), ...(out.timedOut ? { isTimedOut: true } : {}) })
+  }
+  await record($, `checks on the latest ${remote}`, results.map(c => `${c.isMissing ? '– (not installed)' : c.isTimedOut ? '⏱' : c.ok ? '✓' : '✗'} ${c.cmd}${c.tail ? `\n${c.tail}` : ''}`).join('\n') || 'No checks to run.')
+  const bad = results.filter(c => !c.ok && !c.isMissing)
+  const after = await patch($, cur => ({ ...cur, checking: null, ...(bad.length ? {} : { synced: tip }) }))
+  if (after?.phase !== 'merging') return false
+  if (bad.length) {
+    await block($, { on: 'merge' }, `Synced with the latest ${remote}, the checks fail: ${bad.map(c => c.cmd).join(', ')}. /factory rework sends it to the builder; Retry runs them again.`, cur => ({ ...cur, checks: results }))
+    return false
+  }
+  return true
+}
+
+const prBaseOf = (r: Run) => r.baseRef?.replace(/^(origin|upstream)\//, '') ?? ''
+
+async function openPr($: EngineInterface, reason: string, byApprover: boolean) {
   let moved = false
   const r = await patch($, cur => {
     // Queued behind the approval: a run stopped meanwhile stays stopped, and no PR is asked for.
@@ -1075,7 +1154,7 @@ async function finish($: EngineInterface, reason: string) {
     moved = true
     const handed = forbidsPush(cur.feature)
     const note = `${reason || 'approved'}. ${handed ? 'The PR commands are handed to you: the feature says not to push' : 'PR requested from Claude'}`
-    return { ...moveTo(cur, 'done', note), pr: { state: handed ? 'handed' : 'requested' }, steps: { ...cur.steps, approver: { ...cur.steps.approver, state: 'pass' } } }
+    return { ...moveTo(cur, 'done', note), pr: { state: handed ? 'handed' : 'requested' }, autoMerge: autoMerge && byApprover && !handed, steps: { ...cur.steps, approver: { ...cur.steps.approver, state: 'pass' } } }
   })
   if (!r || !moved) return
   await recordStats($)
@@ -1173,7 +1252,7 @@ async function approveNow($: EngineInterface, goalTasks?: GoalTask[], fromGoalRu
     return 'Past the intake: the spec-writer starts.'
   }
   if (r.phase === 'ready' || (r.phase === 'needs-human' && r.blocked?.on === 'escalate')) {
-    void serial(() => finish($, r.phase === 'ready' ? r.note.replace(/\. Open the PR when you're ready$/, '') : 'approved by the person over the approver'))
+    void serial(() => finish($, r.phase === 'ready' ? r.note.replace(/\. Open the PR when you're ready$/, '') : 'approved by the person over the approver', r.phase === 'ready'))
     return forbidsPush(r.feature) ? 'Approved: the feature says not to push, so Claude gives you the commands to open the PR.' : 'Approved: Claude opens the PR.'
   }
   if (r.phase === 'needs-human') return `Nothing to approve: ${r.note} /factory retry runs that step again; /factory stop ends the run.`
@@ -1188,6 +1267,7 @@ async function retryNow($: EngineInterface): Promise<string> {
   const b = r.blocked
   void serial(async () => {
     if (b.on === 'intake' || (b.on === 'start' && b.role === 'intake')) return startIntake($)
+    if (b.on === 'merge') return finish($, 'approved', r.steps.approver.state === 'pass')
     if (b.on === 'spec') return respec($)
     if (b.on === 'base') {
       await patch($, cur => moveTo(cur, 'build', 'checking what the branch is built on'))
@@ -1208,6 +1288,7 @@ async function retryNow($: EngineInterface): Promise<string> {
     if (now) await spawnReviewers($, now)
   })
   if (b.on === 'intake') return 'Retrying: the intake weighs the feature again.'
+  if (b.on === 'merge') return 'Retrying: syncing with the latest base and running the checks again.'
   return `Retrying: ${b.on === 'start' ? `starting the ${describe(b.role, r)}` : b.on === 'setup' ? 'the setup and the checks' : b.on === 'checks' ? 'the checks' : b.on === 'base' ? 'asking which branch the work is on top of' : `the ${b.on === 'spec' ? 'spec-writer' : 'builder'}`}.`
 }
 
@@ -1425,6 +1506,7 @@ export const register: Register = (on, options) => {
   modelsOption = String(options.models ?? 'auto') === 'fixed' ? 'fixed' : 'auto'
   skillsOption = parseSkills(String(options.skills ?? ''))
   intakeOn = String(options.intake ?? 'on') !== 'off'
+  autoMerge = String(options.autoMerge ?? 'off') === 'on'
 
   on('session.start', async ($, e, next) => {
     for (const t of timers.splice(0)) t.cancel()
@@ -1668,6 +1750,8 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined && u && (await read($, run))?.agents[e.agentId]) {
       await addTokens($, e.agentId, (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0))
       if (u.model) ranOn.set(e.agentId, (ranOn.get(e.agentId) ?? new Set()).add(u.model))
+      const model = String(u.model || 'unknown')
+      await patch($, cur => ({ ...cur, usage: { ...cur.usage, [model]: addUsage(cur.usage?.[model], u) } }))
     }
     return r
   }).catch(async function* ($, e, next) { return yield* next(e) })
@@ -1704,7 +1788,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" gap={1} paddingX={1} alignItems="center">
           <Text bold color={waitsOnYou(r) ? '#d97706' : ACCENT} wrap="truncate-end">{`🏭 ${titleOf(r.feature)}`}</Text>
           <Text color={waitsOnYou(r) ? '#d97706' : ACCENT}>{`${progressBar(progressOf(r), 10)} ${progressOf(r)}%`}</Text>
-          <Text color={isQuiet(r, t) ? '#d97706' : undefined} dimColor={!isQuiet(r, t)} wrap="truncate-end">{`· ${statusOf(r, t)} · ${tok(tokensOf(r))} tokens`}</Text>
+          <Text color={isQuiet(r, t) ? '#d97706' : undefined} dimColor={!isQuiet(r, t)} wrap="truncate-end">{`· ${statusOf(r, t)} · ${tok(tokensOf(r))} tokens${costTag(r)}`}</Text>
           {r.phase === 'plan' && r.gate === 'factory' ? <Button key="f-approve-plan" label="Approve plan" variant="primary" onPress={() => approveNow($)} /> : null}
           {actions($, r).map(a => <Button key={`f-${a.key}`} label={a.label} variant="primary" onPress={a.press} />)}
           <Button key="f-open" label="Open" onPress={() => $.ui.open({ id: PANE, title: PANE_TITLE })} />
@@ -1739,7 +1823,7 @@ export const register: Register = (on, options) => {
           <Text bold color={ACCENT} wrap="truncate-end">{`🏭 ${titleOf(r.feature)}`}</Text>
           {titleOf(r.feature) !== r.feature.trim() ? <Text dimColor wrap="wrap">{r.feature.trim()}</Text> : null}
           <Text color={waitsOnYou(r) ? '#d97706' : ACCENT}>{`${progressBar(progressOf(r), 24)} ${progressOf(r)}%${r.phaseSince ? ` · this step ${mmss(Math.max(0, t - r.phaseSince))}` : ''}`}</Text>
-          <Text color={waitsOnYou(r) || isQuiet(r, t) ? '#d97706' : undefined} dimColor={!(waitsOnYou(r) || isQuiet(r, t))} wrap="truncate-end">{`${statusOf(r, t)} · ${tok(tokensOf(r))} tokens · spec ${r.specFile}`}</Text>
+          <Text color={waitsOnYou(r) || isQuiet(r, t) ? '#d97706' : undefined} dimColor={!(waitsOnYou(r) || isQuiet(r, t))} wrap="truncate-end">{`${statusOf(r, t)} · ${tok(tokensOf(r))} tokens${costTag(r)} · spec ${r.specFile}`}</Text>
           <Text dimColor wrap="truncate-end">{`Based on ${r.baseRef || r.base.slice(0, 12)} · ask Claude "how is the factory run going?" for the details`}</Text>
           {r.stat || r.summary ? <Text wrap="wrap">{`Changed: ${[r.stat, r.summary].filter(Boolean).join(' · ')}`}</Text> : null}
           {r.recorded ? <Text dimColor wrap="truncate-end">{`What each step said: ${r.record}/`}</Text> : null}

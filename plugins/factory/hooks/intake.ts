@@ -4,6 +4,7 @@
 
 import type { Intake, IntakeVerdict, Risk, Role, Run, Surface } from '../types'
 import type { Changed } from './route'
+import type { FactoryConfig } from './config'
 
 // ---------- the intake's question ----------
 
@@ -111,36 +112,45 @@ export const ROUTED_MODELS: Partial<Record<Role, string>> = {
 
 // ---------- the review route ----------
 
-// UI reviewers, as extras the route adds: what each looks at, and its model.
-export const UI_REVIEWERS = [
-  { name: 'ux', model: 'sonnet', focus: 'the user experience: each flow the change touches from the user\'s side, every state a screen can be in (loading, empty, error, long text), keyboard and screen-reader access (WCAG 2.2 AA), and copy that matches what the code does' },
-  { name: 'ui-design', model: 'haiku', focus: 'the visual design: consistency with the components, spacing, type and colors the project already uses, light and dark themes, responsive layout at phone width, and nothing that overflows or overlaps' },
-] as const
+// What a routed extra reviewer looks at, by name: ux and ui-design have the factory's own focus; a
+// name the project's config adds gets a generic one.
+export const ROUTED_FOCUS: Record<string, string> = {
+  ux: "the user experience: each flow the change touches from the user's side, every state a screen can be in (loading, empty, error, long text), keyboard and screen-reader access (WCAG 2.2 AA), and copy that matches what the code does",
+  'ui-design': 'the visual design: consistency with the components, spacing, type and colors the project already uses, light and dark themes, responsive layout at phone width, and nothing that overflows or overlaps',
+}
+export const routedFocus = (name: string, surface: Surface) => ROUTED_FOCUS[name] ?? `the change's ${surface === 'ui' ? 'user-facing' : 'security'} side, as the ${name} reviewer`
 
 // A file a user sees: a component, a page, a style sheet, a template.
 const UI_PATH = /\.(tsx|jsx|vue|svelte|astro|css|scss|sass|less|html?|hbs|erb|ejs)$|(^|\/)(components?|pages|views|screens|layouts|styles|ui)\//i
 export const touchesUi = (changed: readonly Changed[]) => changed.some(c => UI_PATH.test(c.path))
 
-export type ReviewPlan = { codeModel: string; security: boolean; ui: boolean; why: string[] }
+export type ReviewPlan = { codeModel: string; security: string | null; extras: { name: string; model: string; focus: string }[]; why: string[] }
 
-// Who reviews this round, from the intake's risk and surfaces and the diff's route: a script picks
-// them, so no agent can skip one. Rules only add review: the diff can bring in what the intake didn't
-// name, never take away what it did.
-//  - code always runs: haiku when the risk is low, sonnet otherwise, opus when the diff calls for depth.
-//  - security (opus) runs when the intake names security, the risk is high, or the diff touches what
-//    calls for depth (auth, CI, migrations, an agent's instructions).
-//  - ux (sonnet) and ui-design (haiku) run when the intake names ui or the diff changes UI files.
-export function reviewPlan(intake: Pick<Intake, 'risk' | 'surfaces'>, route: { deep: boolean }, uiTouched: boolean): ReviewPlan {
+// Who reviews this round, from the intake's risk and surfaces, the diff's route and the repository's
+// table (.factory/config.json; the design's by default): a script picks them, so no agent can skip one.
+//  - code always runs, on the table's model for the risk (haiku low, sonnet medium and high); opus when
+//    the diff calls for depth (auth, CI, migrations, an agent's instructions).
+//  - each surface adds its reviewers: security (opus) for security; ux (sonnet) and ui-design (haiku) for ui.
+//  - the diff only adds: a diff that calls for depth brings the security surface's reviewers, and one
+//    that changes UI files the ui surface's, whatever the intake said.
+export function reviewPlan(intake: Pick<Intake, 'risk' | 'surfaces'>, route: { deep: boolean }, uiTouched: boolean, table: Pick<FactoryConfig, 'routing' | 'surfaceReviewers'>): ReviewPlan {
   const why: string[] = []
-  const codeModel = route.deep ? 'opus' : intake.risk === 'low' ? 'haiku' : 'sonnet'
+  const codeModel = route.deep ? 'opus' : table.routing[intake.risk]
   why.push(`code review on ${codeModel}: ${route.deep ? 'the diff calls for a deep review' : `${intake.risk} risk`}`)
-  const security = intake.surfaces.includes('security') || intake.risk === 'high' || route.deep
-  why.push(
-    security
-      ? `security review: ${[intake.surfaces.includes('security') && 'the intake named security', intake.risk === 'high' && 'high risk', route.deep && 'the diff touches a sensitive area'].filter(Boolean).join(', ')}`
-      : 'no security review: the intake named no security surface, the risk is not high, and the diff touches no sensitive area',
-  )
-  const ui = intake.surfaces.includes('ui') || uiTouched
-  if (ui) why.push(`ux and ui-design reviews: ${[intake.surfaces.includes('ui') && 'the intake named ui', uiTouched && 'the diff changes UI files'].filter(Boolean).join(', ')}`)
-  return { codeModel, security, ui, why }
+  const on: Record<Surface, string[]> = {
+    security: [intake.surfaces.includes('security') && 'the intake named security', route.deep && 'the diff touches a sensitive area'].filter((x): x is string => !!x),
+    ui: [intake.surfaces.includes('ui') && 'the intake named ui', uiTouched && 'the diff changes UI files'].filter((x): x is string => !!x),
+  }
+  let security: string | null = null
+  const extras: ReviewPlan['extras'] = []
+  for (const s of ['security', 'ui'] as Surface[]) {
+    if (!on[s].length) continue
+    for (const [name, model] of Object.entries(table.surfaceReviewers[s])) {
+      if (name === 'security') security = model
+      else if (!extras.some(e => e.name === name)) extras.push({ name, model, focus: routedFocus(name, s) })
+    }
+    why.push(`${s} surface (${on[s].join(', ')}): ${Object.entries(table.surfaceReviewers[s]).map(([n, m]) => `${n} on ${m}`).join(', ') || 'no reviewers in the table'}`)
+  }
+  if (!security) why.push('no security review: no security surface, and the diff touches no sensitive area')
+  return { codeModel, security, extras, why }
 }

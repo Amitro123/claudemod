@@ -35,13 +35,16 @@ export type Check = { cmd: string; ok: boolean; tail: string; isMissing?: boolea
 export type Review = { role: Reviewer; state: StepState; findings: Finding[]; tokens: number; round: number; agentId: string | null; understood?: string; notChecked?: string[] }
 // Where the run is: each phase waits on one thing (an agent, the checks, the person).
 // 'ready': the approver said APPROVE; the PR waits for the person's Open PR.
-export type Phase = 'intake' | 'spec' | 'plan' | 'build' | 'checks' | 'review' | 'approve' | 'ready' | 'needs-human' | 'done' | 'stopped'
+// 'merging': approved, the branch is synced with the latest base and the checks run again before the PR.
+export type Phase = 'intake' | 'spec' | 'plan' | 'build' | 'checks' | 'review' | 'approve' | 'merging' | 'ready' | 'needs-human' | 'done' | 'stopped'
 // Why a run is at needs-human: what stopped it decides what the person can do (Approve only after an
 // ESCALATE; Retry for the rest).
 export type Blocked =
   | { on: 'escalate' }
   // The intake said NEEDS-INFO or REJECT: the person answers (rework), overrides (approve) or stops.
   | { on: 'intake' }
+  // Syncing with the latest base before the PR failed: a conflict, or the checks on the synced branch.
+  | { on: 'merge' }
   | { on: 'spec' }
   // why: the builder stopped mid-job (not just failed to commit): Retry sends it on.
   | { on: 'builder'; why?: string }
@@ -161,6 +164,16 @@ export type Run = {
   intakeTokens?: number
   // What the person added for the intake after a NEEDS-INFO: its next pass reads it.
   intakeAnswers?: string[]
+  // Tokens by the model that served them, and the prices they are counted in (the repository's
+  // .factory/config.json, else the defaults): the run's API-equivalent cost.
+  usage?: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }>
+  prices?: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }>
+  // The latest base the branch was synced with before the PR, and whether the PR is merged once open
+  // (the autoMerge option, on an approver's APPROVE only).
+  synced?: string
+  autoMerge?: boolean
+  // The GitHub issue the run came from: its PR closes it.
+  issue?: number
 }
 
 declare module 'claude-code' {

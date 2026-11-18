@@ -5,6 +5,7 @@ import type { On } from 'claude-code'
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
 import { extrasFrom, LENSES } from '../hooks/flow'
 import { parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
+import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
 import { parseBuilderTests as builderTestsOf, nextActionsOf, forbidsPush, parseBuilderTests, parseNotChecked, parseUnderstood, summaryOf } from '../hooks/flow'
 import { cleanFeature, couldNotStart, detectChecks, detectSetup, leftOut, neverCommit, slugOf, untrackedOf, modelsFor, parseDecision, parseSize, parseSkills, progressNote, titleOf, parseTasks, parseVerdict, planPrompt, specPrompt, splitChecks } from '../hooks/flow'
 import { factoryArgs, goalPrompt, startLine, factoryPlanApprovedArgs, factoryPlanResultArgs, PLAN_APPROVED_FOR_FACTORY, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, planChangesForFactory } from '../hooks/texts'
@@ -41,7 +42,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false, holdGoalCheck = false } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false, holdGoalCheck = false, remoteBase = false, mergeFails = false, configJson = '' } = {}) {
   // Files the install writes in the worktree (`setupMakes`, a lockfile npm install made): untracked from then on.
   const made: string[] = []
   const spawned: Spawned[] = []
@@ -142,6 +143,10 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (cmd === 'git merge-base --is-ancestor abc123 HEAD') return { value: { exitCode: baseGone ? 1 : 0, stdout: '', stderr: '' } } as never
     if (cmd.startsWith('git for-each-ref')) return ok('origin/pr-106\nfactory/rate-limiter\norigin/HEAD\nmain\n')
     if (cmd === 'git rev-parse --verify --quiet origin/pr-106^{commit}') return ok('def456\n')
+    // `remoteBase`: origin/<branch> moved on since the run started; `mergeFails`: merging it conflicts.
+    if (remoteBase && cmd === `git rev-parse --verify --quiet origin/${branch}^{commit}`) return ok('fff111\n')
+    if (remoteBase && cmd === 'git merge-base --is-ancestor fff111 HEAD') return { value: { exitCode: 1, stdout: '', stderr: '' } } as never
+    if (cmd === `git merge --no-edit origin/${branch}` && mergeFails) return { value: { exitCode: 1, stdout: 'CONFLICT (content): Merge conflict in src/mw.ts', stderr: '' } } as never
     if (cmd.startsWith('git rev-parse --verify')) return { value: { exitCode: 1, stdout: '', stderr: '' } } as never
     // The branch's changed files for the review route (`changedFiles`, name-status -z).
     if (cmd.startsWith('git diff --name-status -z')) return ok(changedFiles)
@@ -159,6 +164,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
   })
   on('fs.read', (_, e) => {
     if (e.path.endsWith('package.json')) return { value: pkg } as never
+    if (configJson && e.path.endsWith('/.factory/config.json')) return { value: configJson } as never
     if (e.path in written) return { value: written[e.path] } as never
     // The spec the agent wrote: a file the engine has, with no commands in it.
     if (/\/docs\/specs\/.+\.md$/.test(e.path)) return { value: '# Spec' } as never
@@ -2684,16 +2690,32 @@ describe('the intake decides before the spec (intake on)', () => {
     expect(parseIntake('INTAKE: ACCEPT\nRISK: low or high')!.risk).toBe('high')
   })
 
-  test('reviewPlan: code by risk, security and UI reviewers by surface, and the diff only adds', () => {
-    expect(reviewPlan({ risk: 'low', surfaces: [] }, { deep: false }, false)).toMatchObject({ codeModel: 'haiku', security: false, ui: false })
-    expect(reviewPlan({ risk: 'medium', surfaces: ['ui'] }, { deep: false }, false)).toMatchObject({ codeModel: 'sonnet', security: false, ui: true })
-    expect(reviewPlan({ risk: 'medium', surfaces: ['security'] }, { deep: false }, false)).toMatchObject({ security: true })
-    expect(reviewPlan({ risk: 'high', surfaces: [] }, { deep: false }, false)).toMatchObject({ codeModel: 'sonnet', security: true })
-    // A diff that touches auth or CI: deep, so security runs and code goes to opus, whatever the intake said.
-    expect(reviewPlan({ risk: 'low', surfaces: [] }, { deep: true }, false)).toMatchObject({ codeModel: 'opus', security: true })
-    expect(reviewPlan({ risk: 'low', surfaces: [] }, { deep: false }, true)).toMatchObject({ ui: true })
+  test('reviewPlan: the table routes code by risk and adds reviewers by surface; the diff only adds', () => {
+    const T = DEFAULT_CONFIG
+    expect(reviewPlan({ risk: 'low', surfaces: [] }, { deep: false }, false, T)).toMatchObject({ codeModel: 'haiku', security: null, extras: [] })
+    expect(reviewPlan({ risk: 'high', surfaces: [] }, { deep: false }, false, T)).toMatchObject({ codeModel: 'sonnet', security: null })
+    expect(reviewPlan({ risk: 'medium', surfaces: ['ui'] }, { deep: false }, false, T).extras.map(e => [e.name, e.model])).toEqual([['ux', 'sonnet'], ['ui-design', 'haiku']])
+    expect(reviewPlan({ risk: 'medium', surfaces: ['security'] }, { deep: false }, false, T).security).toBe('opus')
+    // A diff that touches auth or CI: deep, so the security surface's reviewers run and code goes to opus.
+    expect(reviewPlan({ risk: 'low', surfaces: [] }, { deep: true }, false, T)).toMatchObject({ codeModel: 'opus', security: 'opus' })
+    expect(reviewPlan({ risk: 'low', surfaces: [] }, { deep: false }, true, T).extras.map(e => e.name)).toEqual(['ux', 'ui-design'])
+    // The repository's own table.
+    const mine = parseConfig(JSON.stringify({ routing: { low: { code: 'sonnet' } }, surface_reviewers: { ui: { ui: 'sonnet', a11y: 'haiku' } } }))
+    expect(reviewPlan({ risk: 'low', surfaces: ['ui'] }, { deep: false }, false, mine)).toMatchObject({ codeModel: 'sonnet', extras: [{ name: 'ui-design', model: 'sonnet' }, { name: 'a11y', model: 'haiku' }] })
     expect(touchesUi([{ path: 'src/components/Button.tsx', status: 'M' }])).toBe(true)
     expect(touchesUi([{ path: 'src/limit.ts', status: 'M' }])).toBe(false)
+  })
+
+  test('the config: defaults, warnings, protected paths and cost', () => {
+    expect(parseConfig(null)).toEqual(DEFAULT_CONFIG)
+    expect(parseConfig('{').warnings[0]).toMatch(/not valid JSON/)
+    expect(parseConfig('{"routing":{"low":{"code":""}},"protected_paths":"x"}').warnings).toHaveLength(2)
+    expect(globMatch('.github/workflows/ci.yml', '.github/*')).toBe(true)
+    expect(globMatch('src/a.ts', '.github/*')).toBe(false)
+    // Modified, deleted and renamed-away protected files count; a new one doesn't.
+    const z = ['M', '.github/workflows/ci.yml', 'D', 'scripts/check.sh', 'A', '.github/new.yml', 'R100', 'scripts/lint.sh', 'scripts/l.sh', 'M', 'src/a.ts', ''].join('\0')
+    expect(protectedHits(z, ['.github/*', 'scripts/*'])).toEqual(['M .github/workflows/ci.yml', 'D scripts/check.sh', 'R scripts/lint.sh'])
+    expect(costLine({ 'claude-opus-5-5': { input: 1e6, output: 1e5, cacheWrite: 0, cacheRead: 0 }, m: { input: 5, output: 5, cacheWrite: 0, cacheRead: 0 } }, DEFAULT_CONFIG.prices)).toBe('Cost: $6.00 API-equivalent (claude-opus-5-5 $6.00; no price for m).')
   })
 
   test('ACCEPT at low risk: intake on opus first, the spec within its scope, opus builds, code alone reviews on haiku', ON as never, async ($: Engine, on: On) => {
@@ -2790,5 +2812,58 @@ describe('the intake decides before the spec (intake on)', () => {
     expect(w.spawned).toHaveLength(1)
     await command($, 'retry')
     expect(last(w)).toMatchObject({ id: 'a2', subagentType: 'factory:intake' })
+  })
+})
+
+describe('the gate before the PR, protected paths and cost (intake on)', () => {
+  test('a branch that changed a protected path fails the checks: the builder gets the list', ON as never, async ($: Engine, on: On) => {
+    const w = engine(on, { configJson: JSON.stringify({ protected_paths: ['.github/*'] }), changedFiles: ['M', '.github/workflows/ci.yml', ''].join('\0') })
+    await startRun($)
+    await answer($, 'a1', INTAKE('ACCEPT'))
+    await answer($, 'a2', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a3', 'built')
+    // The same builder gets the failure: no reviewer ran.
+    expect(w.spawned.filter(s => /review/.test(s.description))).toHaveLength(0)
+    expect(w.sends.at(-1)?.text ?? last(w).prompt).toMatch(/protected paths[\s\S]*M \.github\/workflows\/ci\.yml/)
+  })
+
+  test('approved: synced with the latest base and checked again, then the PR; autoMerge asks Claude to merge it', { options: { intake: 'on', skeptic: 'off', autoMerge: 'on' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on, { branch: 'main', remoteBase: true })
+    await intakeToReviews($, INTAKE('ACCEPT'))
+    await step($, 'a4')
+    await answer($, 'a4', PASS)
+    const testsBefore = w.ran.filter(c => c === 'npm test').length
+    await answer($, 'a5', 'DECISION: APPROVE\nREASON: fine')
+    await command($, 'approve')
+    expect(w.ran).toContain('git fetch origin main')
+    expect(w.ran).toContain('git merge --no-edit origin/main')
+    expect(w.ran.filter(c => c === 'npm test').length).toBe(testsBefore + 1)
+    expect(w.sent.at(-1)).toMatch(/Push branch factory\/rate-limiter/)
+    expect(w.sent.at(-1)).toMatch(/gh pr merge/)
+    // The kit's model has no price: counted, and said so, not shown as free.
+    expect(await command($, 'status')).toMatch(/Cost: \$0 API-equivalent \(no price for m\)/)
+  })
+
+  test('a conflict with the latest base stops the run for the person; no PR is asked for', ON as never, async ($: Engine, on: On) => {
+    const w = engine(on, { branch: 'main', remoteBase: true, mergeFails: true })
+    await intakeToReviews($, INTAKE('ACCEPT'))
+    await answer($, 'a4', PASS)
+    await answer($, 'a5', 'DECISION: APPROVE\nREASON: fine')
+    const sent = w.sent.length
+    await command($, 'approve')
+    expect(w.ran).toContain('git merge --abort')
+    expect(w.sent.length).toBe(sent)
+    expect(await command($, 'status')).toMatch(/blocked on merge[\s\S]*conflicts with the latest origin\/main/)
+  })
+
+  test('without autoMerge, or over an escalation, the PR prompt asks for no merge', ON as never, async ($: Engine, on: On) => {
+    const w = engine(on, { branch: 'main' })
+    await intakeToReviews($, INTAKE('ACCEPT'))
+    await answer($, 'a4', PASS)
+    await answer($, 'a5', 'DECISION: APPROVE\nREASON: fine')
+    await command($, 'approve')
+    expect(w.sent.at(-1)).toMatch(/Push branch/)
+    expect(w.sent.at(-1)).not.toMatch(/gh pr merge/)
   })
 })

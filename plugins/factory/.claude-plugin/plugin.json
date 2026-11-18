@@ -74,6 +74,13 @@
       "default": "on",
       "options": ["on", "off"]
     },
+    "autoMerge": {
+      "type": "string",
+      "title": "Merge the PR on APPROVE",
+      "description": "on: once the approver agent approves and the checks pass again on the latest base, Claude merges the PR as soon as it opens it (gh pr merge; branch protection and required checks still apply). An escalation you approve is never merged automatically. off: the PR waits for you to merge it",
+      "default": "off",
+      "options": ["off", "on"]
+    },
     "skills": {
       "type": "string",
       "title": "Skills per role",

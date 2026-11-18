@@ -3,6 +3,7 @@
 
 import type { Check, Extra, Finding, LedgerEntry, Outcome, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
 import { FACTORY_SOURCE } from './texts'
+import { costLine, DEFAULT_CONFIG } from './config'
 
 export const REVIEWERS: Reviewer[] = ['security', 'code']
 
@@ -566,6 +567,8 @@ export function prPrompt(run: Run, reason: string): string {
         ]
       : [
           `Push branch ${run.branch} (git -C ${run.worktree} push -u origin ${run.branch}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}.`,
+          ...(run.issue ? [`The PR body says "Closes #${run.issue}".`] : []),
+          ...(run.autoMerge ? [`The approver approved and the checks passed again on the latest ${prBase(run) || 'base'}, and the autoMerge option is on: once the PR is open, merge it with gh pr merge <number> --merge. If branch protection, a required check or a review rule refuses, leave it open and tell the person why; don't force it.`] : []),
           `Once it is open, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the PR's link as url: until then the factory shows the PR as requested, not opened. If you can't open it, tell the person why, with these commands: ${prCommands(run).join(' && ')}.`,
         ]),
     `Title it after the feature. In the body: what it does (from ${run.specFile}), the checks (${run.checks.map(c => `${c.cmd} ${c.isSkipped ? '– skipped' : c.isMissing ? '– not installed' : c.ok ? '✓' : '✗'}`).join(', ') || 'none ran'}), and ${run.round} review round${run.round === 1 ? '' : 's'}: ${run.reviews.filter(r => r.state !== 'skip').map(r => `${r.role} ${r.state === 'pass' ? 'PASS' : 'CHANGES'}`).join(', ')}.`,
@@ -775,6 +778,7 @@ export function progressOf(run: Run): number {
       return Math.round(60 + (25 * mine.filter(x => x.state !== 'run').length) / Math.max(1, mine.length))
     }
     case 'approve': return Math.round(85 + creep(10))
+    case 'merging': return 94
     case 'ready': return 95
     case 'done': return 100
     default: return run.lastProgress ?? 0
@@ -851,6 +855,12 @@ export function nextActionsOf(run: Run | null, now: number): NextAction[] {
           { action: 'retry', by: 'claude', how: `${C} action "retry": asks the person the question again` },
           stop,
         ]
+      if (b?.on === 'merge')
+        return [
+          { action: 'retry', by: 'claude', how: `${C} action "retry": syncs with the latest base and runs the checks again, once the cause is fixed` },
+          rework,
+          stop,
+        ]
       if (b?.on === 'intake')
         return [
           { action: 'answer-intake', by: 'person', how: "/factory rework <answers>: the intake weighs the feature again with them; not yours to answer for the person" },
@@ -902,6 +912,7 @@ export function statsReport(run: Run, now: number): string[] {
     `Tool calls the factory saw: ${calls || 'none'}; refused by its guard: ${s?.guardRefused ?? 0}.`,
     `Answers missing a marker their prompt asks for: ${s?.formatMisses.length ? s.formatMisses.join('; ') : 'none'}.`,
     ...(run.ledger?.length ? [`Outcomes: ${outcomesLine(run.ledger)}`] : []),
+    costLine(run.usage, run.prices ?? DEFAULT_CONFIG.prices),
   ]
 }
 
