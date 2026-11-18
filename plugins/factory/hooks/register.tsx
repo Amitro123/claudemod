@@ -79,6 +79,8 @@ import {
   resumePrompt,
 } from './flow'
 import { intakeNote, intakePrompt, parseIntake, reviewPlan, ROUTED_MODELS, touchesUi } from './intake'
+import { acceptComment, answeredSince, askComment, escalateComment, issueFeature, issueFile, LABEL, NEEDS_HUMAN_LABEL, NEEDS_INFO_LABEL, parseIssue, parseIssueList, parseQueue, queueLines, queueText, refusal, rejectComment } from './issues'
+import type { Issue, Queue, QueueState } from './issues'
 import { addUsage, costOf, DEFAULT_CONFIG, parseConfig, protectedHits, usd } from './config'
 import type { FactoryConfig } from './config'
 import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from './route'
@@ -296,7 +298,8 @@ async function preflight($: EngineInterface): Promise<{ root: string; head: stri
   return { root, head: head.stdout.trim() }
 }
 
-async function start($: EngineInterface, args: string, extras: Extra[] = []): Promise<string> {
+type StartOpts = { issue?: number; intakeAnswers?: string[]; issueAnyway?: boolean }
+async function start($: EngineInterface, args: string, extras: Extra[] = [], opts: StartOpts = {}): Promise<string> {
   const parsed = parseFactoryArgs(args)
   const feature = cleanFeature(parsed.feature)
   const followupId = parsed.followupId
@@ -323,6 +326,8 @@ async function start($: EngineInterface, args: string, extras: Extra[] = []): Pr
     gate: (await goalRunThere($)) ? 'goal-run' : 'factory',
     ...(followupId ? { followupId } : {}),
     ...(baseRef ? { baseRef } : {}),
+    ...(opts.issue ? { issue: opts.issue, ...(opts.issueAnyway ? { issueAnyway: true } : {}) } : {}),
+    ...(opts.intakeAnswers?.length ? { intakeAnswers: opts.intakeAnswers } : {}),
     ...(extras.length ? { extras, reviews: [...r.reviews, ...extras.map(e => reviewOf(e.name))] } : {}),
     // With the intake, it runs first; the spec waits for its ACCEPT. The roles run on the routed models.
     ...(intakeOn ? { phase: 'intake' as const, note: 'the intake is weighing the feature', steps: { ...r.steps, spec: { state: 'wait' as const, tokens: 0 } }, models: { ...ROUTED_MODELS } } : {}),
@@ -376,7 +381,22 @@ async function onIntake($: EngineInterface, answer: string, why: string) {
     await patch($, cur => bump(cur, s => ({ ...s, formatMisses: [...s.formatMisses, 'intake: no INTAKE line'].slice(-12) })))
     return block($, { on: 'start', role: 'intake' }, 'The intake gave no INTAKE line. Retry runs it again.')
   }
-  await patch($, cur => ({ ...cur, intake }))
+  const cur0 = await patch($, cur => ({ ...cur, intake }))
+  // An issue's run: the intake's answer goes on the issue. A question or a rejection parks the issue
+  // and frees the factory for the next one, unless the operator ran it anyway.
+  if (cur0?.issue && !cur0.issueAnyway && intake.verdict !== 'ACCEPT') {
+    const parked = intake.verdict === 'NEEDS-INFO'
+    const root = rootOf(cur0)
+    await ghComment($, root, cur0.issue, parked ? askComment(intake.reason, intake.questions) : rejectComment(intake.reason))
+    if (parked) await ghLabel($, root, cur0.issue, NEEDS_INFO_LABEL, true)
+    await setQueue($, root, cur0.issue, parked ? 'needs-info' : 'rejected', intake.reason)
+    await record($, 'intake on the issue', `${intake.verdict}: ${intake.reason}${intake.questions.length ? `\n${intake.questions.map(q => `- ${q}`).join('\n')}` : ''}`)
+    await patch($, cur => moveTo(cur, 'stopped', parked ? `parked: #${cur0.issue} waits on its author` : `#${cur0.issue} rejected by the intake`))
+    await recordStats($)
+    $.ui.toast(parked ? `Factory: asked the author of #${cur0.issue}; it waits for their reply` : `Factory: the intake rejected #${cur0.issue} (said why on the issue)`)
+    return nextIssue($)
+  }
+  if (cur0?.issue && intake.verdict === 'ACCEPT') await ghComment($, rootOf(cur0), cur0.issue, acceptComment(intake.scope, intake.risk, intake.surfaces))
   if (intake.verdict !== 'ACCEPT') {
     await block($, { on: 'intake' }, intakeNote(intake))
     $.ui.toast(intake.verdict === 'REJECT' ? 'The factory intake rejected the feature: /factory approve builds it anyway' : 'The factory intake needs your answers: /factory rework <answers>')
@@ -974,6 +994,11 @@ async function onApprover($: EngineInterface, answer: string, why: string) {
   if (decision === 'ESCALATE') {
     await block($, { on: 'escalate' }, reason, r => ({ ...r, steps: { ...r.steps, approver: { ...r.steps.approver, state: 'changes' } } }))
     await recordStats($)
+    if (r0?.issue) {
+      await ghComment($, rootOf(r0), r0.issue, escalateComment(reason))
+      await ghLabel($, rootOf(r0), r0.issue, NEEDS_HUMAN_LABEL, true)
+      await setQueue($, rootOf(r0), r0.issue, 'needs-human', reason)
+    }
     $.ui.toast('The factory needs you: Approve PR, /factory rework <what to change>, or /factory stop')
     void askPr($)
     return
@@ -1087,7 +1112,12 @@ async function prOpened($: EngineInterface, url: string): Promise<string> {
   const r = await read($, run)
   if (!r || r.phase !== 'done') return 'No approved factory run waits for its PR.'
   await patch($, cur => ({ ...cur, pr: { state: 'opened', url: link }, note: `PR opened: ${link}` }))
-  return `Recorded: the factory run's PR is ${link}.`
+  if (r.issue) {
+    await setQueue($, rootOf(r), r.issue, 'pr', '', link)
+    await ghLabel($, rootOf(r), r.issue, NEEDS_HUMAN_LABEL, false)
+    await nextIssue($)
+  }
+  return `Recorded: the factory run's PR is ${link}.${r.issue && draining ? ' The next issue starts.' : ''}`
 }
 
 // Approved by the person (or by the approver, with autoPr on): the main Claude opens the PR.
@@ -1161,6 +1191,116 @@ async function openPr($: EngineInterface, reason: string, byApprover: boolean) {
   void $.prompt.submit({ text: prPrompt(r, reason) }).catch(() => {
     $.ui.toast(`Approved. Open a PR from ${r.branch} yourself; the prompt could not be sent.`)
   })
+  if (r.issue) {
+    await setQueue($, rootOf(r), r.issue, 'pr', reason)
+    // The next issue starts once Claude reports the PR open (pr-opened), so its link lands on this
+    // run; with the commands handed to the person, at once.
+    if (r.pr?.state === 'handed') await nextIssue($)
+  }
+}
+
+// ---------- GitHub issues as the queue ----------
+
+// Draining: /factory run goes on to the next issue each time one parks, is rejected or gets its PR.
+let draining = false
+
+async function gh($: EngineInterface, args: string[], cwd: string) {
+  return $.process.run(['gh', ...args], { cwd, timeoutMs: 60_000 }).catch(err => ({ exitCode: 1, stdout: '', stderr: String(err) }))
+}
+const isoNow = async ($: EngineInterface) => new Date(await $.clock.now()).toISOString()
+const queuePath = (root: string) => `${root}/.factory/queue.json`
+async function queueOf($: EngineInterface, root: string): Promise<Queue> {
+  return parseQueue(await $.fs.read(queuePath(root)).then(t => String(t), () => null))
+}
+async function setQueue($: EngineInterface, root: string, issue: number, state: QueueState, note = '', pr = '') {
+  const q = await queueOf($, root)
+  const was = q[String(issue)]
+  q[String(issue)] = { state, at: await isoNow($), ...(note ? { note: note.slice(0, 300) } : {}), ...(pr || was?.pr ? { pr: pr || was!.pr } : {}) }
+  await $.fs.write(queuePath(root), `${JSON.stringify(q, null, 2)}\n`).catch(() => {})
+}
+// What the factory says on an issue. A failure (no gh, no access) doesn't stop the run: it is toasted.
+async function ghComment($: EngineInterface, root: string, issue: number, body: string) {
+  const out = await gh($, ['issue', 'comment', String(issue), '--body', body], root)
+  if (out.exitCode !== 0) $.ui.toast(`Factory: couldn't comment on #${issue}: ${tailOf(out.stderr, 1)}`)
+}
+async function ghLabel($: EngineInterface, root: string, issue: number, label: string, add: boolean) {
+  if (add) await gh($, ['label', 'create', label, '--force', '--color', label === NEEDS_INFO_LABEL ? 'FBCA04' : 'D93F0B'], root)
+  await gh($, ['issue', 'edit', String(issue), add ? '--add-label' : '--remove-label', label], root)
+}
+// The operator: whoever gh is logged in as. Their comments on an issue count beside its author's.
+async function operatorOf($: EngineInterface, root: string) {
+  const out = await gh($, ['api', 'user', '--jq', '.login'], root)
+  return out.exitCode === 0 ? out.stdout.trim() : ''
+}
+async function fetchIssue($: EngineInterface, root: string, n: number): Promise<Issue | string> {
+  const out = await gh($, ['issue', 'view', String(n), '--json', 'number,title,body,state,author,labels,comments,url'], root)
+  if (out.exitCode !== 0) return `Couldn't read issue #${n} with gh: ${tailOf(out.stderr, 2) || 'gh failed'}`
+  return parseIssue(out.stdout) ?? `gh answered for #${n} in a shape the factory can't read.`
+}
+
+// A run on one issue: the issue written to .factory/issues/<n>.md as quoted data, the run's feature
+// pointing at it. A parked issue its author answered resumes with their answers for the intake.
+async function startIssue($: EngineInterface, n: number, anyway = false): Promise<string> {
+  const ready = await preflight($)
+  if ('error' in ready) return ready.error
+  const { root } = ready
+  const issue = await fetchIssue($, root, n)
+  if (typeof issue === 'string') return issue
+  const no = refusal(issue)
+  if (no) return no
+  const operator = await operatorOf($, root)
+  const was = (await queueOf($, root))[String(n)]
+  const answers = was?.state === 'needs-info' ? answeredSince(issue, operator, was.at).map(c => c.body.trim()).filter(Boolean) : []
+  const file = `${root}/.factory/issues/${n}.md`
+  if (!(await $.fs.write(file, issueFile(issue, operator)).then(() => true, () => false))) return `Couldn't write ${file}.`
+  if (was?.state === 'needs-info' || was?.state === 'needs-human') {
+    await ghLabel($, root, n, was.state === 'needs-info' ? NEEDS_INFO_LABEL : NEEDS_HUMAN_LABEL, false)
+  }
+  const said = await start($, issueFeature(issue, file), [], { issue: n, issueAnyway: anyway, intakeAnswers: answers })
+  if ((await read($, run))?.issue === n && isLive((await read($, run))!.phase)) await setQueue($, root, n, 'running')
+  return said
+}
+
+async function queueNow($: EngineInterface): Promise<string> {
+  const top = await git($, ['rev-parse', '--show-toplevel'], await $.session.root())
+  if (top.exitCode !== 0) return 'Not a git repository.'
+  const root = top.stdout.trim()
+  const listed = await gh($, ['issue', 'list', '--label', LABEL, '--state', 'open', '--limit', '100', '--json', 'number,title'], root)
+  if (listed.exitCode !== 0) return `Couldn't list the issues with gh: ${tailOf(listed.stderr, 2) || 'gh failed'}`
+  return queueText(queueLines(parseIssueList(listed.stdout), await queueOf($, root), new Set()))
+}
+
+// /factory run: the open issues labeled `factory`, oldest first; the first to start or resume starts,
+// and the factory goes on to the next each time one is done with it. One run at a time.
+async function runQueue($: EngineInterface, quiet = false): Promise<string> {
+  const ready = await preflight($)
+  if ('error' in ready) return quiet ? '' : ready.error
+  const { root } = ready
+  const listed = await gh($, ['issue', 'list', '--label', LABEL, '--state', 'open', '--limit', '100', '--json', 'number,title'], root)
+  if (listed.exitCode !== 0) return `Couldn't list the issues with gh: ${tailOf(listed.stderr, 2) || 'gh failed'}`
+  const open = parseIssueList(listed.stdout)
+  const queue = await queueOf($, root)
+  const operator = open.some(i => queue[String(i.number)]?.state === 'needs-info') ? await operatorOf($, root) : ''
+  const answered = new Set<number>()
+  for (const i of open) {
+    const e = queue[String(i.number)]
+    if (e?.state !== 'needs-info') continue
+    const full = await fetchIssue($, root, i.number)
+    if (typeof full !== 'string' && answeredSince(full, operator, e.at).length) answered.add(i.number)
+  }
+  const lines = queueLines(open, queue, answered)
+  const next = lines.find(l => l.action === 'new' || l.action === 'resume')
+  draining = !!next
+  if (!next) return quiet ? '' : `Nothing to start.\n${queueText(lines)}`
+  const said = await startIssue($, next.number)
+  return `${said}\n${queueText(lines)}`
+}
+
+// The run on an issue is done with it (parked, rejected, PR opened): the next one, while draining.
+// From a timer, outside the transition that called it: a run starts its agents through the queue.
+async function nextIssue($: EngineInterface) {
+  if (!draining) return
+  $.clock.after(1, () => void runQueue($, true).then(t => t && $.ui.toast(`Factory: ${t.split('\n')[0]}`)))
 }
 
 // The run's counters (stats): one change at a time, through patch.
@@ -1463,6 +1603,9 @@ async function doctorText($: EngineInterface): Promise<string> {
 async function stopNow($: EngineInterface): Promise<string> {
   const r = await patch($, cur => (isLive(cur.phase) ? moveTo(cur, 'stopped', 'stopped by the person') : cur))
   if (r) await recordStats($)
+  // A stop is for the queue too: no next issue starts by itself.
+  draining = false
+  if (r?.issue) await setQueue($, rootOf(r), r.issue, 'stopped')
   if (r) await update($, stoppedAgents, ids => [...ids.filter(id => !r.agents[id]), ...Object.keys(r.agents)].slice(-MAX_STOPPED))
   return r ? `Stopped. The branch ${r.branch} and its worktree ${r.worktree} stay; remove them with git worktree remove when done.` : 'No factory run.'
 }
@@ -1513,7 +1656,7 @@ export const register: Register = (on, options) => {
     // A job of an earlier session that never settled (a question nobody answered) doesn't hold this one's.
     queue = Promise.resolve()
     skipRunning = null
-    await $.command.register({ name: 'factory', description: 'Run a feature through the software factory: spec, plan, build, checks, reviews, approval', argumentHint: '<feature> | review [base=<ref>] [what it is for] | approve | retry | rework <note> | status | doctor | stop' })
+    await $.command.register({ name: 'factory', description: 'Run a feature through the software factory: spec, plan, build, checks, reviews, approval', argumentHint: '<feature> | run [<issue> [anyway]] | queue | review [base=<ref>] [what it is for] | approve | retry | rework <note> | status | doctor | stop' })
     for (const role of Object.keys(ROLES) as Role[]) {
       const spec = ROLES[role]
       await $.agent
@@ -1530,6 +1673,7 @@ export const register: Register = (on, options) => {
         properties: {
           feature: { type: 'string', description: 'What to build, in a sentence or a short paragraph, naming the file, issue or to-do item it comes from' },
           followupId: { type: 'string', description: 'Optional: the id of the to-do item this is, from the followups start message' },
+          issue: { type: 'number', description: "Optional: a GitHub issue's number, when the work is an open issue labeled factory. The factory reads the issue itself (as data), comments on it, and its PR closes it; the feature can then be its title" },
           reviewers: {
             type: 'array',
             description: `Optional, and for most features none: extra reviewers beside the ones the factory picks (code always; security, ux and ui-design by the intake's risk and surfaces), at most ${MAX_EXTRAS}, only where this change needs that look. A lens by name: ${Object.keys(LENSES).join(', ')} (a UI change: frontend; new paid resources or scaling: finops; migrations, config or a risky release: deploy; hot paths: performance; a public API: api; personal or bulk data: data). Or your own: { name, focus, agent } with agent an agent type of this session that reviews.`,
@@ -1680,7 +1824,10 @@ export const register: Register = (on, options) => {
   // Claude starts a run itself when the person asks for the factory in words, or after /factory.
   on('tool.call', { tool: START_TOOL }, async ($, e) => {
     if ((e as { agentId?: string }).agentId !== undefined) return { deny: 'Only the main conversation starts a factory run.' }
-    const input = e as unknown as { feature?: unknown; followupId?: unknown }
+    const input = e as unknown as { feature?: unknown; followupId?: unknown; issue?: unknown }
+    // A GitHub issue: its run reads the issue itself, as data; the feature's words aren't needed.
+    const issueNo = Number(input.issue)
+    if (Number.isInteger(issueNo) && issueNo > 0) return { result: `${await startIssue($, issueNo)} ${STARTED_NOTE}` }
     const feature = String(input.feature ?? '').trim()
     if (!feature) return { deny: 'Name the feature: what to build, and where its details are (a file, an issue, the to-do item).' }
     const id = String(input.followupId ?? '').trim()
@@ -1711,6 +1858,15 @@ export const register: Register = (on, options) => {
       const named = /^base=(\S+)\s*/.exec(rest)
       return { text: await startReview($, named ? rest.slice(named[0].length) : rest, named?.[1] ?? '') }
     }
+    // The issue queue: /factory run drains it, /factory run <n> runs one (anyway: past the intake's
+    // NEEDS-INFO or REJECT, which then stops for you), /factory queue shows it.
+    if (arg === 'run') return { text: await runQueue($) }
+    const one = /^run\s+#?(\d+)(\s+anyway)?$/.exec(arg)
+    if (one) {
+      draining = false
+      return { text: await startIssue($, Number(one[1]), !!one[2]) }
+    }
+    if (arg === 'queue') return { text: await queueNow($) }
     if (arg === 'skip') return { text: await skipNow($) }
     if (arg === 'abandon') return { text: await abandonNow($, 'by the person') }
     if (arg.startsWith('reviewers ')) return { text: await addReviewers($, arg.slice(10).split(/[\s,]+/).filter(Boolean)) }

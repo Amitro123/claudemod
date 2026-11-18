@@ -172,8 +172,10 @@ export type Run = {
   // (the autoMerge option, on an approver's APPROVE only).
   synced?: string
   autoMerge?: boolean
-  // The GitHub issue the run came from: its PR closes it.
+  // The GitHub issue the run came from: its PR closes it. issueAnyway: the operator had it run past
+  // the intake (a NEEDS-INFO or REJECT then stops for them, as for a run of their own, not on the issue).
   issue?: number
+  issueAnyway?: boolean
 }
 
 declare module 'claude-code' {
