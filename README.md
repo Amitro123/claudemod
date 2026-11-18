@@ -383,6 +383,7 @@ Fix enough bugs in a project whose parts work together, and the fixes start brea
 /inspector:inspect #53                  # one fix, its culprit, and siblings of its bug today
 /inspector:inspect since 2026-10-27     # or since a tag or sha
 /inspector:inspect plugins/factory      # only fixes touching a path
+/inspector:inspect recon plugins/factory # before changing a seam: the dossiers of what touched it, nothing else
 ```
 
 - **The brief.** It reads the READMEs (changelog entries are symptoms in your words), `CLAUDE.md`, the docs and any memory the project keeps (`MISTAKES.md`, follow-ups), and writes down what the project promises and where its parts meet (the seams). A bug is a broken promise, not a style it would have chosen.
