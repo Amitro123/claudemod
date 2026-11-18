@@ -1,6 +1,6 @@
 {
   "name": "factory",
-  "version": "0.23.3",
+  "version": "0.26.0",
   "description": "A software factory: /factory <feature> writes a spec, has you approve its plan (in goal-run when it's installed), builds it on a branch, runs the checks and parallel reviews, and has an approver agent decide; you then press Open PR and Claude opens it. Its pane draws where the run is",
   "author": {
     "name": "Amit Rosen",
@@ -66,6 +66,27 @@
         "auto",
         "fixed"
       ]
+    },
+    "intake": {
+      "type": "string",
+      "title": "Intake and risk routing",
+      "description": "on: an intake agent (opus) first decides whether the feature is worth building, at what scope, its risk (low, medium, high) and surfaces (ui, security); NEEDS-INFO and REJECT stop for you. Its route then picks the reviewers: code on haiku at low risk, sonnet otherwise (opus when the diff calls for depth); security (opus) only for a security surface, high risk or a sensitive diff; ux (sonnet) and ui-design (haiku) for a UI surface or UI files. Spec-writer, builder and approver run on opus. off: no intake; security and code always review, models by the models option",
+      "default": "on",
+      "options": ["on", "off"]
+    },
+    "autoMerge": {
+      "type": "string",
+      "title": "Merge the PR on APPROVE",
+      "description": "on: once the approver agent approves and the checks pass again on the latest base, Claude merges the PR as soon as it opens it (gh pr merge; branch protection and required checks still apply). An escalation you approve is never merged automatically. off: the PR waits for you to merge it",
+      "default": "off",
+      "options": ["off", "on"]
+    },
+    "concurrency": {
+      "type": "string",
+      "title": "Runs at once",
+      "description": "How many runs may work at once, each in its own worktree and branch: /factory run starts that many issues, and a feature you start takes a free slot. A run that waits on you (a plan, a PR, an escalation) holds no slot",
+      "default": "3",
+      "options": ["1", "2", "3", "4", "5"]
     },
     "skills": {
       "type": "string",
