@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -315,9 +316,16 @@ def investigator_prompt(c: Ctx) -> str:
 def python_cmd(windows: bool | None = None) -> str:
     """The interpreter in the commands printed for an agent to run: `python3`, or `python` on Windows, where `python3` is
     often the Microsoft Store stub that opens the store instead of running the script (a review of 0.8.1 on Windows).
-    `INSPECTOR_PYTHON` names another (`py -3`, a full path) and wins."""
-    if os.environ.get("INSPECTOR_PYTHON", "").strip():
-        return os.environ["INSPECTOR_PYTHON"].strip()
+    `INSPECTOR_PYTHON` names another (`py -3`, a full path) and wins, unless it holds shell syntax (`;` `&` `|` `<` `>` `$`
+    a backtick, parentheses or a line break) or unbalanced quotes: it is written into commands an agent runs, so such a
+    value is ignored and the default used."""
+    named = os.environ.get("INSPECTOR_PYTHON", "").strip()
+    if named and not re.search(r"[;&|<>$`()\r\n]", named):
+        try:
+            if shlex.split(named):
+                return named
+        except ValueError:
+            pass
     return "python" if (os.name == "nt" if windows is None else windows) else "python3"
 
 

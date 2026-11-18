@@ -77,6 +77,19 @@ def test_python_cmd_is_python3_on_posix_python_on_windows_and_can_be_named(monke
     assert plan_mod.python_cmd(windows=False) == "python3"
 
 
+@pytest.mark.parametrize("value", ["python; echo x", "python && id", "$(id)", "`id`", "python | tee f", "py (3)", "python > f", 'python "unclosed',
+                                   "python\nid"])
+def test_an_interpreter_that_holds_shell_syntax_or_broken_quotes_is_ignored(monkeypatch, value) -> None:
+    monkeypatch.setenv("INSPECTOR_PYTHON", value)
+    assert plan_mod.python_cmd(windows=False) == "python3" and plan_mod.python_cmd(windows=True) == "python"
+
+
+@pytest.mark.parametrize("value", ["py -3", '"C:/Program Files/Python312/python.exe"', "C:/Python312/python.exe", "python3.12"])
+def test_plain_interpreters_and_quoted_paths_with_spaces_are_kept(monkeypatch, value) -> None:
+    monkeypatch.setenv("INSPECTOR_PYTHON", value)
+    assert plan_mod.python_cmd(windows=False) == value
+
+
 def test_the_plans_commands_use_the_interpreter(tmp_path, monkeypatch) -> None:
     run = make_run(tmp_path, 7)
     env = {**__import__("os").environ, "INSPECTOR_PYTHON": "pyx"}
