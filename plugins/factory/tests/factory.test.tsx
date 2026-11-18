@@ -2963,6 +2963,14 @@ describe('GitHub issues are the queue (intake on)', () => {
 })
 
 describe('several runs at once (concurrency)', () => {
+  test('an issue left running by an earlier session starts again', { options: { intake: 'on' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on, { issues: { 4: issue(4) } })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    w.written['/repo/.factory/queue.json'] = JSON.stringify({ '4': { state: 'running', at: '2026-11-01T00:00:00Z' } })
+    expect(await command($, 'run')).toMatch(/#4 resume .*ended with an earlier session/)
+    expect(last(w).prompt).toContain('issues/4.md')
+  })
+
   test('/factory run starts as many issues as there are slots; each agent answers into its own run', { options: { intake: 'on', skeptic: 'off', concurrency: '2' } } as never, async ($: Engine, on: On) => {
     const w = engine(on, { issues: { 1: issue(1), 2: issue(2), 3: issue(3) } })
     await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)

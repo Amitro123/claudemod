@@ -1355,7 +1355,10 @@ async function runQueue($: EngineInterface, quiet = false): Promise<string> {
   }
   // An issue with a run going (this session's) isn't started twice, whatever the queue file says.
   const going = new Set(Object.values(await read($, runs)).filter(x => isLive(x.phase) && x.issue).map(x => x.issue!))
-  const lines = queueLines(open, queue, answered).map(l => (going.has(l.number) ? { ...l, action: 'skip' as const, why: 'running now' } : l))
+  // Marked running with no run going here: its session ended before it was done, so it starts again.
+  const lines = queueLines(open, queue, answered).map(l =>
+    going.has(l.number) ? { ...l, action: 'skip' as const, why: 'running now' } : queue[String(l.number)]?.state === 'running' ? { ...l, action: 'resume' as const, why: 'its run ended with an earlier session: starts again' } : l,
+  )
   const todo = lines.filter(l => l.action === 'new' || l.action === 'resume')
   draining = todo.length > 0
   if (!todo.length) return quiet ? '' : `Nothing to start.\n${queueText(lines)}`

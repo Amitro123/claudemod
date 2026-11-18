@@ -733,7 +733,7 @@ export const isQuiet = (run: Run, now: number) =>
 // Where the run is, in a line: during the checks, which command runs and for how long; while an agent
 // works, its latest action and how long ago; a quiet one, for how long it has been quiet.
 export function statusOf(run: Run, now: number): string {
-  const c = run.phase === 'checks' && !run.isAskingChecks ? run.checking : null
+  const c = (run.phase === 'checks' && !run.isAskingChecks) || run.phase === 'merging' ? run.checking : null
   if (c) return `${c.isSetup ? 'installing' : 'checks'} ${c.index}/${c.total} · ${c.cmd} · ${mmss(now - c.since)}`
   if (!AGENT_PHASES.includes(run.phase)) return run.note
   const last = run.activity?.at ?? run.phaseSince
