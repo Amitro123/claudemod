@@ -213,6 +213,23 @@ def _agent_from_call(c: Call, session_dir: Path | None, main_rows: list[dict]) -
     return a
 
 
+def _instant(ts: str | None) -> float | None:
+    """An ISO timestamp as seconds since the epoch: `Z` or `+00:00`, any number of fraction digits (Python
+    3.9's fromisoformat takes only 3 or 6), a naive time read as UTC. None when it isn't one."""
+    if not ts:
+        return None
+    m = re.match(r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$", ts.strip())
+    if not m:
+        return None
+    frac = (m.group(2) or "0")[:6].ljust(6, "0")
+    tz = m.group(3) or "+00:00"
+    tz = "+00:00" if tz == "Z" else (tz if ":" in tz else f"{tz[:3]}:{tz[3:]}")
+    try:
+        return datetime.fromisoformat(f"{m.group(1).replace(' ', 'T')}.{frac}{tz}").timestamp()
+    except ValueError:
+        return None
+
+
 def _split_resumed(agents: list[AgentRun]) -> None:
     """A resumed agent is dispatched again under the same id, and each dispatch loaded its whole transcript.
     Each dispatch keeps its own brief and gets the calls from its launch to the next dispatch's: every call is
@@ -224,12 +241,13 @@ def _split_resumed(agents: list[AgentRun]) -> None:
     for runs in by_id.values():
         if len(runs) < 2:
             continue
-        runs.sort(key=lambda a: a.launched or "")
+        # By the instant, not the string: "…:01Z" and "…:01.5+00:00" don't sort as text.
+        runs.sort(key=lambda a: _instant(a.launched) or 0.0)
         calls = runs[0].calls
         for i, a in enumerate(runs):
-            start = a.launched if i else None
-            end = runs[i + 1].launched if i + 1 < len(runs) else None
-            a.calls = [c for c in calls if (start is None or (c.ts or "") >= start) and (end is None or (c.ts or "") < end)]
+            start = _instant(a.launched) if i else None
+            end = _instant(runs[i + 1].launched) if i + 1 < len(runs) else None
+            a.calls = [c for c in calls if (start is None or (_instant(c.ts) or 0.0) >= start) and (end is None or (_instant(c.ts) or 0.0) < end)]
             a.dispatch = i + 1
             a.dispatches = len(runs)
 
