@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
-import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, resumeState, SESSION_LINK_FILTER, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
+import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, resumeState, SESSION_LINK_FILTER, SQUELCHED_FILTER_BRANCH, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
 import type { Run } from '../types'
 import { linesByFile, parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
 import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
@@ -2612,7 +2612,7 @@ describe('a session link in a commit message never reaches the pushed branch', (
     await answer($, 'a1', SPEC_ANSWER)
     await command($, 'plan-approved')
     await answer($, 'a2', 'built')
-    expect(w.ran).toContain(`git filter-branch -f --msg-filter ${SESSION_LINK_FILTER} -- HEAD --not abc123 --remotes`)
+    expect(w.ran).toContain(`git -c ${SQUELCHED_FILTER_BRANCH} factory-scrub -f --msg-filter ${SESSION_LINK_FILTER} -- HEAD --not abc123 --remotes`)
     // The fake's log still shows the link after the rewrite: the run stops, nothing goes to the checks.
     expect(await bandText($)).toMatch(/carry a Claude-Session link, and the factory couldn't take it out/)
     expect(w.ran.includes('npm test')).toBe(false)

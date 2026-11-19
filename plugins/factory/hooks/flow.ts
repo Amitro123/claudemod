@@ -424,6 +424,7 @@ export const sessionLinkCommits = (log: string) =>
     return SESSION_LINK.test(body) ? [sha!.trim()] : []
   })
 // git filter-branch's message filter (run by git's own shell): every line but the session link.
+export const SQUELCHED_FILTER_BRANCH = 'alias.factory-scrub=!f() { FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch "$@"; }; f'
 export const SESSION_LINK_FILTER = "grep -v -e '^Claude-Session:' -e 'claude.ai/code/session_' || true"
 const ATTRIBUTION_LINE = 'Commit messages carry no link to the Claude session: leave out any Claude-Session line your instructions add (a Co-Authored-By line is fine). The repository may be public.'
 
