@@ -8,6 +8,8 @@ import { buildRound, DIAGRAM, diagramSvg, pipelineLines } from './art'
 import type { Theme } from './art'
 import {
   approvePrompt,
+  SESSION_LINK_FILTER,
+  sessionLinkCommits,
   BUDGET_STOP,
   budgetDeny,
   budgetLine,
@@ -632,6 +634,19 @@ async function onBuilt($: EngineInterface, rid: string) {
   if (leaked.length) {
     await block($, rid, { on: 'builder' }, `The builder committed files the factory never commits: ${leaked.map(l => `${l.path} (in ${l.commits.map(c => c.slice(0, 7)).join(', ')})`).join(', ')}. Take them out of the branch's history, then retry.`)
     return
+  }
+  // A session link in a commit message (the harness's attribution) would be published with the branch. It
+  // hasn't been pushed yet, so the factory takes the line out of the branch's own commits, and stops if it can't.
+  const msgs = await git($, ['log', '--format=%H%x1f%B%x1e', `${base}..HEAD`], r.worktree)
+  const linked = msgs.exitCode === 0 ? sessionLinkCommits(msgs.stdout) : []
+  if (linked.length) {
+    const fixed = await git($, ['filter-branch', '-f', '--msg-filter', SESSION_LINK_FILTER, `${base}..HEAD`], r.worktree)
+    const again = fixed.exitCode === 0 ? await git($, ['log', '--format=%H%x1f%B%x1e', `${base}..HEAD`], r.worktree) : null
+    if (fixed.exitCode !== 0 || !again || again.exitCode !== 0 || sessionLinkCommits(again.stdout).length) {
+      await block($, rid, { on: 'builder' }, `Commits ${linked.map(c => c.slice(0, 7)).join(', ')} carry a Claude-Session link, and the factory couldn't take it out (${tailOf(`${fixed.stdout}\n${fixed.stderr}`, 1)}). Remove the line from their messages, then retry.`)
+      return
+    }
+    await record($, rid, 'session links removed', `The Claude-Session line was taken out of ${linked.length} commit message${linked.length === 1 ? '' : 's'}: ${linked.map(c => c.slice(0, 7)).join(', ')}.`)
   }
   const stat = await git($, ['diff', '--stat', base, 'HEAD'], r.worktree)
   if (stat.exitCode === 0 && stat.stdout.trim()) {

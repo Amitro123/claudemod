@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
-import { extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, shq, skepticPrompt } from '../hooks/flow'
+import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, SESSION_LINK_FILTER, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
 import type { Run } from '../types'
 import { linesByFile, parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
 import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
@@ -2490,6 +2490,31 @@ describe("what became of each review finding: reported, kept, and added up over 
     engine(on)
     await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
     expect(await control($, { action: 'findings', outcomes: [{ id: 'F1', outcome: 'fixed' }] })).toBe('No review findings wait for their outcomes.')
+  })
+})
+
+describe('a session link in a commit message never reaches the pushed branch', () => {
+  test('the commits that carry one are found, and only those', () => {
+    const log = 'aaa\x1ffix it\n\nCo-Authored-By: C <n@x>\nClaude-Session: https://claude.ai/code/session_01X\n\x1e\nbbb\x1fclean\n\nCo-Authored-By: C <n@x>\n\x1e\nccc\x1fsee https://claude.ai/code/session_02Y\n\x1e'
+    expect(sessionLinkCommits(log)).toEqual(['aaa', 'ccc'])
+    expect(sessionLinkCommits('')).toEqual([])
+  })
+
+  test("the builder is told to leave it out, on the first round and the next", () => {
+    const run = { feature: 'F', branch: 'factory/f', worktree: '/w', tasks: [], specFile: 's.md', checks: [], gate: 'factory' } as unknown as Run
+    expect(buildPrompt(run, [], [])).toMatch(/leave out any Claude-Session line/)
+    expect(buildPrompt(run, [], [], { again: true })).toMatch(/leave out any Claude-Session line/)
+  })
+
+  test('after the build, a commit carrying one is rewritten before the checks, and the record says so', async ($, on) => {
+    const w = engine(on, { outputs: {
+      'git log --format=%H%x1f%B%x1e abc123..HEAD': { exitCode: 0, stdout: 'd1d1d1d\x1ffeat\n\nClaude-Session: https://claude.ai/code/session_01X\n\x1e', stderr: '' },
+    } })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    expect(w.ran).toContain(`git filter-branch -f --msg-filter ${SESSION_LINK_FILTER} abc123..HEAD`)
   })
 })
 

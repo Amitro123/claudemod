@@ -4,6 +4,12 @@ Earlier releases are described in the repository README.
 
 ## Unreleased
 
+- Fixed (#154): the builder's commits carried the harness's `Claude-Session:` link, which a public repository would publish. The builder's prompt says to leave it out (Co-Authored-By is fine), and after each build the factory reads the branch's commit messages; one carrying a session link is rewritten with `git filter-branch --msg-filter` on the branch's own commits only, before anything is pushed, and the record says so. If it can't be taken out, the run stops for the person.
+- Fixed (#171): the handed-out PR commands put the title in a double-quoted shell string, so an issue title with `$(...)` or backticks ran when pasted. Values from outside text are single-quoted, the default branch is looked up into `$BASE`, and the body is read from `pr-body.md`, so each line runs as pasted.
+- Fixed (#172): `{owner}/{repo}` was left for gh to fill, and gh can pick an `upstream` remote in a fork. The repository is now origin's, read from its URL when the run starts; a run built on `upstream/<b>` opens its PR there with the fork owner's head.
+- Fixed (#173): every `.tsx` file counted as UI, so a change to a hooks module added the ux and ui-design reviewers. A `.tsx`/`.jsx` file counts when its changed lines hold JSX, a class name, a style or a `$.ui` call.
+- Changed (#156): the default budgets follow the measured runs (`docs/bench/2026-11-19-budgets.md`), and reviewers are told not to run again the checks that passed on exactly their code.
+
 Found by running a factory review of this repository's #149 and auditing its agents with `/retro:agent-audit`.
 
 - Added: **a budget of tool calls per agent** (`budgets` in `.factory/config.json`, by role). Each agent's prompt ends with it; past twice it the guard refuses that agent's further tool calls, except its hand-back, telling it to answer with what it has, and the stats name it (`stopped at twice their budget`). `0` turns it off for a role. Counted per agent, not per role, so a reviewer's second round starts from zero. Before, nothing bounded an agent but the review rounds: the run's skeptic took 32 calls and none of its three agents' briefs named a number.

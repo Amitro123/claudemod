@@ -406,13 +406,26 @@ export const isLimitError = (why: string) => /spend limit|rate limit|usage limit
 
 // The builder's prompt: the whole job for a new builder; for the builder that built it before
 // (`again`), only what to fix this round. A note is the person's own, sent back with /factory rework.
+// A commit message's link to the Claude session (`Claude-Session: https://claude.ai/code/session_...`): the
+// harness adds it, and on a public repository it publishes the person's session. The commits that carry one.
+const SESSION_LINK = /^Claude-Session:|https:\/\/claude\.ai\/code\/session_/m
+export const sessionLinkCommits = (log: string) =>
+  log.split('\x1e').map(e => e.trim()).filter(Boolean).flatMap(e => {
+    const [sha, body = ''] = e.split('\x1f')
+    return SESSION_LINK.test(body) ? [sha!.trim()] : []
+  })
+// git filter-branch's message filter (run by git's own shell): every line but the session link.
+export const SESSION_LINK_FILTER = "grep -v -e '^Claude-Session:' -e 'claude.ai/code/session_' || true"
+const ATTRIBUTION_LINE = 'Commit messages carry no link to the Claude session: leave out any Claude-Session line your instructions add (a Co-Authored-By line is fine). The repository may be public.'
+
 export function buildPrompt(run: Run, findings: Finding[], failed: Check[], { again = false, note = '' } = {}): string {
   // In the session goal, goal-run's ids: it numbers the tasks in its own order, not the spec's.
   const tasks = run.gate === 'goal-run' && run.goalTasks?.length ? run.goalTasks.map(t => `- ${t.id}: ${t.title}`) : run.tasks.map((t, i) => `- t${i + 1}: ${t.title}`)
   const head = again
-    ? [`Another round on the change you built for: ${titleOf(run.feature, 200)}`, `Same branch ${run.branch} and worktree (${run.worktree}). Fix what follows, keep the rest as it is, and commit.`]
+    ? [`Another round on the change you built for: ${titleOf(run.feature, 200)}`, `Same branch ${run.branch} and worktree (${run.worktree}). Fix what follows, keep the rest as it is, and commit.`, ATTRIBUTION_LINE]
     : [
         `Implement the spec in ${specPathOf(run)} for: ${run.feature}`,
+        ATTRIBUTION_LINE,
         `You are on branch ${run.branch}, in its own worktree. Commit your work to this branch when done.`,
         whereLine(run),
         "Follow the repository's CLAUDE.md (read it first): its rules on generated files and the commands it says to run before a commit.",
