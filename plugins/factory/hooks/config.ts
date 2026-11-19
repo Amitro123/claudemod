@@ -35,9 +35,10 @@ export const DEFAULT_CONFIG: FactoryConfig = {
     sonnet: { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 },
     haiku: { input: 0.1, output: 0.5, cacheWrite: 0.125, cacheRead: 0.01 },
   },
-  // About twice what a run of each role took where measured (2026-11-19 review of #149: code 12,
-  // security 8, skeptic 32); the builder's and spec-writer's are wide, since a large feature needs many.
-  budgets: { intake: 20, spec: 60, builder: 200, security: 30, code: 30, approver: 25, skeptic: 60, extra: 30 },
+  // From measured runs (docs/bench/2026-11-19-budgets.md: 17 agents over 3 runs and 1 review): about twice
+  // the most calls seen, so the stop at twice the budget catches a loop near four times a normal run. The
+  // builder's stays wide for large features; the skeptic's rests on one run.
+  budgets: { intake: 12, spec: 30, builder: 120, security: 20, code: 25, approver: 12, skeptic: 60, extra: 25 },
   warnings: [],
 }
 

@@ -23,8 +23,9 @@ the answer, the failures and what fixed each, the decisions the run argued over,
 
 ## Procedure
 
-1. **Find the run.** No argument: `python <skill_root>/scripts/trace.py --find --cwd .` lists the transcripts
-   it can read, newest first (Claude Code's sessions; Cursor's `agent-transcripts` folder where it exists).
+1. **Find the run.** No argument: `python <skill_root>/scripts/trace.py --find --cwd .` lists this project's
+   transcripts it can read, newest first: Claude Code's sessions, and Cursor's `agent-transcripts` folder for
+   this project where it exists. `--everywhere` lists every project's.
    A Cursor chat export or a pasted chat: save it as `<scratch>/run.md` and use that path.
 2. **Digest it.** `python <skill_root>/scripts/trace.py <path> --out <scratch>/distill/digest.md`. Read all of
    it. If it lists sub-agents, also run

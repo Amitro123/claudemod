@@ -120,9 +120,35 @@ export const ROUTED_FOCUS: Record<string, string> = {
 }
 export const routedFocus = (name: string, surface: Surface) => ROUTED_FOCUS[name] ?? `the change's ${surface === 'ui' ? 'user-facing' : 'security'} side, as the ${name} reviewer`
 
-// A file a user sees: a component, a page, a style sheet, a template.
-const UI_PATH = /\.(tsx|jsx|vue|svelte|astro|css|scss|sass|less|html?|hbs|erb|ejs)$|(^|\/)(components?|pages|views|screens|layouts|styles|ui)\//i
-export const touchesUi = (changed: readonly Changed[]) => changed.some(c => UI_PATH.test(c.path))
+// A file a user sees: a component, a page, a style sheet, a template. A .tsx or .jsx file can be logic only
+// (this repository's hooks modules are .tsx), so it counts when its changed lines are UI: JSX, a class, a style.
+const UI_DIR = /(^|\/)(components?|pages|views|screens|layouts|styles|ui)\//i
+const UI_EXT = /\.(vue|svelte|astro|css|scss|sass|less|html?|hbs|erb|ejs)$/i
+const JSX_EXT = /\.(tsx|jsx)$/i
+const UI_LINE = /<\/[A-Za-z>]|\/>|^\s*<[A-Za-z][\w.:-]*(\s|>|$)|\bclassName\s*=|\bstyle\s*=\s*\{|\$\.ui\.|\bstyled\.|\bcss`/
+// `lines`: each file's added and removed lines (linesByFile). Without them (an unreadable diff) a .tsx counts.
+export const touchesUi = (changed: readonly Changed[], lines?: Readonly<Record<string, readonly string[]>>) =>
+  changed.some(c => UI_DIR.test(c.path) || UI_EXT.test(c.path) || (JSX_EXT.test(c.path) && (!lines || (lines[c.path] ?? []).some(l => UI_LINE.test(l)))))
+
+// `git diff -U0` split by file: the added and removed lines of each, under its new name (its old one when deleted).
+export function linesByFile(diff: string): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  let file = '', oldName = ''
+  let inHeader = false
+  for (const l of diff.split('\n')) {
+    if (l.startsWith('diff --git ')) {
+      inHeader = true
+      file = oldName = ''
+    } else if (inHeader && l.startsWith('--- ')) oldName = l.slice(4).replace(/^a\//, '').replace(/^"|"$/g, '')
+    else if (inHeader && l.startsWith('+++ ')) {
+      const n = l.slice(4).replace(/^b\//, '').replace(/^"|"$/g, '')
+      file = n === '/dev/null' ? oldName : n
+      out[file] ??= []
+    } else if (l.startsWith('@@')) inHeader = false
+    else if (!inHeader && file && /^[+-]/.test(l)) out[file]!.push(l.slice(1))
+  }
+  return out
+}
 
 export type ReviewPlan = { codeModel: string; security: string | null; extras: { name: string; model: string; focus: string }[]; why: string[] }
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import sys
 from collections import defaultdict
@@ -97,6 +98,12 @@ def norm_call(c) -> str:
     return re.sub(r"^cd \S+ (?:&&|;) ", "", " ".join(c.brief(300).split()))
 
 
+def brief_label(prompt: str) -> str | None:
+    """The name the brief gives its agent for its report file (`Report file: <run>/agents/check-1.json`)."""
+    m = re.search(r"report file\s*:\s*\S*?([\w.-]+)\.json", prompt or "", re.I)
+    return m.group(1) if m else None
+
+
 def first_line(s: str) -> str:
     return next((ln.strip()[:200] for ln in (s or "").splitlines() if ln.strip()), "")
 
@@ -130,6 +137,12 @@ def resolve(p: str, cwd: Path) -> Path:
     return q if q.is_absolute() else cwd / q
 
 
+def same_path(w: str, target: Path, cwd: Path) -> bool:
+    """The whole path, resolved against the agent's folder (`..` and `.` taken out): a file of the same name in
+    another folder is another file."""
+    return os.path.normpath(str(resolve(w, cwd))) == os.path.normpath(str(target))
+
+
 def is_scratch(p: str) -> bool:
     low = p.replace("\\", "/").lower()
     return any(h.replace("\\", "/") in low for h in SCRATCH_HINTS)
@@ -145,17 +158,21 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
     for c in calls:
         seen.setdefault((c.tool, json.dumps(c.input, sort_keys=True, ensure_ascii=False)), []).append(c)
     loops = [{"call": f"{cs[0].tool}: {cs[0].brief()}", "times": len(cs)} for cs in seen.values() if len(cs) >= 3]
-    writes = [str(c.input.get("file_path") or c.input.get("notebook_path") or "") for c in calls if c.tool in T.WRITE_TOOLS]
+    target = lambda c: str(c.input.get("file_path") or c.input.get("notebook_path") or "")
+    writes = [target(c) for c in calls if c.tool in T.WRITE_TOOLS and c.ok is not False]
+    refused_writes = [target(c) for c in calls if c.tool in T.WRITE_TOOLS and c.ok is False]
     mutating = [c.brief() for c in calls if c.tool in ("Bash", "Shell", "PowerShell") and MUTATING_RE.search(str(c.input.get("command", "")))]
     deliver = []
     for d in terms["deliverables"]:
         path = resolve(d, cwd)
-        written_by_it = any(Path(w).name == Path(d).name and (w.endswith(d.lstrip("./")) or Path(w) == path) for w in writes)
+        written_by_it = any(same_path(w, path, cwd) for w in writes)
         deliver.append({"path": d, "exists": path.exists(), "written_by_agent": written_by_it if has_transcript else None})
-    outside = []
+    outside, tried = [], []
     if terms["read_only"]:
-        allowed = {Path(d).name for d in terms["deliverables"]}
-        outside = [w for w in writes if w and not is_scratch(w) and Path(w).name not in allowed]
+        allowed = [resolve(d, cwd) for d in terms["deliverables"]]
+        bad = lambda w: w and not is_scratch(w) and not any(same_path(w, x, cwd) for x in allowed)
+        outside = [w for w in writes if bad(w)]
+        tried = [w for w in refused_writes if bad(w)]
     measured = len(calls) if has_transcript else None
     claimed = self_count(a.report)
     flags = []
@@ -169,6 +186,8 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
         flags.append("deliverable missing: " + ", ".join(missing))
     if outside:
         flags.append("read-only brief, wrote: " + ", ".join(outside[:5]))
+    if tried:
+        flags.append("read-only brief, tried to write (refused): " + ", ".join(tried[:5]))
     if terms["read_only"] and mutating:
         flags.append("read-only brief, ran: " + "; ".join(mutating[:3]))
     if loops:
@@ -210,12 +229,17 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
         causes["execution"].append(f"repeated the same call {max(x['times'] for x in loops)}x")
     if unrecovered:
         causes["execution"].append(f"{len(unrecovered)} failure(s) not recovered from: " + "; ".join(unrecovered[:3]))
-    if b and measured is not None and measured > b["n"]:
+    over = bool(b and b["unit"] == "tool calls" and measured is not None and measured > b["n"])
+    if b and b["unit"] == "turns":
+        flags.append(f"budget in turns ({b['n']}): not checkable from calls, since one turn can make several")
+    if over:
         (causes["execution"] if clear_brief else causes["brief"]).append(f"over budget ({measured}/{b['n']})" + ("" if clear_brief else " with unclear asks or deliverables"))
     if missing:
         (causes["execution"] if checks["deliverable_paths"] else causes["brief"]).append("deliverable missing: " + ", ".join(missing))
     if outside or (terms["read_only"] and mutating):
         causes["execution"].append("broke the brief's read-only rule")
+    elif tried:
+        causes["execution"].append("tried to write outside what the read-only brief allows (the writes were refused)")
     if not (a.report or "").strip() or a.finished is False:
         causes["execution"].append("ended without a report" if not (a.report or "").strip() else "did not finish")
     cmds = [(i, str(c.input.get("command", ""))) for i, c in enumerate(calls) if c.tool in DISCOVERY_TOOLS]
@@ -244,7 +268,7 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
     if is_verifier and board_reads and (first_work is None or board_reads[0] < first_work):
         causes["execution"].append(
             "a verifier read the board before its own check: its verdicts may copy what it was meant to test")
-    struggled = bool(loops or unrecovered or missing or (b and measured is not None and measured > b["n"]))
+    struggled = bool(loops or unrecovered or missing or over)
     fail_rate = (len(failed) / measured) if measured else 0.0
     model = a.model or ctx.get("default_model") or ""
     if model and SMALL_MODELS.search(model) and struggled and clear_brief and not host_hits:
@@ -252,7 +276,9 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
     elif model and LARGE_MODELS.search(model) and measured is not None and measured <= 6 and not failed and not missing and has_transcript:
         causes["model"].append(f"{model} finished in {measured} calls with no failure: a smaller model may be enough (cost)")
     return {
-        "agent": a.agent_id or a.call_id, "type": a.subagent_type, "model": a.model, "description": a.description,
+        "agent": (a.agent_id or a.call_id) + (f"#{a.dispatch}" if a.dispatches > 1 else ""), "agent_id": a.agent_id,
+        "dispatch": f"{a.dispatch} of {a.dispatches}" if a.dispatches > 1 else None,
+        "brief_label": brief_label(a.prompt), "refused_writes": refused_writes, "type": a.subagent_type, "model": a.model, "description": a.description,
         "source": ("transcript" if has_transcript else "brief and report only") + (", started by a plugin" if a.started_by == "plugin" else ""),
         "calls": measured, "failed": len(failed), "failed_calls": [f"{c.tool}: {c.brief()} -> {first_line(c.result)}" for c in failed][:10],
         "loops": loops, "minutes": round(s / 60, 1) if (s := T.seconds_between(a.start, a.end)) else None,
@@ -287,10 +313,12 @@ def rollup(rows: list[dict], key: str) -> list[dict]:
         by[r.get(key) or "(none)"].append(r)
     out = []
     for k, rs in sorted(by.items()):
-        calls = [r["calls"] for r in rs if isinstance(r.get("calls"), int)]
-        out.append({"group": k, "agents": len(rs), "calls": sum(calls), "failure_rate": round(sum(r.get("failed") or 0 for r in rs) / max(1, sum(calls)), 2),
+        seen = [r for r in rs if isinstance(r.get("calls"), int)]
+        calls = sum(r["calls"] for r in seen)
+        out.append({"group": k, "agents": len(rs), "observed": len(seen), "reported_only": len(rs) - len(seen), "calls": calls,
+                    "failure_rate": round(sum(r.get("failed") or 0 for r in seen) / calls, 2) if calls else None,
                     **{c: sum(1 for r in rs if r.get("causes", {}).get(c)) for c in CAUSES},
-                    "clean": sum(1 for r in rs if not any(r.get("causes", {}).get(c) for c in CAUSES))})
+                    "clean": sum(1 for r in seen if not any(r.get("causes", {}).get(c) for c in CAUSES))})
     return out
 
 
@@ -314,7 +342,7 @@ def from_report_file(f: Path) -> dict:
         flags.append("deliverable missing: " + ", ".join(missing))
     if d.get("blocked"):
         flags.append("blocked: " + "; ".join(map(str, d["blocked"]))[:200])
-    return {"agent": d.get("agent") or f.stem, "type": d.get("type") or "?", "model": d.get("model"), "description": d.get("brief_id") or "",
+    return {"agent": d.get("agent") or f.stem, "brief_id": d.get("brief_id"), "type": d.get("type") or "?", "model": d.get("model"), "description": d.get("brief_id") or "",
             "source": f"report file {f.name}", "calls": None, "failed": None, "failed_calls": [], "loops": [], "minutes": None,
             "budget": b, "read_only": terms["read_only"], "deliverables": deliver, "writes": [], "mutating": [],
             "self_reported_calls": n, "host_reported_calls": None, "asks": terms["asks"] or d.get("asked") or [],
@@ -326,21 +354,30 @@ def from_report_file(f: Path) -> dict:
 
 
 def budgets(rows: list[dict]) -> list[dict]:
-    by = defaultdict(list)
+    by, own = defaultdict(list), defaultdict(int)
     for r in rows:
         n = r["calls"] if r["calls"] is not None else r["self_reported_calls"]
         if isinstance(n, int):
             by[r["type"]].append(n)
+            own[r["type"]] += r["calls"] is None
     out = []
     for t, ns in sorted(by.items()):
-        out.append({"type": t, "runs": len(ns), "min": min(ns), "max": max(ns),
-                    "suggested_budget": max(5, math.ceil(max(ns) * 1.25)),
-                    "note": "one run: a starting point, not a measurement" if len(ns) == 1 else ""})
+        notes = (["one run: a starting point, not a measurement"] if len(ns) == 1 else []) + \
+                ([f"{own[t]} of {len(ns)} self-reported"] if own[t] else [])
+        out.append({"type": t, "runs": len(ns), "self_reported": own[t], "min": min(ns), "max": max(ns),
+                    "suggested_budget": max(5, math.ceil(max(ns) * 1.25)), "note": "; ".join(notes)})
     return out
 
 
 def cell(s) -> str:
     return str(s).replace("|", "\\|").replace("\n", " ")
+
+
+def rollup_line(x: dict) -> str:
+    agents = str(x["agents"]) + (f" ({x['reported_only']} report-only)" if x["reported_only"] else "")
+    rate = "?" if x["failure_rate"] is None else format(x["failure_rate"], ".0%")
+    return (f"| {cell(x['group'])} | {agents} | {x['calls']} | {rate} | {x['brief']} | {x['execution']} | {x['host']} | "
+            f"{x['model']} | {x['clean']} |")
 
 
 def owners(r: dict) -> str:
@@ -366,7 +403,7 @@ def render(rows: list[dict], bud: list[dict], session: str | None, notes: list[s
     for key, title in (("by_skill", "By skill (what its briefs produce)"), ("by_model", "By model")):
         k = key.split("_", 1)[1]
         out += ["", f"## {title}", "", f"| {k.capitalize()} | Agents | Calls | Failure rate | Brief | Execution | Host | Model | Clean |", "|---|---|---|---|---|---|---|---|---|"]
-        out += [f"| {cell(x['group'])} | {x['agents']} | {x['calls']} | {x['failure_rate']:.0%} | {x['brief']} | {x['execution']} | {x['host']} | {x['model']} | {x['clean']} |" for x in roll[key]]
+        out += [rollup_line(x) for x in roll[key]]
     out += ["", "## Budgets from what was observed", "", "| Agent type | Runs | Calls min-max | Suggested budget |", "|---|---|---|---|"]
     out += [f"| {cell(x['type'])} | {x['runs']} | {x['min']}-{x['max']} | {x['suggested_budget']}{' (' + x['note'] + ')' if x['note'] else ''} |" for x in bud]
     for r in rows:
@@ -399,6 +436,7 @@ def main(argv=None) -> int:
     ap.add_argument("--latest", action="store_true")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--cwd", default=".")
+    ap.add_argument("--everywhere", action="store_true", help="look in every project's transcripts, not only this folder's")
     ap.add_argument("--reports")
     ap.add_argument("--board", help="the run's board.jsonl (/retro:board): facts already known when each agent started")
     ap.add_argument("--skill", help="only agents started while this skill was loaded (with --all: an eval of that skill across sessions)")
@@ -411,7 +449,7 @@ def main(argv=None) -> int:
     if a.session:
         sessions = [a.session]
     elif a.latest or a.all or not a.reports:
-        found = [str(f) for f in T.candidates(str(cwd)) if f.suffix == ".jsonl"]
+        found = [str(f) for f in T.candidates(str(cwd), everywhere=a.everywhere) if f.suffix == ".jsonl"]
         sessions = found if a.all else found[:1]
         if not sessions and not a.reports:
             print("No session transcript found. Pass its path, or --reports DIR with end-of-run report files.", file=sys.stderr)
@@ -440,14 +478,22 @@ def main(argv=None) -> int:
         rows = [r for r in rows if (r.get("skill") or "").split(":")[-1] == a.skill.split(":")[-1]]
     if a.reports:
         files = sorted(Path(a.reports).glob("*.json"))
-        by_id = {r["agent"]: r for r in rows}
+        index: dict[str, list[dict]] = defaultdict(list)
+        for r in rows:
+            for key in {r["agent"], r.get("agent_id"), r.get("brief_label"), r.get("description")} - {None, ""}:
+                index[key].append(r)
         for f in files:
             try:
                 rep = from_report_file(f)
             except (OSError, json.JSONDecodeError, ValueError) as e:
                 notes.append(f"{f.name}: not a report file ({type(e).__name__})")
                 continue
-            match = by_id.get(rep["agent"])
+            found = {id(r): r for key in {rep["agent"], rep.get("brief_id")} - {None, ""} for r in index.get(key, [])}
+            match = next(iter(found.values())) if len(found) == 1 else None
+            if len(found) > 1:
+                rep["flags"].append(f"ambiguous: {len(found)} agents match {rep['agent']!r}; not joined to any")
+            elif not found:
+                rep["flags"].append("unmatched: no agent of the transcript has this name or brief label")
             if match:
                 match["self_report_file"] = f.name
                 if rep["self_reported_calls"] is not None and match["calls"] is not None and rep["self_reported_calls"] != match["calls"]:

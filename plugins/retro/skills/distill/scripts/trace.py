@@ -142,6 +142,7 @@ def main(argv=None) -> int:
     ap.add_argument("--latest", action="store_true")
     ap.add_argument("--find", action="store_true")
     ap.add_argument("--cwd", default=".")
+    ap.add_argument("--everywhere", action="store_true", help="look in every project's transcripts, not only this folder's")
     ap.add_argument("--format", choices=["text", "jsonl", "claude-jsonl"])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--out")
@@ -149,12 +150,12 @@ def main(argv=None) -> int:
     ap.add_argument("--steps", type=int, default=80)
     a = ap.parse_args(argv)
     if a.find:
-        for f in T.candidates(a.cwd)[:20]:
+        for f in T.candidates(a.cwd, everywhere=a.everywhere)[:20]:
             print(f)
         return 0
     path = a.path
     if a.latest or not path:
-        found = T.candidates(a.cwd)
+        found = T.candidates(a.cwd, everywhere=a.everywhere)
         if not found:
             print("No transcript found. Pass its path (a Cursor export or a pasted chat saved as .md works).", file=sys.stderr)
             return 2

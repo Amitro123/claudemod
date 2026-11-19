@@ -22,7 +22,8 @@ the ask, the host's settings, or the model.
 
 ## Procedure
 
-1. **Find the run.** Claude Code keeps sub-agent transcripts beside the session: `--latest` (the newest
+1. **Find the run.** Only this project's transcripts are searched (`--everywhere` for all). Claude Code keeps
+   sub-agent transcripts beside the session: `--latest` (the newest
    session of the current folder) or a session path. On a host whose sub-agent transcripts you can't read
    (Cursor, a run you didn't start), use the report files the sub-agents wrote under
    `references/brief-contract.md`: `--reports <run>/agents/`. Both together compare the two.

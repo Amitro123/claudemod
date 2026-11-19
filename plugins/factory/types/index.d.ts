@@ -28,7 +28,7 @@ export type SpecTask = { title: string; priority: 'high' | 'medium' | 'low'; dep
 // isTimedOut: it ran past the checks' time limit: the person decides, not the builder.
 // isSkipped: the person (or the main Claude for them) let the run go on without waiting for it.
 // why: what a check that didn't run said instead (pytest that collected no tests, say).
-export type Check = { cmd: string; ok: boolean; tail: string; isMissing?: boolean; isTimedOut?: boolean; isSkipped?: boolean; why?: string }
+export type Check = { cmd: string; ok: boolean; tail: string; isMissing?: boolean; isTimedOut?: boolean; isSkipped?: boolean; why?: string; failsOnBase?: boolean }
 // agentId: the reviewer's agent this round (null until started), so a late answer from an earlier one is ignored.
 // understood: what the reviewer says the change must do, in its own words (a misread spec shows there);
 // notChecked: what it says it did not verify. Both from its answer, absent when it gave none.
@@ -104,6 +104,8 @@ export type Run = {
   // A review of the person's checkout that changed after the reviewers read it (someone fixed things while
   // they worked): the skeptic is told to rule on the reviewed diff, and a finding gone since is FIXED.
   changedSinceReview?: boolean
+  // origin's and upstream's GitHub owner/repo, read when the run started (null: no GitHub remote of that name).
+  remotes?: { origin: string | null; upstream: string | null }
   // Each agent's budget of tool calls (from the config, by role) and the calls the guard saw it make.
   agentBudgets?: Record<string, number>
   agentCalls?: Record<string, number>
@@ -123,9 +125,11 @@ export type Run = {
   ledger?: LedgerEntry[]
   // How the run went, for its record and the status: builder starts, the run agents' tool calls the
   // mod saw (by role), the calls its guard refused, and answers that missed a marker their prompt asks for.
-  stats?: { builderStarts: number; toolCalls: Record<string, number>; guardRefused: number; formatMisses: string[]; overBudget?: string[] }
+  stats?: { builderStarts: number; toolCalls: Record<string, number>; guardRefused: number; formatMisses: string[]; overBudget?: string[]; baseFailed?: string[] }
   steps: Record<'spec' | 'builder' | 'checks' | 'approver', { state: StepState; tokens: number }>
   checks: Check[]
+  // A failing check run once on the base commit: `<base> <cmd>` -> it failed there too. Kept so a Retry doesn't run it again.
+  baseChecks?: Record<string, boolean>
   // Why no check ran, or what detection warned about: what the reviewers and the approver are told.
   checksNote?: string
   reviews: Review[]

@@ -1,7 +1,7 @@
 // The factory's pure parts: what each role is told, how its answer is read, which checks run, and
 // how a run starts. The hooks module only spawns, runs and draws.
 
-import type { Check, Extra, Finding, LedgerEntry, Outcome, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
+import type { Blocked, Check, Extra, Finding, LedgerEntry, Outcome, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
 import { FACTORY_SOURCE } from './texts'
 import { costLine, DEFAULT_CONFIG } from './config'
 
@@ -272,6 +272,15 @@ export function detectSetup(files: string[]): string[] | null {
 
 // The last lines of a failing command's output: enough for the builder, short for the pane.
 export const tailOf = (text: string, lines = 30) => text.trim().split('\n').slice(-lines).join('\n')
+// A check's failure output with what changes from run to run taken out (durations, clock times, the
+// worktree's own path), so the same failure on the base and on the branch compares equal and a
+// different one doesn't. Test counts stay: one more failing test is a different failure.
+export const failureShape = (text: string, dirs: string[] = []) =>
+  dirs.reduce((t, d) => (d ? t.split(d).join('<dir>') : t), text)
+    .replace(/\b\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?\b/g, '<time>')
+    .replace(/\b\d+(\.\d+)?\s*(ms|s|sec|secs|seconds|m|min)\b/gi, '<dur>')
+    .replace(/[ \t]+/g, ' ')
+    .trim()
 
 // ---------- what each step is asked ----------
 
@@ -319,9 +328,16 @@ export const RULES_LINE =
 
 // The project's own test commands, so no agent guesses one (bun test, in a repo that runs claude
 // plugin test): those the factory ran with their result, else those detection found.
-export function testsLine(run: Pick<Run, 'checks' | 'testCommands' | 'kind'>): string[] {
+// `reviewer`: a reviewer is told not to run passed checks again; a builder, who changes the code, is not.
+export function testsLine(run: Pick<Run, 'checks' | 'testCommands' | 'kind'>, reviewer = false): string[] {
   const ran = ranChecks(run as Run)
-  if (ran.length) return [`The project's checks, which the factory ran itself ${run.kind === 'review' ? 'on the checkout' : 'after the last build'}: ${run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ')}. To run tests yourself, use exactly these commands.`]
+  if (ran.length) {
+    const allPassed = reviewer && ran.every(c => c.ok || c.isSkipped)
+    return [`The project's checks, which the factory ran itself ${run.kind === 'review' ? 'on the checkout' : 'after the last build'}: ${run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ')}. ` +
+      (allPassed
+        ? "Don't run them again: they passed on exactly this code. Run a test yourself only to check something they don't cover, or a result you doubt, and then with these commands."
+        : 'To run tests yourself, use exactly these commands.')]
+  }
   if (run.testCommands?.length) return [`The project's test commands (not run by the factory): ${run.testCommands.join('; ')}. To run tests yourself, use exactly these.`]
   return []
 }
@@ -399,13 +415,26 @@ export const isLimitError = (why: string) => /spend limit|rate limit|usage limit
 
 // The builder's prompt: the whole job for a new builder; for the builder that built it before
 // (`again`), only what to fix this round. A note is the person's own, sent back with /factory rework.
+// A commit message's link to the Claude session (`Claude-Session: https://claude.ai/code/session_...`): the
+// harness adds it, and on a public repository it publishes the person's session. The commits that carry one.
+const SESSION_LINK = /^Claude-Session:|https:\/\/claude\.ai\/code\/session_/m
+export const sessionLinkCommits = (log: string) =>
+  log.split('\x1e').map(e => e.trim()).filter(Boolean).flatMap(e => {
+    const [sha, body = ''] = e.split('\x1f')
+    return SESSION_LINK.test(body) ? [sha!.trim()] : []
+  })
+// git filter-branch's message filter (run by git's own shell): every line but the session link.
+export const SESSION_LINK_FILTER = "grep -v -e '^Claude-Session:' -e 'claude.ai/code/session_' || true"
+const ATTRIBUTION_LINE = 'Commit messages carry no link to the Claude session: leave out any Claude-Session line your instructions add (a Co-Authored-By line is fine). The repository may be public.'
+
 export function buildPrompt(run: Run, findings: Finding[], failed: Check[], { again = false, note = '' } = {}): string {
   // In the session goal, goal-run's ids: it numbers the tasks in its own order, not the spec's.
   const tasks = run.gate === 'goal-run' && run.goalTasks?.length ? run.goalTasks.map(t => `- ${t.id}: ${t.title}`) : run.tasks.map((t, i) => `- t${i + 1}: ${t.title}`)
   const head = again
-    ? [`Another round on the change you built for: ${titleOf(run.feature, 200)}`, `Same branch ${run.branch} and worktree (${run.worktree}). Fix what follows, keep the rest as it is, and commit.`]
+    ? [`Another round on the change you built for: ${titleOf(run.feature, 200)}`, `Same branch ${run.branch} and worktree (${run.worktree}). Fix what follows, keep the rest as it is, and commit.`, ATTRIBUTION_LINE]
     : [
         `Implement the spec in ${specPathOf(run)} for: ${run.feature}`,
+        ATTRIBUTION_LINE,
         `You are on branch ${run.branch}, in its own worktree. Commit your work to this branch when done.`,
         whereLine(run),
         "Follow the repository's CLAUDE.md (read it first): its rules on generated files and the commands it says to run before a commit.",
@@ -438,7 +467,7 @@ export const couldNotStart = (err: unknown) => !/time(d)?\s*out(?!ms)/i.test(Str
 
 // The checks that actually ran: one whose program isn't installed here was skipped, not run.
 export const ranChecks = (run: Pick<Run, 'checks'>) => run.checks.filter(c => !c.isMissing)
-const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' : c.why ? `not run (${c.why})` : c.isMissing ? 'not installed, not run' : c.ok ? 'passed' : 'FAILED')
+const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' : c.why ? `not run (${c.why})` : c.isMissing ? 'not installed, not run' : c.ok ? 'passed' : c.failsOnBase ? 'FAILED, with the same failure output on the base commit (an old failure, not this change)' : 'FAILED')
 
 export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
   return [
@@ -450,7 +479,7 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
         ]
       : [`The spec is ${specPathOf(run)}. The change is the commits on branch ${run.branch} since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD): exactly what will be pushed.`]),
     whereLine(run),
-    ...testsLine(run),
+    ...testsLine(run, true),
     ...(run.diffFile ? [`The whole diff is in ${run.diffFile}: read it with the Read tool (by range when it is long) instead of running git.`] : []),
     stat ? `Files changed:\n${stat}` : '',
     ...builderSaid(run),
@@ -552,16 +581,31 @@ export function planPrompt(run: Run): string {
 export const CONTROL_TOOL_NAME = 'mcp__factory__control'
 export const prBase = (run: Pick<Run, 'baseRef'>) => run.baseRef?.replace(/^(origin|upstream)\//, '') ?? ''
 
-// How the PR is opened, as commands: what the person runs when the feature says not to push. GitHub's
-// REST API, not gh pr (GraphQL, which Claude Code cloud sessions refuse); REST needs a base, so with
-// none the command names the default-branch lookup.
-export const prCommands = (run: Run) => [
-  `git -C ${run.worktree} push -u origin ${run.branch}`,
-  `gh api -X POST repos/{owner}/{repo}/pulls -f head=${run.branch} -f base=${prBase(run) || '<the default branch: gh api repos/{owner}/{repo} --jq .default_branch>'} -f title=${JSON.stringify(titleOf(run.feature, 70))} -F body=@<the body below, saved to a file> --jq .html_url`,
-]
-export const prMergeCommand = 'gh api -X PUT repos/{owner}/{repo}/pulls/<number>/merge -f merge_method=merge'
+// Where the PR goes: the repository (owner/repo, or gh's own {owner}/{repo} when no GitHub remote was read) and
+// the head to name. A run built on upstream/<b> opens its PR on upstream, with the fork owner's head.
+export type PrRepo = { target: string; head: string }
+export const prRepoOf = (run: Pick<Run, 'baseRef' | 'branch'>, origin: string | null, upstream: string | null): PrRepo =>
+  run.baseRef?.startsWith('upstream/') && upstream && origin
+    ? { target: upstream, head: `${origin.split('/')[0]}:${run.branch}` }
+    : { target: origin ?? '{owner}/{repo}', head: run.branch }
 
-export function prPrompt(run: Run, reason: string): string {
+// A value from outside text (a title, a branch) in a command the person or Claude runs: single-quoted, so
+// $(...), backticks and quotes are text, never shell.
+export const shq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
+
+// How the PR is opened, as commands: what the person runs when the feature says not to push. GitHub's
+// REST API, not gh pr (GraphQL, which Claude Code cloud sessions refuse). Every line runs as pasted: the
+// default branch is looked up into $BASE when the run has no base, and the body is read from pr-body.md.
+export const PR_BODY_FILE = 'pr-body.md'
+export const prCommands = (run: Run, repo: PrRepo = prRepoOf(run, null, null)) => [
+  `git -C ${shq(run.worktree)} push -u origin ${shq(run.branch)}`,
+  ...(prBase(run) ? [] : [`BASE=$(gh api repos/${repo.target} --jq .default_branch)`]),
+  `gh api -X POST repos/${repo.target}/pulls -f head=${shq(repo.head)} -f base=${prBase(run) ? shq(prBase(run)) : '"$BASE"'} -f title=${shq(titleOf(run.feature, 70))} -F body=@${PR_BODY_FILE} --jq .html_url`,
+]
+export const prMergeCommand = (repo: PrRepo = { target: '{owner}/{repo}', head: '' }) => `gh api -X PUT repos/${repo.target}/pulls/<number>/merge -f merge_method=merge`
+
+export function prPrompt(run: Run, reason: string, repo: PrRepo = prRepoOf(run, null, null)): string {
+  const cmds = prCommands(run, repo)
   const minor = run.reviews.flatMap(r => r.findings.filter(f => f.severity === 'minor').map(f => `- ${r.role}: ${f.where} ${f.text}`))
   const unverified = run.reviews.flatMap(r => (r.notChecked ?? []).map(t => `- ${r.role}: ${t}`))
   const noPush = forbidsPush(run.feature)
@@ -569,17 +613,18 @@ export function prPrompt(run: Run, reason: string): string {
     `The factory run "${run.feature}" is approved${reason ? ` (${reason})` : ''}.`,
     ...(noPush
       ? [
-          "The feature says not to push, so don't push and don't open the PR. Show the person these commands to run themselves, and the PR body below:",
-          ...prCommands(run).map(c => `  ${c}`),
+          `The feature says not to push, so don't push and don't open the PR. Show the person these commands to run themselves (with the PR body below saved as ${PR_BODY_FILE}), and the body:`,
+          ...cmds.map(c => `  ${c}`),
           `If the person opens it and gives you the link, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the link as url.`,
         ]
       : [
-          `Push branch ${run.branch} (git -C ${run.worktree} push -u origin ${run.branch}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}. Open it through GitHub's REST API (${prCommands(run)[1]}) or the session's own GitHub tools, not gh pr create, which uses GitHub's GraphQL API that Claude Code cloud sessions refuse.`,
+          `Push branch ${run.branch} (git -C ${run.worktree} push -u origin ${run.branch}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}. Open it through GitHub's REST API (${cmds.slice(1).join(' && ')}, with the body saved as ${PR_BODY_FILE}) or the session's own GitHub tools, not gh pr create, which uses GitHub's GraphQL API that Claude Code cloud sessions refuse.`,
           ...(run.issue ? [`The PR body says "Closes #${run.issue}".`] : []),
-          ...(run.autoMerge ? [`The approver approved and the checks passed again on the latest ${prBase(run) || 'base'}, and the autoMerge option is on: once the PR is open, merge it with ${prMergeCommand} (or the session's own GitHub tools). If branch protection, a required check or a review rule refuses, leave it open and tell the person why; don't force it.`] : []),
-          `Once it is open, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the PR's link as url: until then the factory shows the PR as requested, not opened. If you can't open it, tell the person why, with these commands: ${prCommands(run).join(' && ')}.`,
+          ...(run.autoMerge && !run.checks.some(c => !c.ok && !c.isMissing) ? [`The approver approved and the checks passed again on the latest ${prBase(run) || 'base'}, and the autoMerge option is on: once the PR is open, merge it with ${prMergeCommand(repo)} (or the session's own GitHub tools). If branch protection, a required check or a review rule refuses, leave it open and tell the person why; don't force it.`] : []),
+          `Once it is open, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the PR's link as url: until then the factory shows the PR as requested, not opened. If you can't open it, tell the person why, with these commands (the body saved as ${PR_BODY_FILE}): ${cmds.join(' && ')}.`,
         ]),
     `Title it after the feature. In the body: what it does (from ${run.specFile}), the checks (${run.checks.map(c => `${c.cmd} ${c.isSkipped ? '– skipped' : c.isMissing ? '– not installed' : c.ok ? '✓' : '✗'}`).join(', ') || 'none ran'}), and ${run.round} review round${run.round === 1 ? '' : 's'}: ${run.reviews.filter(r => r.state !== 'skip').map(r => `${r.role} ${r.state === 'pass' ? 'PASS' : 'CHANGES'}`).join(', ')}.`,
+    'Leave any Claude Code session link (claude.ai/code/session_...) out of the PR body and the commits: a public repository publishes it.',
     ...(run.builderTests ? [`The builder's own test run: ${run.builderTests.text}.`] : []),
     ...(run.intake ? [`Say the intake's judgment: risk ${run.intake.risk}${run.intake.surfaces.length ? `, surfaces ${run.intake.surfaces.join(', ')}` : ''}${run.intake.scope ? `; scope: ${run.intake.scope}` : ''}.`] : []),
     ...(minor.length ? ['List these minor findings under "Not fixed":', ...minor] : []),
@@ -598,6 +643,37 @@ export const worktreeOf = (root: string, slug: string) => `${root.replace(/[\\/]
 export const rootOf = (run: { worktree: string; slug: string }) => run.worktree.slice(0, -`/.factory/${run.slug}`.length)
 // Beside the worktree, never in it: a slug has no dot, so no run's worktree is named so.
 export const recordOf = (root: string, slug: string) => `${root.replace(/[\\/]+$/, '')}/.factory/${slug}.record`
+// The run's state, saved in its record at each step, so a restart of the session doesn't lose it (#153).
+export const SAVED_RUN = 'run.json'
+
+// A run saved by an earlier session, made ready to go on in this one: it waits on the person, and Retry
+// runs again the step it was in (its agents are gone with that session). `commits`: the branch's own
+// commits, so a build that got that far isn't started over. null: an ended run, or not a run.
+export function resumeState(saved: unknown, commits: number): Run | null {
+  const r = saved as Run
+  if (!r || typeof r !== 'object' || typeof r.slug !== 'string' || typeof r.branch !== 'string' || typeof r.phase !== 'string' || !Array.isArray(r.reviews)) return null
+  if (!isLive(r.phase)) return null
+  const base: Run = { ...r, agents: {}, builderId: undefined, checking: null, isAskingChecks: false, reviews: r.reviews.map(x => (x.state === 'run' ? { ...x, state: 'fail', agentId: null } : x)) }
+  // Past the reviews (the approver, the PR, an escalation), the saved verdicts aren't taken on trust: the
+  // file sits beside the worktree, so the run goes back to the checks and a fresh review round.
+  const pastReview = r.phase === 'review' || r.phase === 'approve' || r.phase === 'merging' || r.phase === 'ready'
+    || (r.phase === 'needs-human' && (r.blocked?.on === 'escalate' || r.blocked?.on === 'merge' || (r.blocked?.on === 'start' && r.blocked.role !== 'intake' && r.blocked.role !== 'spec' && r.blocked.role !== 'builder')))
+  if (pastReview) return { ...base, phase: 'needs-human', blocked: { on: 'checks' }, note: 'picked up after a restart: Retry runs the checks and a fresh review round' }
+  if (r.phase === 'needs-human') return { ...base, note: `${r.note} (picked up after a restart)` }
+  // The spec is written and waits for its plan's approval: asked again, not rewritten.
+  if (r.phase === 'plan') return { ...base, gate: 'factory', note: 'picked up after a restart: the plan waits for your approval (/factory approve), or /factory rework <changes>' }
+  const blocked: Blocked =
+    r.phase === 'intake' ? { on: 'start', role: 'intake' }
+    : r.phase === 'spec' ? { on: 'start', role: 'spec' }
+    // A build with commits goes through what follows a build (its leak and session-link checks), not straight to the checks.
+    : r.phase === 'build' ? (commits > 0 ? { on: 'base' } : { on: 'start', role: 'builder' })
+    : r.phase === 'checks' ? { on: 'checks' }
+    : r.phase === 'approve' ? { on: 'start', role: 'approver' }
+    : r.phase === 'merging' ? { on: 'merge' }
+    : { on: 'start', role: (r.reviews.find(x => x.state === 'run' || x.state === 'fail')?.role ?? 'code') as Role }
+  const step = blocked.on === 'base' ? 'what follows the build' : blocked.on === 'checks' ? 'the checks' : blocked.on === 'merge' ? 'the sync with the latest base' : `the ${(blocked as { role: Role }).role === 'spec' ? 'spec-writer' : (blocked as { role: Role }).role}`
+  return { ...base, phase: 'needs-human', blocked, note: `picked up after a restart, at ${step}: Retry runs it again` }
+}
 
 // An agent's closing lines: the builder ends with a two-line summary of what it changed.
 export function lastLines(text: string, n: number): string {
@@ -926,6 +1002,7 @@ export function statsReport(run: Run, now: number): string[] {
     `Iterations: ${run.kind === 'review' ? 'review only' : `${s?.builderStarts ?? 0} builder start${s?.builderStarts === 1 ? '' : 's'}`}, ${run.round} review round${run.round === 1 ? '' : 's'}${run.checkRound ? `, ${run.checkRound} fix pass${run.checkRound === 1 ? '' : 'es'} for red checks` : ''}.`,
     `Findings this round: ${by('blocker')} blocker, ${by('major')} major, ${by('minor')} minor; refuted by the skeptic so far: ${run.refuted?.filter(x => x.ruling === 'refuted').length ?? 0}${run.refuted?.some(x => x.ruling === 'fixed') ? `; fixed while the review ran: ${run.refuted.filter(x => x.ruling === 'fixed').length}` : ''}.`,
     `Tool calls the factory saw: ${calls || 'none'}; refused by its guard: ${s?.guardRefused ?? 0}${s?.overBudget?.length ? `; stopped at twice their budget: ${s.overBudget.join(', ')}` : ''}.`,
+    ...(s?.baseFailed?.length ? [`Checks that failed on the base too (not sent to the builder): ${s.baseFailed.join(', ')}.`] : []),
     `Answers missing a marker their prompt asks for: ${s?.formatMisses.length ? s.formatMisses.join('; ') : 'none'}.`,
     ...(run.ledger?.length ? [`Outcomes: ${outcomesLine(run.ledger)}`] : []),
     costLine(run.usage, run.prices ?? DEFAULT_CONFIG.prices),

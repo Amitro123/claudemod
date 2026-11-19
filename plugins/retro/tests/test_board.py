@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -456,3 +457,99 @@ def test_board_skill_passes_the_skill_lint():
     assert L.lint(ROOT / "skills" / "board") == ([], [])
     text = (ROOT / "skills" / "board" / "SKILL.md").read_text(encoding="utf-8")
     assert "--max-age" in text and "confirm" in text
+
+
+
+def test_two_writers_with_different_values_for_one_key_are_a_disagreement_until_resolved(tmp_path, capsys):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "azure.resource_group", "rg-one", "check-1", "source A")
+    B.add(f, "azure.resource_group", "rg-two", "check-2", "source B")
+    got = B.get(f, "azure.resource_group", "main")[0]
+    assert got["value"] == "rg-two" and got["conflict"]["value"] == "rg-one" and got["conflict"]["by"] == "check-1"
+    B.main(["--board", str(f), "show"])
+    out = capsys.readouterr().out
+    assert "disagreement: azure.resource_group = rg-two (by check-2: source B) replaced rg-one (by check-1: source A)" in out
+    B.add(f, "azure.resource_group", "rg-two", "main", "az group show rg-two -> exists; rg-one -> not found", resolve="rg-one does not exist")
+    assert "conflict" not in B.get(f, "azure.resource_group", "main")[0]
+    B.main(["--board", str(f), "show"])
+    assert "disagreement" not in capsys.readouterr().out
+    assert len(B.get(f, "azure.resource_group", "main", history=True)) == 2, "history is kept"
+
+
+def test_the_first_writer_confirming_the_new_value_settles_it_and_a_refresh_is_no_disagreement(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "azure.resource_group", "rg-one", "check-1", "source A")
+    B.add(f, "azure.resource_group", "rg-two", "check-2", "source B")
+    B.add(f, "azure.resource_group", "rg-two", "check-1", "looked again")
+    assert "conflict" not in B.get(f, "azure.resource_group", "main")[0]
+    B.add(f, "git.branch.x.on_remote", "false", "check-3", "ls-remote at 10:00")
+    B.add(f, "git.branch.x.on_remote", "true", "check-3", "ls-remote at 10:20")
+    assert "conflict" not in B.get(f, "git.branch.x.on_remote", "main")[0], "one writer replacing its own value is a refresh"
+    B.add(f, "a.b", "1", "w1", "e")
+    B.add(f, "a.b", "1", "w2", "e")
+    assert "conflict" not in B.get(f, "a.b", "main")[0], "the same value is a confirm, not a disagreement"
+
+
+def test_a_second_write_by_the_same_writer_keeps_the_disagreement_with_the_first(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "azure.resource_group", "rg-one", "check-1", "source A")
+    B.add(f, "azure.resource_group", "rg-two", "check-2", "source B")
+    B.add(f, "azure.resource_group", "rg-three", "check-2", "source B again")
+    got = B.get(f, "azure.resource_group", "main")[0]
+    assert got["value"] == "rg-three" and got["conflict"]["value"] == "rg-one", "B refreshing its value doesn't settle A's"
+    B.add(f, "azure.resource_group", "rg-three", "check-1", "looked again")
+    assert "conflict" not in B.get(f, "azure.resource_group", "main")[0]
+
+
+def test_resolve_with_a_secret_or_empty_reason_is_refused(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "1", "w1", "e")
+    with pytest.raises(ValueError, match="--resolve"):
+        B.add(f, "a.b", "2", "main", "e", resolve="  ")
+    with pytest.raises(ValueError, match="--resolve"):
+        B.add(f, "a.b", "2", "main", "e", resolve=f"token {TOKEN}")
+
+
+def test_a_claimed_confirm_does_not_make_a_reproduced_fact_fresh(tmp_path, monkeypatch):
+    f = tmp_path / "b.jsonl"
+    t0 = datetime(2026, 11, 19, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(B, "_utcnow", lambda: t0)
+    B.add(f, "git.branch.x.on_remote", "true", "check-1", "git ls-remote", level="reproduced")
+    later = t0 + timedelta(hours=3)
+    monkeypatch.setattr(B, "_utcnow", lambda: later)
+    B.add(f, "git.branch.x.on_remote", "true", "check-2", "a report said so", level="claimed")
+    assert B.get(f, None, "v", min_level="reproduced", max_age=30) == []
+    assert len(B.get(f, None, "v", min_level="claimed", max_age=30)) == 1
+    B.add(f, "git.branch.x.on_remote", "true", "check-3", "git ls-remote again", level="reproduced")
+    assert len(B.get(f, None, "v", min_level="reproduced", max_age=30)) == 1
+
+
+def test_seed_records_the_contexts_time_not_now(tmp_path, monkeypatch):
+    f = tmp_path / "b.jsonl"
+    (tmp_path / "c.json").write_text(json.dumps({"window": {"now": "2026-11-18T09:00:00+00:00"}, "default_branch": "main"}))
+    monkeypatch.setattr(B, "_utcnow", lambda: datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc))
+    assert B.main(["--board", str(f), "seed", "--from", str(tmp_path / "c.json")]) == 0
+    assert B.main(["--board", str(f), "seed", "--from", str(tmp_path / "c.json")]) == 0
+    facts = B.get(f, "git.default_branch", "t")
+    assert facts[0]["ts"] == "2026-11-18T09:00:00+00:00" and facts[0]["last_confirmed"] == "2026-11-18T09:00:00+00:00"
+    assert facts[0]["recorded"].startswith("2026-11-19T12:00")
+    assert B.get(f, "git.default_branch", "t", max_age=60) == [], "an old context does not look fresh, however often it is seeded"
+
+
+@pytest.mark.parametrize("big", ["1e12", "1e308"])
+def test_a_max_age_too_large_for_a_date_is_refused_not_a_traceback(tmp_path, big):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "1", "w", "e")
+    p = subprocess.run([sys.executable, str(BOARD / "board.py"), "--board", str(f), "get", "--by", "x", "--max-age", big],
+                       capture_output=True, text=True)
+    assert p.returncode == 2 and p.stderr.startswith("refused:") and "Traceback" not in p.stderr
+
+
+def test_ids_stay_unique_past_a_line_that_will_not_parse(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "1", "w", "e")
+    with open(f, "a", encoding="utf-8") as h:
+        h.write("{not json\n")
+    B.add(f, "a.c", "2", "w", "e")
+    ids = [json.loads(ln)["id"] for ln in f.read_text().splitlines() if ln.startswith('{"type": "fact"')]
+    assert len(ids) == len(set(ids)) == 2

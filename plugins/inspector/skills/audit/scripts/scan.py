@@ -151,9 +151,43 @@ def scan_ref(repo: Path, ref: str, secrets, allow, out):
     p.wait()
 
 
+_ESC = {"a": "\a", "b": "\b", "t": "\t", "n": "\n", "v": "\v", "f": "\f", "r": "\r", '"': '"', "\\": "\\"}
+
+
+def unquote_path(s: str) -> str:
+    """A path as git prints it in a diff header: plain (with a tab after it when it holds a space), or
+    C-quoted with octal bytes for anything outside printable ASCII (a Hebrew name, a tab, a quote)."""
+    if not s.startswith('"'):
+        return s.rstrip("\t")
+    out, i, body = bytearray(), 1, s.rstrip("\t")
+    while i < len(body) and body[i] != '"':
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body):
+            nxt = body[i + 1]
+            if nxt in "01234567":
+                out.append(int(body[i + 1:i + 4], 8))
+                i += 4
+                continue
+            out += _ESC.get(nxt, nxt).encode()
+            i += 2
+            continue
+        out += ch.encode("utf-8")
+        i += 1
+    return out.decode("utf-8", errors="replace")
+
+
+def _merge_mode(repo: Path) -> str:
+    """remerge shows only what a merge itself changed against git's own merge of its parents (git 2.36+);
+    an older git gets the first-parent diff, which repeats the side branch's lines."""
+    p = subprocess.run(["git", "-C", str(repo), "log", "-1", "--diff-merges=remerge", "--format=%H"], capture_output=True, text=True)
+    return "remerge" if p.returncode == 0 else "first-parent"
+
+
 def scan_range(repo: Path, rng: str, secrets, allow, out):
-    text = run(repo, "log", "-p", "--no-color", "--format=commit %H", "--unified=0", rng)
+    text = run(repo, "-c", "core.quotePath=true", "log", "-p", "--no-color", f"--diff-merges={_merge_mode(repo)}",
+               "--format=commit %H", "--unified=0", rng)
     sha, path, buf, nums, n = None, None, [], [], 0
+    in_header = False  # between "diff --git" and the first "@@": only there is "+++ " a file name, not an added "++ " line
 
     def flush():
         if path and buf:
@@ -162,11 +196,16 @@ def scan_range(repo: Path, rng: str, secrets, allow, out):
     for ln in text.splitlines():
         if ln.startswith("commit ") and len(ln) == 47:
             flush()
-            sha, path, buf, nums = ln[7:], None, [], []
-        elif ln.startswith("+++ "):
+            sha, path, buf, nums, in_header = ln[7:], None, [], [], False
+        elif ln.startswith("diff --git ") or ln.startswith("diff --cc ") or ln.startswith("diff --combined "):
             flush()
-            path, buf, nums = (ln[6:] if ln.startswith("+++ b/") else None), [], []
+            path, buf, nums, in_header = None, [], [], True
+        elif in_header and ln.startswith("+++ "):
+            flush()
+            target = unquote_path(ln[4:])
+            path, buf, nums = (target[2:] if target.startswith("b/") else None), [], []
         elif ln.startswith("@@"):
+            in_header = False
             m = re.search(r"\+(\d+)", ln)
             n = int(m.group(1)) if m else 0
         elif ln.startswith("+") and path and readable(path, 0):

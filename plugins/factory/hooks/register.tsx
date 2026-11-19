@@ -8,6 +8,8 @@ import { buildRound, DIAGRAM, diagramSvg, pipelineLines } from './art'
 import type { Theme } from './art'
 import {
   approvePrompt,
+  SESSION_LINK_FILTER,
+  sessionLinkCommits,
   BUDGET_STOP,
   budgetDeny,
   budgetLine,
@@ -32,6 +34,7 @@ import {
   parseVerdict,
   planPrompt,
   prPrompt,
+  prRepoOf,
   reviewPrompt,
   extrasFrom,
   isExtra,
@@ -48,6 +51,10 @@ import {
   splitChecks,
   tailOf,
   rootOf,
+  resumeState,
+  failureShape,
+  recordOf,
+  SAVED_RUN,
   tok,
   tokensOf,
   untrackedOf,
@@ -81,7 +88,7 @@ import {
   progressNote,
   resumePrompt,
 } from './flow'
-import { intakeNote, intakePrompt, parseIntake, reviewPlan, ROUTED_MODELS, touchesUi } from './intake'
+import { intakeNote, intakePrompt, linesByFile, parseIntake, reviewPlan, ROUTED_MODELS, touchesUi } from './intake'
 import { acceptComment, answeredSince, askComment, escalateComment, issueFeature, issueFile, LABEL, NEEDS_HUMAN_LABEL, NEEDS_INFO_LABEL, parseQueue, parseRestIssue, parseRestIssueList, queueLines, queueText, refusal, rejectComment } from './issues'
 import type { Issue, Queue, QueueState } from './issues'
 import { addUsage, costOf, DEFAULT_CONFIG, parseConfig, protectedHits, usd } from './config'
@@ -108,6 +115,7 @@ async function getRun($: EngineInterface, rid: string): Promise<Run | null> {
 }
 // A new run joins the others; of the ended ones only the latest are kept. Its rid.
 async function addRun($: EngineInterface, r: Run): Promise<string> {
+  if (r.record) await $.fs.write(`${r.record}/${SAVED_RUN}`, JSON.stringify(r)).catch(() => {})
   await update($, runs, all => {
     const ended = Object.values(all).filter(x => !isLive(x.phase))
     const drop = new Set(ended.slice(0, Math.max(0, ended.length - KEEP_ENDED)).map(x => x.slug))
@@ -161,6 +169,7 @@ const STOPPED_DENY = 'The factory run was stopped. Stop now and answer with one 
 let maxRounds = 2
 let checksOption = ''
 let setupOption = ''
+let stopOnBaseFailure = false
 let autoPr = false
 let modelsOption: 'auto' | 'fixed' = 'auto'
 let skillsOption: Partial<Record<Role, string[]>> = {}
@@ -213,6 +222,7 @@ function serial($: EngineInterface, rid: string, job: () => Promise<void>): Prom
 async function patch($: EngineInterface, rid: string, fn: (r: Run) => Run): Promise<Run | null> {
   const t = await $.clock.now()
   let refused = false
+  let moved = false
   let out: Run | null = null
   await update($, runs, all => {
     const key = rid || pickRun(all)?.slug
@@ -229,8 +239,12 @@ async function patch($: EngineInterface, rid: string, fn: (r: Run) => Run): Prom
       }
     }
     out = next
+    moved = next.phase !== cur.phase
     return next === cur ? all : { ...all, [key]: next }
   })
+  // At each step the run's state goes to its record, so a restart doesn't lose it.
+  const kept = out as Run | null
+  if (!refused && moved && kept?.record) await $.fs.write(`${kept.record}/${SAVED_RUN}`, JSON.stringify(kept)).catch(() => {})
   return refused ? null : out
 }
 
@@ -364,7 +378,7 @@ async function preflight($: EngineInterface): Promise<{ root: string; head: stri
   return { root, head: head.stdout.trim() }
 }
 
-type StartOpts = { issue?: number; intakeAnswers?: string[]; issueAnyway?: boolean }
+type StartOpts = { issue?: number; intakeAnswers?: string[]; issueAnyway?: boolean; fresh?: boolean }
 async function start($: EngineInterface, args: string, extras: Extra[] = [], opts: StartOpts = {}): Promise<string> {
   const parsed = parseFactoryArgs(args)
   const feature = cleanFeature(parsed.feature)
@@ -375,6 +389,11 @@ async function start($: EngineInterface, args: string, extras: Extra[] = [], opt
   const { root, head } = ready
   const at = await $.clock.now()
   const slug = slugOf(feature)
+  // A run of this feature from an earlier session, its branch still there: offered, not started over.
+  if (!opts.fresh) {
+    const earlier = (await earlierRuns($, root)).find(o => o.slug === slug || o.slug.startsWith(`${slug}-`) && o.run?.feature === feature)
+    if (earlier) return `An earlier run of this feature is on branch ${earlier.branch} (${earlier.commits} commit${earlier.commits === 1 ? '' : 's'} of its own${earlier.run ? `, stopped at ${earlier.run.phase}` : ''}). ${earlier.run ? `/factory resume ${earlier.slug} goes on from there; ` : `Its state wasn't saved: review it with /factory review in ${earlier.worktree}, or remove it with git worktree remove ${earlier.worktree}; `}/factory new: ${feature} starts over on a new branch.`
+  }
   let r: Run | null = null
   // A branch or folder name already taken gets a number; any other failure is reported as it is.
   for (let k = 1; k <= MAX_SLUG_TRIES && !r; k++) {
@@ -387,8 +406,11 @@ async function start($: EngineInterface, args: string, extras: Extra[] = [], opt
   // The branch the checkout is on: the PR goes into it. A detached HEAD names none.
   const onBranch = await git($, ['rev-parse', '--abbrev-ref', 'HEAD'], root)
   const baseRef = onBranch.exitCode === 0 && onBranch.stdout.trim() !== 'HEAD' ? onBranch.stdout.trim() : ''
+  // The GitHub repositories the PR can go to, read once: the PR prompt is built from them without a wait.
+  const remotes = { origin: await remoteSlug($, root, 'origin'), upstream: await remoteSlug($, root, 'upstream') }
   const created: Run = {
     ...r,
+    remotes,
     gate: (await goalRunThere($)) ? 'goal-run' : 'factory',
     ...(followupId ? { followupId } : {}),
     ...(baseRef ? { baseRef } : {}),
@@ -411,6 +433,52 @@ async function start($: EngineInterface, args: string, extras: Extra[] = [], opt
   }
   await serial($, rid, async () => void (await spawnRole($, rid, 'spec', specPrompt(created))))
   return `Factory run started: ${titleOf(created.feature, 120)}. Branch ${created.branch}, worktree ${created.worktree}; the spec-writer is writing ${created.specFile}.`
+}
+
+// The runs an earlier session left: a worktree of the factory's (under .factory/, on a factory/ branch)
+// that no run of this session holds. With the state it saved, when it saved one (`run`), and the
+// branch's own commits since the run's base (or since HEAD, for a run with no saved state).
+type Earlier = { slug: string; branch: string; worktree: string; commits: number; run: Run | null }
+async function earlierRuns($: EngineInterface, root: string): Promise<Earlier[]> {
+  const listed = await git($, ['worktree', 'list', '--porcelain'], root)
+  if (listed.exitCode !== 0) return []
+  const held = new Set(Object.values(await read($, runs)).filter(x => isLive(x.phase)).map(x => x.worktree))
+  const dir = `${root.replace(/[\\/]+$/, '')}/.factory/`
+  const out: Earlier[] = []
+  for (const block of listed.stdout.split(/\n\s*\n/)) {
+    const wt = /^worktree (.+)$/m.exec(block)?.[1]?.trim()
+    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1]?.trim()
+    if (!wt || !branch || !wt.startsWith(dir) || !branch.startsWith('factory/') || held.has(wt)) continue
+    const slug = wt.slice(dir.length)
+    if (!slug || slug.includes('/') || slug.startsWith('.')) continue
+    const text = await $.fs.read(`${recordOf(root, slug)}/${SAVED_RUN}`).then(t => String(t), () => '')
+    let run: Run | null = null
+    try { run = text ? (JSON.parse(text) as Run) : null } catch { run = null }
+    if (run && !isLive(run.phase)) continue
+    // The saved state counts only for the worktree and branch git has: anything else is not this run's.
+    if (run && (run.worktree !== wt || run.branch !== branch || run.slug !== slug)) run = null
+    const count = await git($, ['rev-list', '--count', `${run?.base ?? 'HEAD'}..${branch}`], root)
+    out.push({ slug, branch, worktree: wt, commits: count.exitCode === 0 ? Number(count.stdout.trim()) || 0 : 0, run })
+  }
+  return out
+}
+
+// /factory resume [<run>]: an earlier session's run goes on in this one, from the step it was in.
+async function resumeNow($: EngineInterface, name: string): Promise<string> {
+  const top = await git($, ['rev-parse', '--show-toplevel'], await $.session.root())
+  if (top.exitCode !== 0) return 'Not a git repository.'
+  const found = await earlierRuns($, top.stdout.trim())
+  if (!found.length) return 'No run from an earlier session to pick up.'
+  const one = name ? found.find(o => o.slug === name.replace(/^@/, '')) : found.length === 1 ? found[0] : undefined
+  if (!one) return `Which one? ${found.map(o => o.slug).join(', ')}: /factory resume <run>.`
+  const run = one.run ? resumeState(one.run, one.commits) : null
+  if (!run) return `${one.slug} saved no state to go on from (a run from before the factory saved it). Its ${one.commits} commit${one.commits === 1 ? '' : 's'} are on ${one.branch}: /factory review in ${one.worktree} reviews them, or git worktree remove ${one.worktree} drops them.`
+  const rid = await addRun($, run)
+  await record($, rid, 'resumed', `Picked up after a restart: ${run.note}.`)
+  await ensureTicking($)
+  void $.ui.open({ id: PANE, title: PANE_TITLE })
+  if (run.blocked && run.blocked.on !== 'escalate') return `Picked up ${titleOf(run.feature, 80)} on ${run.branch}. ${await retryNow($, rid)}`
+  return `Picked up ${titleOf(run.feature, 80)} on ${run.branch}: ${run.note}.`
 }
 
 // The worktrees live in .factory/ of the repository: listed in its exclude file, found through
@@ -628,6 +696,30 @@ async function onBuilt($: EngineInterface, rid: string) {
   if (leaked.length) {
     await block($, rid, { on: 'builder' }, `The builder committed files the factory never commits: ${leaked.map(l => `${l.path} (in ${l.commits.map(c => c.slice(0, 7)).join(', ')})`).join(', ')}. Take them out of the branch's history, then retry.`)
     return
+  }
+  // A session link in a commit message (the harness's attribution) would be published with the branch. It
+  // hasn't been pushed yet, so the factory takes the line out of the branch's own commits, and stops if it can't.
+  // Only the branch's own commits: a base merged in by a sync is on the remote and never rewritten.
+  const own = ['HEAD', '--not', base, '--remotes']
+  const msgs = await git($, ['log', '--format=%H%x1f%B%x1e', ...own], r.worktree)
+  if (msgs.exitCode !== 0) {
+    await block($, rid, { on: 'builder' }, `The factory could not read the branch's commit messages for session links: ${tailOf(msgs.stderr, 1)}. Retry once git can read them.`)
+    return
+  }
+  const linked = sessionLinkCommits(msgs.stdout)
+  if (linked.length) {
+    const fixed = await git($, ['filter-branch', '-f', '--msg-filter', SESSION_LINK_FILTER, '--', ...own], r.worktree)
+    // filter-branch keeps the old commits under refs/original: dropped, so nothing still holds the link.
+    if (fixed.exitCode === 0) {
+      const kept = await git($, ['for-each-ref', '--format=%(refname)', 'refs/original/'], r.worktree)
+      for (const ref of kept.stdout.split('\n').map(l => l.trim()).filter(Boolean)) await git($, ['update-ref', '-d', ref], r.worktree)
+    }
+    const again = fixed.exitCode === 0 ? await git($, ['log', '--format=%H%x1f%B%x1e', ...own], r.worktree) : null
+    if (fixed.exitCode !== 0 || !again || again.exitCode !== 0 || sessionLinkCommits(again.stdout).length) {
+      await block($, rid, { on: 'builder' }, `Commits ${linked.map(c => c.slice(0, 7)).join(', ')} carry a Claude-Session link, and the factory couldn't take it out (${tailOf(`${fixed.stdout}\n${fixed.stderr}`, 1)}). Remove the line from their messages, then retry.`)
+      return
+    }
+    await record($, rid, 'session links removed', `The Claude-Session line was taken out of ${linked.length} commit message${linked.length === 1 ? '' : 's'}: ${linked.map(c => c.slice(0, 7)).join(', ')}.`)
   }
   const stat = await git($, ['diff', '--stat', base, 'HEAD'], r.worktree)
   if (stat.exitCode === 0 && stat.stdout.trim()) {
@@ -890,8 +982,61 @@ async function runChecks($: EngineInterface, rid: string) {
   }
   // A review has no builder: failing checks are for the reviewers, and for Claude after them.
   if (!failed.length || after.kind === 'review') return startReviews($, rid)
-  if (after.checkRound < MAX_CHECK_ROUNDS) return startBuild($, rid, [], failed)
-  await block($, rid, { on: 'checks' }, `The checks still fail after ${after.checkRound} builder passes: ${failed.map(c => c.cmd).join(', ')}.`)
+  // A check that fails on the base too fails without this change: the builder isn't sent after it.
+  const onBase = await failingOnBase($, rid, after, failed, new Map(cmds.map(a => [a.join(' '), a])))
+  if (onBase === null) return
+  const own = failed.filter(c => !onBase.includes(c.cmd))
+  if (onBase.length) {
+    const marked = results.map(c => (onBase.includes(c.cmd) ? { ...c, failsOnBase: true } : c))
+    const line = `Failing the same way on the base (${after.base}), so not caused by this change: ${onBase.join(', ')}.`
+    await record($, rid, 'checks', line)
+    const noted = await patch($, rid, cur => ({ ...bump(cur, st => ({ ...st, baseFailed: [...new Set([...(st.baseFailed ?? []), ...onBase])] })), checks: marked, checksNote: [cur.checksNote, line].filter(Boolean).join(' ') }))
+    if (!noted || noted.phase !== 'checks') return
+    if (!own.length) {
+      if (stopOnBaseFailure) return block($, rid, { on: 'checks' }, `${line} Fix them on the default branch, or Skip the check, then Retry.`)
+      return startReviews($, rid)
+    }
+  }
+  if (after.checkRound < MAX_CHECK_ROUNDS) return startBuild($, rid, [], own)
+  await block($, rid, { on: 'checks' }, `The checks still fail after ${after.checkRound} builder passes: ${own.map(c => c.cmd).join(', ')}.`)
+}
+
+// Runs each failing check once on the run's base commit, in a worktree of its own (set up as the run's
+// was), and answers the ones that fail there too. Once per base and command: a Retry doesn't run them
+// again. A base that can't be checked out or set up answers none, so the builder goes as before.
+// null: the run moved on meanwhile.
+async function failingOnBase($: EngineInterface, rid: string, r: Run, failed: Check[], argvOf: Map<string, string[]>): Promise<string[] | null> {
+  // Keyed by the failure's shape too: a branch that fails differently in a later round is run on the base again.
+  const shapeOf = (c: Check) => failureShape(c.tail, [r.worktree])
+  const key = (c: Check) => `${r.base} ${c.cmd} ${shapeOf(c)}`
+  const todo = failed.filter(c => argvOf.has(c.cmd) && !(key(c) in (r.baseChecks ?? {})))
+  const seen: Record<string, boolean> = {}
+  if (todo.length) {
+    const root = rootOf(r)
+    const dir = `${root}/.factory/.base-${r.slug}`
+    await patch($, rid, cur => ({ ...cur, note: `running ${todo.map(c => c.cmd).join(', ')} on the base` }))
+    await git($, ['worktree', 'remove', '--force', dir], root)
+    const added = await git($, ['worktree', 'add', '--detach', dir, r.base], root)
+    if (added.exitCode === 0) {
+      try {
+        const setup = setupOption.trim() ? splitChecks(setupOption) : [detectSetup(await namesIn($, dir))].filter((c): c is string[] => c !== null)
+        let ready = true
+        for (const argv of setup) if ((await run$($, argv, dir)).exitCode !== 0) { ready = false; break }
+        for (const c of ready ? todo : []) {
+          if (!(await stillIn($, rid, 'checks'))) return null
+          const out = await run$($, argvOf.get(c.cmd)!, dir)
+          // A command that couldn't start or ran out of time says nothing about the base. It counts as an old
+          // failure only when it fails there the same way: another failing test is this change's.
+          if (!out.notStarted && !out.timedOut) seen[key(c)] = out.exitCode !== 0 && failureShape(tailOf(`${out.stdout}\n${out.stderr}`), [dir]) === shapeOf(c)
+        }
+      } finally {
+        await git($, ['worktree', 'remove', '--force', dir], root)
+      }
+    }
+  }
+  const cur = await patch($, rid, x => ({ ...x, baseChecks: { ...(x.baseChecks ?? {}), ...seen } }))
+  if (!cur || cur.phase !== 'checks') return null
+  return failed.filter(c => cur.baseChecks?.[key(c)] === true).map(c => c.cmd)
 }
 
 // Every reviewer looks at every round: a fix for one reviewer is new code for the others too.
@@ -901,7 +1046,7 @@ async function routeOf($: EngineInterface, r: Run) {
   const diff = await git($, ['diff', '-U0', ...spanOf(r)], r.worktree)
   const readable = names.exitCode === 0 && diff.exitCode === 0 && diff.stdout.length < 5_000_000
   const changed = names.exitCode === 0 ? changedOf(names.stdout) : []
-  return { ...routeReview(changed, readable ? diffLines(diff.stdout) : [], readable), uiTouched: touchesUi(changed) }
+  return { ...routeReview(changed, readable ? diffLines(diff.stdout) : [], readable), uiTouched: touchesUi(changed, readable ? linesByFile(diff.stdout) : undefined) }
 }
 
 async function startReviews($: EngineInterface, rid: string) {
@@ -1243,8 +1388,12 @@ async function syncWithBase($: EngineInterface, rid: string, r: Run): Promise<bo
     results.push({ cmd: argv.join(' '), ok: out.exitCode === 0, tail: out.exitCode === 0 ? '' : tailOf(`${out.stdout}\n${out.stderr}`), ...(out.notStarted ? { isMissing: true } : {}), ...(out.timedOut ? { isTimedOut: true } : {}) })
   }
   await record($, rid, `checks on the latest ${remote}`, results.map(c => `${c.isMissing ? '– (not installed)' : c.isTimedOut ? '⏱' : c.ok ? '✓' : '✗'} ${c.cmd}${c.tail ? `\n${c.tail}` : ''}`).join('\n') || 'No checks to run.')
-  const bad = results.filter(c => !c.ok && !c.isMissing)
-  const after = await patch($, rid, cur => ({ ...cur, checking: null, ...(bad.length ? {} : { synced: tip }) }))
+  // A check that already failed the same way on the base (#155) and still does isn't the sync's failure:
+  // it stays marked, so the approver is told and autoMerge holds off.
+  const same = (c: Check) => r.checks.some(x => x.failsOnBase && x.cmd === c.cmd && failureShape(x.tail, [r.worktree]) === failureShape(c.tail, [r.worktree]))
+  const marked = results.map(c => (!c.ok && !c.isMissing && same(c) ? { ...c, failsOnBase: true } : c))
+  const bad = marked.filter(c => !c.ok && !c.isMissing && !c.failsOnBase)
+  const after = await patch($, rid, cur => ({ ...cur, checking: null, ...(bad.length ? {} : { synced: tip, checks: marked }) }))
   if (after?.phase !== 'merging') return false
   if (bad.length) {
     await block($, rid, { on: 'merge' }, `Synced with the latest ${remote}, the checks fail: ${bad.map(c => c.cmd).join(', ')}. /factory rework sends it to the builder; Retry runs them again.`, cur => ({ ...cur, checks: results }))
@@ -1267,7 +1416,7 @@ async function openPr($: EngineInterface, rid: string, reason: string, byApprove
   })
   if (!r || !moved) return
   await recordStats($, rid)
-  void $.prompt.submit({ text: prPrompt(r, reason) }).catch(() => {
+  void $.prompt.submit({ text: prPrompt(r, reason, prRepoOf(r, r.remotes?.origin ?? null, r.remotes?.upstream ?? null)) }).catch(() => {
     $.ui.toast(`Approved. Open a PR from ${r.branch} yourself; the prompt could not be sent.`)
   })
   if (r.issue) {
@@ -1297,22 +1446,35 @@ async function setQueue($: EngineInterface, root: string, issue: number, state: 
   q[String(issue)] = { state, at: await isoNow($), ...(note ? { note: note.slice(0, 300) } : {}), ...(pr || was?.pr ? { pr: pr || was!.pr } : {}) }
   await $.fs.write(queuePath(root), `${JSON.stringify(q, null, 2)}\n`).catch(() => {})
 }
-// GitHub's REST API, never GraphQL (which Claude Code cloud sessions refuse). gh fills {owner}/{repo}
-// from the checkout's remote; text goes with -f (raw), so a body starting with @ is never read as a file.
-const repoApi = (path: string) => `repos/{owner}/{repo}/${path}`
-const issuesQuery = () => repoApi(`issues?labels=${encodeURIComponent(LABEL)}&state=open&per_page=100`)
+// GitHub's REST API, never GraphQL (which Claude Code cloud sessions refuse). The repository is origin's, read
+// from its URL: gh's own {owner}/{repo} may pick an upstream remote in a fork checkout, and then the queue would
+// read upstream's issues. A remote that isn't GitHub's leaves it to gh. Text goes with -f (raw), so a body
+// starting with @ is never read as a file.
+const ghSlug = (url: string) => {
+  const m = url.trim().match(/github\.com[:/]+([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i)
+  return m ? `${m[1]}/${m[2]}` : null
+}
+async function remoteSlug($: EngineInterface, root: string, remote: string): Promise<string | null> {
+  const out = await git($, ['remote', 'get-url', remote], root).catch(() => null)
+  return out && out.exitCode === 0 ? ghSlug(out.stdout) : null
+}
+async function apiOf($: EngineInterface, root: string) {
+  const slug = (await remoteSlug($, root, 'origin')) ?? '{owner}/{repo}'
+  return (path: string) => `repos/${slug}/${path}`
+}
+const issuesQuery = (api: (p: string) => string) => api(`issues?labels=${encodeURIComponent(LABEL)}&state=open&per_page=100`)
 // What the factory says on an issue. A failure (no gh, no access) doesn't stop the run: it is toasted.
 async function ghComment($: EngineInterface, root: string, issue: number, body: string) {
-  const out = await gh($, ['api', '-X', 'POST', repoApi(`issues/${issue}/comments`), '-f', `body=${body}`], root)
+  const out = await gh($, ['api', '-X', 'POST', (await apiOf($, root))(`issues/${issue}/comments`), '-f', `body=${body}`], root)
   if (out.exitCode !== 0) $.ui.toast(`Factory: couldn't comment on #${issue}: ${tailOf(out.stderr, 1)}`)
 }
 // Results ignored: a label that already exists (422) or isn't on the issue (404) is fine.
 async function ghLabel($: EngineInterface, root: string, issue: number, label: string, add: boolean) {
   if (add) {
-    await gh($, ['api', '-X', 'POST', repoApi('labels'), '-f', `name=${label}`, '-f', `color=${label === NEEDS_INFO_LABEL ? 'FBCA04' : 'D93F0B'}`], root)
-    await gh($, ['api', '-X', 'POST', repoApi(`issues/${issue}/labels`), '-f', `labels[]=${label}`], root)
+    await gh($, ['api', '-X', 'POST', (await apiOf($, root))('labels'), '-f', `name=${label}`, '-f', `color=${label === NEEDS_INFO_LABEL ? 'FBCA04' : 'D93F0B'}`], root)
+    await gh($, ['api', '-X', 'POST', (await apiOf($, root))(`issues/${issue}/labels`), '-f', `labels[]=${label}`], root)
   } else {
-    await gh($, ['api', '-X', 'DELETE', repoApi(`issues/${issue}/labels/${encodeURIComponent(label)}`)], root)
+    await gh($, ['api', '-X', 'DELETE', (await apiOf($, root))(`issues/${issue}/labels/${encodeURIComponent(label)}`)], root)
   }
 }
 // The operator: whoever gh is logged in as. Their comments on an issue count beside its author's.
@@ -1322,10 +1484,10 @@ async function operatorOf($: EngineInterface, root: string) {
 }
 async function fetchIssue($: EngineInterface, root: string, n: number): Promise<Issue | string> {
   const failed = (stderr: string) => `Couldn't read issue #${n} with gh: ${tailOf(stderr, 2) || 'gh failed'}`
-  const out = await gh($, ['api', repoApi(`issues/${n}`)], root)
+  const out = await gh($, ['api', (await apiOf($, root))(`issues/${n}`)], root)
   if (out.exitCode !== 0) return failed(out.stderr)
   // Fail closed: no issue from partial comments (a missed answer, a wrong resume).
-  const comments = await gh($, ['api', '--paginate', repoApi(`issues/${n}/comments?per_page=100`)], root)
+  const comments = await gh($, ['api', '--paginate', (await apiOf($, root))(`issues/${n}/comments?per_page=100`)], root)
   if (comments.exitCode !== 0) return failed(comments.stderr)
   const issue = parseRestIssue(out.stdout, comments.stdout)
   if (issue === 'pull-request') return `#${n} is a pull request, not an issue: the factory builds open issues only.`
@@ -1361,7 +1523,7 @@ async function queueNow($: EngineInterface): Promise<string> {
   const top = await git($, ['rev-parse', '--show-toplevel'], await $.session.root())
   if (top.exitCode !== 0) return 'Not a git repository.'
   const root = top.stdout.trim()
-  const listed = await gh($, ['api', '--paginate', issuesQuery()], root)
+  const listed = await gh($, ['api', '--paginate', issuesQuery(await apiOf($, root))], root)
   if (listed.exitCode !== 0) return `Couldn't list the issues with gh: ${tailOf(listed.stderr, 2) || 'gh failed'}`
   return queueText(queueLines(parseRestIssueList(listed.stdout), await queueOf($, root), new Set()))
 }
@@ -1372,7 +1534,7 @@ async function runQueue($: EngineInterface, quiet = false): Promise<string> {
   const ready = await preflight($)
   if ('error' in ready) return quiet ? '' : ready.error
   const { root } = ready
-  const listed = await gh($, ['api', '--paginate', issuesQuery()], root)
+  const listed = await gh($, ['api', '--paginate', issuesQuery(await apiOf($, root))], root)
   if (listed.exitCode !== 0) return `Couldn't list the issues with gh: ${tailOf(listed.stderr, 2) || 'gh failed'}`
   const open = parseRestIssueList(listed.stdout)
   const queue = await queueOf($, root)
@@ -1696,6 +1858,8 @@ async function doctorText($: EngineInterface, rid: string): Promise<string> {
   const ahead = await git($, ['rev-list', '--count', '@{upstream}..HEAD'], root)
   const n = ahead.exitCode === 0 ? Number(ahead.stdout.trim()) : 0
   if (n > 0) items.push({ level: 'warn', text: `${branch} is ${n} commit${n === 1 ? '' : 's'} ahead of its upstream: they would be in the run's PR too. Push them first, or start from a branch that has none.` })
+  // Runs an earlier session left (a restart loses a session's runs): each, and how to go on with it.
+  for (const o of await earlierRuns($, root)) items.push({ level: 'warn', text: `A run from an earlier session: ${o.slug} on ${o.branch}, ${o.commits} commit${o.commits === 1 ? '' : 's'} of its own${o.run ? `, stopped at ${o.run.phase}. /factory resume ${o.slug} goes on from there.` : `, no saved state. /factory review in ${o.worktree} reviews it; git worktree remove ${o.worktree} drops it.`}` })
   if (await goalRunThere($)) items.push({ level: 'ok', text: 'goal-run is installed: you approve the plan there.' })
   else items.push({ level: 'warn', text: "goal-run isn't installed: the factory asks for the plan's approval in its own band." })
   // The checks, as detection finds them in the checkout (a run's worktree holds the same files).
@@ -1764,6 +1928,7 @@ export const register: Register = (on, options) => {
   checkTimeoutMs = Math.max(1, Math.min(10, Number(options.checkTimeout ?? 10) || 10)) * 60_000
   checksOption = String(options.checks ?? '')
   setupOption = String(options.setup ?? '')
+  stopOnBaseFailure = String(options.baseFailures ?? 'go-on') === 'stop'
   autoPr = String(options.autoPr ?? 'off') === 'on'
   modelsOption = String(options.models ?? 'auto') === 'fixed' ? 'fixed' : 'auto'
   skillsOption = parseSkills(String(options.skills ?? ''))
@@ -2003,6 +2168,9 @@ export const register: Register = (on, options) => {
     if (arg === 'status') return { text: await statusText($, rid) }
     if (arg === 'doctor') return { text: await doctorText($, rid) }
     if (arg === 'checks-ok') return { text: await checksOkNow($, rid) }
+    if (/^resume(\s+@?[\w-]+)?$/.test(arg)) return { text: await resumeNow($, arg.slice(6).trim()) }
+    // `new:` with a colon: a feature that starts with the word "new" stays a feature.
+    if (/^new:\s*\S/.test(arg)) return { text: await start($, arg.replace(/^new:\s*/, ''), [], { fresh: true }) }
     if (arg === 'review' || arg.startsWith('review ')) {
       const rest = arg.slice(6).trim()
       const named = /^base=(\S+)\s*/.exec(rest)
