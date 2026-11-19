@@ -12,7 +12,7 @@ Nine mods, each installed on its own. They also work side by side: each draws it
 | [brain-hud](#brain-hud-the-agents-memory-made-visible) | Agent memory with its skill built in: mistake-brain logs and routes lessons, a pixel Claude with a brain reacts to each entry, and a pane draws the memory as a graph |
 | [factory](#factory-a-software-factory) | `/factory <feature>`: a spec, your approval of its plan, a build on its own branch, checks, parallel reviews and an approver, then Claude opens the PR |
 | [inspector](#inspector-a-bug-detective-for-the-history) | `/inspector:inspect`: reads what the project promises, traces every fix PR back to the change that broke it, classifies the bugs and writes a case file of what still needs fixing; `/inspector:audit`: a read-only audit of who deployed or changed what, matched to its approval |
-| [retro](#retro-learn-from-a-finished-run) | `/retro:distill` turns a finished run into a skill for next time; `/retro:agent-audit` checks each sub-agent against its brief and says whether the brief, the agent, the host or the model was at fault; `/retro:board` lets sub-agents share facts with evidence |
+| [retro](#retro-learn-from-a-finished-run) | `/retro:distill` turns a finished run into the changes that keep its lessons (a check, a test, access, guidance, a skill or a model choice, each with evidence and how to verify it); `/retro:agent-audit` checks each sub-agent against its brief and says whether the brief, the agent, the host or the model was at fault; `/retro:board` lets sub-agents share facts with evidence |
 
 Add the marketplace once, then install the ones you want:
 
@@ -512,7 +512,7 @@ A long run that worked out a process by trial and error holds that process, and 
 
 ```text
 /plugin install retro@claudemod
-/retro:distill                       # the newest session of this folder -> a draft skill
+/retro:distill                       # the newest session of this folder -> routed recommendations (+ a draft skill)
 /retro:distill path/to/cursor-chat.md   # a Cursor export or a pasted chat
 /retro:distill --update .claude/skills/my-skill   # tighten the skill the run used
 /retro:agent-audit                   # each sub-agent of the newest session against its brief

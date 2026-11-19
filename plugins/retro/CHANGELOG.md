@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Changed: `/retro:distill` routes each lesson before it drafts anything. After reading the project's checks, CI and docs, it gives each lesson one destination: an existing check to fix or wire in, a new test or lint rule, missing access or navigation docs, guidance in a brief, a skill, a model choice, or no change yet. Only *skill* lessons go into a SKILL.md draft. Each recommendation names its evidence, what was measured (kept apart from the hypothesis), what was already there, the change and its target, why, and how to verify it (`references/recommendations.md`), and `lint_skill.py --recommendations` checks it. `/retro:agent-audit` maps its owners onto the same destinations. Idea from comparing with mattpocock/skills' retro, which routes lessons into checks first.
+- Fixed: `lint_skill.py .` read the folder's name as empty.
 - Fixed: a resumed agent's calls were split between its dispatches by comparing timestamps as text, so `…:01.5Z` sorted before `…:01Z` and `+00:00` against `Z` went by the wrong order. They are compared as instants now.
 - Fixed: a writer replacing its own value on the board erased its disagreement with another writer (A writes X, B writes Y, B writes Y2). The disagreement now follows the writer's own refreshes back to the value they replaced, until a resolution or the other writer's confirm settles it.
 - Fixed (#163): transcript discovery fell back to every project when the requested one had none, and always added every Cursor project, so `--latest` could read another project's session. A project that is named stays inside it: no match is an empty list; a Cursor folder counts only when its name is the project's; `--everywhere` (trace.py, agents.py) lists all on purpose.

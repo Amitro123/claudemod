@@ -1,6 +1,6 @@
 ---
 name: distill
-description: "Turns a finished agent run into a skill for next time, or tightens the skill the run used: reads the run's transcript (a Claude Code session, a Cursor export, a pasted chat), digests what it did, what failed and what fixed it, and drafts a SKILL.md with the facts to resolve first, the procedure, the gotchas, the output and a budget. Lints it for private data and installs it only after you say yes. /retro:distill [path | latest] [--update <skill folder>]."
+description: "Turns a finished agent run into the changes that keep its lessons: reads the run's transcript (a Claude Code session, a Cursor export, a pasted chat), digests what it did, what failed and what fixed it, and routes each lesson to where it belongs (an existing check to fix or wire into CI, a new test or lint rule, missing access or navigation docs, guidance in a brief, a skill, a model choice, or no change yet), each with its evidence, target, reason and how to verify it. A recurring procedure becomes a SKILL.md draft with the facts to resolve first, the procedure, the gotchas, the output and a budget. Lints for private data and changes nothing until you say yes. /retro:distill [path | latest] [--update <skill folder>]."
 when_to_use: "After a long or messy run the user wants to repeat or do better: 'make a skill from this', 'turn this into a process', 'what should the next run do differently', 'learn from this run', 'תעשה מזה סקיל', 'דייק את התהליך'. Also to refine an existing skill after a run that used it. Not for writing a skill from scratch with no run behind it."
 ---
 
@@ -34,7 +34,26 @@ the answer, the failures and what fixed each, the decisions the run argued over,
 3. **Sort the steps.** Each step is *kept* (the final answer depends on it), a *dead end* (dropped), or a
    *lesson*: a failure and the call that fixed it, which becomes a gotcha. A question the run spent turns on
    (which procedure applies, two rules that conflict) becomes a rule that settles it.
-4. **Draft** `<scratch>/distill/<name>/SKILL.md`, `<name>` lowercase with hyphens:
+4. **Route each lesson** before writing any of it down. Not every lesson belongs in a prompt: a mistake a
+   machine can catch belongs in a check, which no next run can skip. First read what the project already has:
+   its check commands (`package.json` scripts, `Makefile`, `pyproject.toml`, `.factory/checks.json`), CI
+   (`.github/workflows/`, `azure-pipelines.yml`), lint configs, `CLAUDE.md`/`AGENTS.md`, and its docs. Then give
+   each lesson one destination, the first that fits:
+   1. **check**: a check exists but is broken or not run (not in CI, not in the checks file): fix or wire it.
+   2. **test**: the failure is mechanical (a wrong format, a missing file, an invariant broken): a new test,
+      lint rule, pre-commit hook or runtime assertion.
+   3. **access**: the run lacked a tool, a permission, a piece of information, or spent calls finding its way:
+      install it, grant it, or add a navigation pointer (`CLAUDE.md`/`AGENTS.md`, a doc).
+   4. **guidance**: it takes judgment: a line in a brief, a reviewer's checklist or a standards file.
+   5. **skill**: a procedure that will recur, with steps worth keeping: the SKILL.md draft of step 5.
+   6. **model**: the brief was clear and the task too much (or too little) for the model: the agent's
+      `model:` or the host's setting, from `/retro:agent-audit`'s "By model".
+   7. **no-change**: the evidence doesn't carry it: one run, a cause particular to that day, a claim with no
+      step behind it. Say what evidence would.
+   `/retro:agent-audit`'s owners map in: **brief** → guidance (or skill, for the skill's own text), **host** →
+   access, **execution** that repeats → test or check, **model** → model. Write the routing to
+   `<scratch>/distill/recommendations.md` in the shape of `references/recommendations.md`.
+5. **Draft** the skill only for the lessons routed to *skill*, `<scratch>/distill/<name>/SKILL.md`, `<name>` lowercase with hyphens:
    - frontmatter: `name`, `description` (what it does and what it hands back), `when_to_use` with the user's
      own phrasing of the task;
    - **Before you start**: each fact to resolve first, with its command (step 1 of the run's kept path is
@@ -45,12 +64,14 @@ the answer, the failures and what fixed each, the decisions the run argued over,
    - **Output**: the exact shape of the answer, from the run's final answer;
    - **Budget**: the kept path's call count times 1.5, rounded; per sub-agent, the audit's suggested budget,
      and briefs in the shape of `../agent-audit/references/brief-contract.md`.
-   Long command recipes go to `references/`. A script the run wrote by hand and will need again goes to
+   Lessons routed elsewhere stay out of the skill. Long command recipes go to `references/`. A script the run wrote by hand and will need again goes to
    `scripts/`, only if the user agrees.
-5. **Lint.** `python <skill_root>/scripts/lint_skill.py <scratch>/distill/<name>`. Fix every error; fix each
-   warning or say why not.
-6. **Show the user** the draft's path, the step numbers it removes from the next run and why, each gotcha
-   and the budget. Then ask where to install it, and copy only on yes:
+6. **Lint.** `python <skill_root>/scripts/lint_skill.py <scratch>/distill/<name>`, and
+   `python <skill_root>/scripts/lint_skill.py --recommendations <scratch>/distill/recommendations.md`. Fix every
+   error; fix each warning or say why not.
+7. **Show the user** the recommendations, most severe first, then the draft's path, the step numbers it removes
+   from the next run and why, each gotcha and the budget. Then ask which recommendations to apply and where to
+   install the skill, and change or copy only on yes:
    Claude Code `.claude/skills/<name>/` (project) or `~/.claude/skills/<name>/`, or a plugin's `skills/`;
    Cursor `.cursor/skills/<name>/` (project) or `~/.cursor/skills/<name>/`.
 
@@ -64,6 +85,11 @@ the diff, apply on yes, lint again. The log is how you know whether the skill is
 
 ## Gotchas
 
+- **A measurement is not a cause.** "12 failed calls" is measured; "because the brief didn't name the path" is a
+  hypothesis. Keep them in separate fields, and claim an improvement only from a comparison (two runs, the
+  run-log's rows), never from the change itself.
+- **Look before adding.** A check the project already has but doesn't run is the finding, not a new check.
+
 - **Text transcripts don't pair results with calls.** An "after:" line is the run's own prose about the
   result: the agent's claim, so check it against the final answer before building a rule on it.
 - **One run is one sample.** Make a rule of a failure only when its cause is general (shell quoting, dates
@@ -73,7 +99,8 @@ the diff, apply on yes, lint again. The log is how you know whether the skill is
 
 ## Output
 
-The draft folder, the lint result, what the skill changes about the next run (step numbers), the question
-of where to install it. With `--update`: the diff instead of the folder.
+The recommendations (`references/recommendations.md`'s shape, most severe first), the skill draft folder if any
+lesson went to *skill*, the lint results, what the changes do to the next run (step numbers), and the question
+of which to apply and where. With `--update`: the diff instead of the folder.
 
-Budget: about 15 tool calls.
+Budget: about 20 tool calls.
