@@ -11,9 +11,10 @@ A fact is a key (lowercase, dotted: `azure.resource_group`, `git.branch.feat-x.o
 most 500 characters), who wrote it, the evidence (the command or file that shows it) and a level: `reproduced`
 (ran something and saw it), `read` (read it in a record or file), `claimed` (someone's word: a report, a message).
 Nothing is deleted: a new value for a key supersedes the old one, and `get --history` shows both. Adding the
-value a key already has writes nothing. A new key for an attribute the board already holds under another
-namespace (`repo.default_branch` when `git.default_branch` exists) is refused, naming the existing key;
-`--new-key` adds it anyway when it is a different fact. Values that look like a token, a bearer value or a private key are
+value a key already has writes nothing. A new key for an attribute the board already holds with the same
+value under another namespace (`repo.default_branch = main` when `git.default_branch = main` exists) is
+refused, naming the existing key; `--new-key` adds it anyway. With a different value it is written (`gh.version`
+and `az.version` are two things) and `show` lists the pair to check. Values that look like a token, a bearer value or a private key are
 refused: the board holds where a secret is, never the secret.
 
 Every `get` is logged with who asked, so an audit can tell a fact that was read from one rediscovered.
@@ -172,10 +173,11 @@ def add(path: Path, key: str, value: str, by: str, evidence: str, level: str = "
         if old and old["value"] == value:
             return "exists", old
         twins = [] if old else similar(facts, key)
-        if twins and not new_key:
-            have = "; ".join(f"{k} = {facts[k]['value']} (by {facts[k]['by']})" for k in twins)
-            raise DuplicateKey(f"the board already has this attribute: {have}. Use that key (add to it if your value "
-                               f"is newer), or pass --new-key if {key} is a different fact")
+        same = [k for k in twins if facts[k]["value"] == value]
+        if same and not new_key:
+            have = "; ".join(f"{k} = {facts[k]['value']} (by {facts[k]['by']})" for k in same)
+            raise DuplicateKey(f"the board already has this fact: {have}. Nothing to add; use that key from now on, "
+                               f"or pass --new-key if {key} is a different fact that happens to have the same value")
         rec = {"type": "fact", "id": len(recs) + 1, "key": key, "value": value, "by": by, "evidence": evidence,
                "level": level, "ts": now(), "supersedes": old["id"] if old else None}
         if twins:
@@ -197,9 +199,15 @@ def get(path: Path, pattern: str | None, by: str, min_level: str = "claimed", hi
     return facts
 
 
+def slug(name: str) -> str:
+    """A name as one key segment: lowercase, `/` kept so `feat/x` and `feat-x` stay two keys, dots made `_`."""
+    return re.sub(r"[^a-z0-9_:/-]", "_", name.lower()).strip("/") or "_"
+
+
 def flatten_context(ctx: dict) -> list[tuple[str, str, str]]:
     """The facts every auditor needs, from /inspector:audit's context.json."""
     out: list[tuple[str, str, str]] = []
+    root = Path((ctx.get("repo") or {}).get("root") or "") if (ctx.get("repo") or {}).get("root") else None
     w = ctx.get("window") or {}
     for k in ("now", "since", "deploy_window_start"):
         if w.get(k):
@@ -210,7 +218,7 @@ def flatten_context(ctx: dict) -> list[tuple[str, str, str]]:
     for r in ctx.get("remotes") or []:
         for f in ("url", "kind", "owner", "project", "repo"):
             if r.get(f):
-                out.append((f"remote.{r['name']}.{f}", str(r[f]), "git remote -v"))
+                out.append((f"remote.{slug(r['name'])}.{f}", str(r[f]), "git remote -v"))
     if ctx.get("default_branch"):
         out.append(("git.default_branch", ctx["default_branch"], "git symbolic-ref refs/remotes/<remote>/HEAD"))
     if ctx.get("base_commits") is not None:
@@ -219,13 +227,17 @@ def flatten_context(ctx: dict) -> list[tuple[str, str, str]]:
     if "count" in heads:
         out.append(("git.remote_heads.count", str(heads["count"]), heads.get("source", "git ls-remote")))
     for b in ctx.get("branches") or []:
-        slug = re.sub(r"[^a-z0-9_.-]", "-", b["name"].lower())
-        out.append((f"git.branch.{slug}.on_remote", str(b.get("on_remote")).lower(), "git ls-remote --heads"))
+        name = slug(b["name"])
+        out.append((f"git.branch.{name}.on_remote", str(b.get("on_remote")).lower(), "git ls-remote --heads"))
         if b.get("commits_in_window") is not None:
-            out.append((f"git.branch.{slug}.commits_in_window", str(b["commits_in_window"]), "git log --since"))
+            out.append((f"git.branch.{name}.commits_in_window", str(b["commits_in_window"]), "git log --since"))
     for wt in ctx.get("worktrees") or []:
-        slug = re.sub(r"[^a-z0-9_.-]", "-", Path(wt.get("path", "")).name.lower()) or "root"
-        out.append((f"git.worktree.{slug}.branch", str(wt.get("branch") or "detached"), "git worktree list --porcelain"))
+        wt_path = Path(wt.get("path", ""))
+        try:
+            rel = wt_path.relative_to(root).as_posix() if root else wt_path.name
+        except ValueError:
+            rel = wt_path.as_posix().lstrip("/")
+        out.append((f"git.worktree.{slug(rel) if rel not in ('', '.') else 'root'}.branch", str(wt.get("branch") or "detached"), "git worktree list --porcelain"))
     for t, ok in (ctx.get("tools") or {}).items():
         out.append((f"tool.{t}.installed", str(ok).lower(), "shutil.which"))
     for t, ok in (ctx.get("signed_in") or {}).items():
@@ -284,8 +296,9 @@ def main(argv=None) -> int:
         elif not facts:
             print("(no facts)")
         else:
+            live = {x["id"] for x in current(load(path)).values()} if a.history else set()
             for r in facts:
-                old = " [superseded]" if a.history and r["id"] not in {x["id"] for x in current(load(path)).values()} else ""
+                old = " [superseded]" if a.history and r["id"] not in live else ""
                 print(f"{r['key']} = {r['value']}    [{r['level']}, by {r['by']}: {r['evidence']}]{old}")
     elif a.cmd == "seed":
         ctx = json.loads(Path(a.src).read_text(encoding="utf-8"))
@@ -320,7 +333,7 @@ def main(argv=None) -> int:
         twins = sorted({tuple(sorted([k, *similar(facts, k)])) for k in facts if similar(facts, k)})
         for group in twins:
             vals = {facts[k]["value"] for k in group}
-            print(f"{'conflict' if len(vals) > 1 else 'same fact, two keys'}: {', '.join(group)}")
+            print(f"{'same attribute, different values (two things, or a conflict to settle)' if len(vals) > 1 else 'same fact, two keys'}: {', '.join(group)}")
     return 0
 
 

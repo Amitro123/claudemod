@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_retro import Writer  # noqa: E402  (also puts distill/ and agent-audit/ scripts on the path)
 import agents as A  # noqa: E402
 import board as B  # noqa: E402
+import transcript as T  # noqa: E402
 
 TOKEN = "ghp_" + "Kp" * 18
 
@@ -75,6 +76,41 @@ def test_show_names_two_keys_for_one_fact_and_keys_lists_them(tmp_path, capsys):
     assert "same fact, two keys: git.default_branch, repo.default_branch" in out and "on_remote," not in out
     B.main(["--board", str(f), "keys"])
     assert capsys.readouterr().out.splitlines() == ["git.branch.a.on_remote = true", "git.default_branch = main", "repo.default_branch = main"]
+
+
+def test_two_things_with_the_same_attribute_are_both_written(tmp_path, capsys):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "gh.version", "2.60", "c", "gh --version")
+    B.add(f, "az.version", "2.67", "c", "az version")
+    assert len(B.get(f, None, "t")) == 2
+    B.main(["--board", str(f), "show"])
+    assert "same attribute, different values" in capsys.readouterr().out
+
+
+def test_seed_keys_do_not_collide_and_take_any_remote_name(tmp_path):
+    ctx = {"repo": {"root": "/r"}, "remotes": [{"name": "Upstream", "url": "https://github.com/o/r", "kind": "github"}],
+           "branches": [{"name": "feat/x", "on_remote": True}, {"name": "feat-x", "on_remote": False}, {"name": "release/1.2", "on_remote": True}],
+           "worktrees": [{"path": "/r", "branch": "main"}, {"path": "/r/.factory/a/app", "branch": "f1"}, {"path": "/r/other/app", "branch": "f2"}]}
+    keys = {k: v for k, v, _ in B.flatten_context(ctx)}
+    assert keys["git.branch.feat/x.on_remote"] == "true" and keys["git.branch.feat-x.on_remote"] == "false"
+    assert keys["git.branch.release/1_2.on_remote"] == "true"
+    assert keys["remote.upstream.url"] == "https://github.com/o/r"
+    assert keys["git.worktree.root.branch"] == "main"
+    assert keys["git.worktree._factory/a/app.branch"] == "f1" and keys["git.worktree.other/app.branch"] == "f2"
+    f = tmp_path / "b.jsonl"
+    for k, v, ev in B.flatten_context(ctx):
+        B.add(f, k, v, "main", ev)
+    assert len(B.get(f, None, "t")) == len(keys)
+
+
+def test_a_fact_written_in_the_second_the_agent_started_is_known(tmp_path):
+    path, board = board_session(tmp_path, verifier_reads_first=False, brief_has_board=True)
+    sess = T.load(path)
+    aud = [x for x in sess.agents if x.agent_id == "aud"][0]
+    facts = A.load_board(str(board))
+    facts[0]["ts"] = aud.launched
+    r = A.audit_run(aud, tmp_path, {"board_in_use": True, "board_facts": facts})
+    assert r["board"]["reran_known"] == ["azure.resource_group"]
 
 
 def test_cli_refusal_names_the_existing_key(tmp_path):
@@ -159,7 +195,7 @@ def test_seed_from_audit_context(tmp_path):
     f = tmp_path / "b.jsonl"
     assert B.main(["--board", str(f), "seed", "--from", str(tmp_path / "c.json")]) == 0
     facts = {r["key"]: r["value"] for r in B.get(f, None, "t")}
-    assert facts["git.branch.feat-x.on_remote"] == "false" and facts["git.base_commits_in_window"] == "2"
+    assert facts["git.branch.feat/x.on_remote"] == "false" and facts["git.base_commits_in_window"] == "2"
     assert facts["ado.org.contoso"] == "P" and facts["tool.gh.signed_in"] == "true" and "tool.az.signed_in" not in facts
     assert B.main(["--board", str(f), "seed", "--from", str(tmp_path / "c.json")]) == 0
     assert len(B.get(f, None, "t", history=True)) == len(facts), "seeding twice adds nothing"
@@ -214,17 +250,34 @@ def audited(tmp: Path, **kw) -> dict[str, dict]:
     return {r["agent"]: r for r in json.loads(out.read_text())["agents"]}
 
 
-def test_rerunning_a_board_fact_is_execution_when_the_brief_named_the_board(tmp_path):
+def test_rerunning_a_board_fact_is_counted_not_blamed(tmp_path):
     r = audited(tmp_path, verifier_reads_first=False, brief_has_board=True)["aud"]
     assert r["board"] == {"reads": 0, "writes": 1, "reran_known": ["azure.resource_group"]}
-    assert any("already on the board" in x for x in r["causes"]["execution"])
-    assert not any("Board line" in x for x in r["causes"]["brief"])
+    assert not any("board" in x for x in r["causes"]["execution"] if "never read" not in x)
+    assert any("never read it" in x for x in r["causes"]["execution"]), "the brief named the board and it never read it"
 
 
-def test_rerunning_a_board_fact_is_the_brief_when_it_never_named_the_board(tmp_path):
+def test_a_brief_without_the_board_line_is_the_brief(tmp_path):
     r = audited(tmp_path, verifier_reads_first=False, brief_has_board=False)["aud"]
-    assert any("already on the board" in x for x in r["causes"]["brief"])
     assert any("no Board line" in x for x in r["causes"]["brief"])
+    assert not any("never read" in x for x in r["causes"]["execution"])
+
+
+def test_same_command_matches_words_from_the_start_only():
+    assert A.same_command("git ls-remote --heads", "cd /r && git ls-remote --heads origin")
+    assert A.same_command("az group list", "x=1; az group list -o json | jq .")
+    assert not A.same_command("git ls-remote --heads", "ls -la")
+    assert not A.same_command("git log origin/main --first-parent --since", "git log --oneline -5")
+    assert not A.same_command("git", "git status"), "one word is too little to call it the same command"
+
+
+def test_a_verifier_is_never_blamed_for_not_reading_the_board(tmp_path):
+    path, board = board_session(tmp_path, verifier_reads_first=False, brief_has_board=True)
+    sess = T.load(path)
+    v = [x for x in sess.agents if x.agent_id == "ver"][0]
+    v.calls = [c for c in v.calls if "board.py" not in str(c.input.get("command", ""))]
+    r = A.audit_run(v, tmp_path, {"board_in_use": True, "board_facts": A.load_board(str(board))})
+    assert not any("never read" in x for x in r["causes"]["execution"])
 
 
 def test_a_verifier_that_reads_the_board_first_is_flagged(tmp_path):

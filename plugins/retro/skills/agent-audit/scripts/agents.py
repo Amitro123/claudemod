@@ -71,8 +71,24 @@ def load_board(path: str | None) -> list[dict]:
     return out
 
 
+SHELL_TOOLS = {"Bash", "Shell", "PowerShell", "run_terminal_cmd"}
+
+
 def evidence_command(ev: str) -> str:
     return " ".join(ev.split("->", 1)[0].split()).strip("` ")
+
+
+def same_command(evidence: str, command: str) -> bool:
+    """The call ran the evidence's command: its words, in order, from the start of one of the call's commands.
+    `ls` is not `git ls-remote`, and a bare `git log` is not `git log origin/main --first-parent --since`."""
+    ev = evidence.split()
+    if len(ev) < 2:
+        return False
+    for part in re.split(r"\s*(?:&&|\|\||;|\|)\s*", re.sub(r"^cd \S+\s*(?:&&|;)\s*", "", command.strip())):
+        words = part.split()
+        if words[:len(ev)] == ev:
+            return True
+    return False
 
 
 def norm_call(c) -> str:
@@ -208,17 +224,19 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
         checks["board"] = brief_names_board
         if not brief_names_board:
             causes["brief"].append("brief has no Board line, while the run used a board")
-    known = [f for f in ctx.get("board_facts", []) if a.launched and (T.seconds_between(f.get("ts"), a.launched) or -1) >= 0]
-    rerun = []
-    for f in known:
-        ev = evidence_command(f.get("evidence", ""))
-        if len(ev) >= 8 and any(ev in norm_call(c) or norm_call(c) in ev for c in calls if c.tool in DISCOVERY_TOOLS and not BOARD_GET_RE.search(str(c.input.get("command", "")))):
-            rerun.append(f["key"])
-    if rerun:
-        (causes["execution"] if brief_names_board else causes["brief"]).append(
-            f"re-ran the command for {len(rerun)} fact(s) already on the board: " + ", ".join(sorted(set(rerun))[:5]))
+    known = []
+    for f in ctx.get("board_facts", []):
+        gap = T.seconds_between(f.get("ts"), a.launched) if a.launched else None
+        if gap is not None and gap >= 0:
+            known.append(f)
+    shell = [str(c.input.get("command", "")) for c in calls if c.tool in SHELL_TOOLS]
+    shell = [x for x in shell if not BOARD_GET_RE.search(x) and not BOARD_ADD_RE.search(x)]
+    rerun = sorted({f["key"] for f in known if any(same_command(evidence_command(f.get("evidence", "")), x) for x in shell)})
+    is_verifier = bool(VERIFIER_RE.search(f"{a.subagent_type} {a.description}"))
+    if brief_names_board and ctx.get("board_in_use") and has_transcript and not board_reads and not is_verifier:
+        causes["execution"].append("its brief named the board and it never read it")
     first_work = next((i for i, c in enumerate(calls) if not (c.tool in DISCOVERY_TOOLS and (BOARD_GET_RE.search(str(c.input.get("command", ""))) or BOARD_ADD_RE.search(str(c.input.get("command", "")))))), None)
-    if VERIFIER_RE.search(f"{a.subagent_type} {a.description}") and board_reads and (first_work is None or board_reads[0] < first_work):
+    if is_verifier and board_reads and (first_work is None or board_reads[0] < first_work):
         causes["execution"].append(
             "a verifier read the board before its own check: its verdicts may copy what it was meant to test")
     struggled = bool(loops or unrecovered or missing or (b and measured is not None and measured > b["n"]))
@@ -394,17 +412,22 @@ def main(argv=None) -> int:
             print("No session transcript found. Pass its path, or --reports DIR with end-of-run report files.", file=sys.stderr)
             return 2
     rows, notes = [], []
-    board_facts = load_board(a.board)
+    all_board_facts = load_board(a.board)
     for s in sessions:
         sess = T.load(s)
         notes += sess.notes
+        board_facts = all_board_facts
+        if all_board_facts and len(sessions) > 1:
+            first = min(f.get("ts", "") for f in all_board_facts)
+            inside = sess.start and sess.end and (T.seconds_between(sess.start, first) or 0) >= 0 and (T.seconds_between(first, sess.end) or 0) >= 0
+            board_facts = all_board_facts if inside else []
         for x in sess.agents:
             before = [c for c in sess.calls if c.ts and x.launched and c.ts < x.launched and c.tool not in T.AGENT_TOOLS]
             skills = [str(c.input.get("skill")) for c in before if c.tool == "Skill" and c.input.get("skill")]
             ctx = {"main_before": {norm_call(c) for c in before if c.tool in DISCOVERY_TOOLS},
                    "skill": skills[-1] if skills else None, "board_facts": board_facts,
                    "board_in_use": bool(board_facts) or any(BOARD_GET_RE.search(str(c.input.get("command", ""))) or BOARD_ADD_RE.search(str(c.input.get("command", "")))
-                                                           for y in sess.agents for c in y.calls)}
+                                                           for y in sess.agents for c in y.calls)}  # this session's agents only
             rows.append(audit_run(x, cwd, ctx))
     shared_discovery(rows)
     if a.skill:

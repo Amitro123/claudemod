@@ -33,7 +33,7 @@ that needs it (as `/inspector:audit` does) so that skill works on its own, in Cl
    or from `/inspector:audit`'s context: `... seed --from <scratch>/audit/context.json`.
 2. **Put two lines in each brief** (the shape is in `../agent-audit/references/brief-contract.md`):
    ```
-   Board: <file>. Before you look something up, run: python <path to board.py> --board <file> get <prefix>* --by <your name>
+   Board: <file>. Before you look something up, run: python <path to board.py> --board <file> get '<prefix>*' --by <your name>
           When you establish a fact a sibling may need, add it: ... add <key> <value> --by <your name> --evidence "<command> -> <result>"
    ```
    For a verifier, replace the first line with: "Read the board only after you have your own answer."
@@ -52,9 +52,10 @@ Lowercase, dotted, at most 120 characters: `<system>.<thing>[.<name>].<attribute
 `azure.resource_group`, `ado.org.<org>`, `tool.az.signed_in`. One value per key, one line, at most 500
 characters; a list goes under keys of its own, a long result in a file whose path is the value.
 
-A new key for an attribute the board already holds under another namespace (`repo.default_branch` while
-`git.default_branch` exists) is refused, and the refusal names the key and its value: the agent reuses it.
-`--new-key` writes it anyway, for a fact that only shares a name. Keys that differ in a name in the middle
+A new key for an attribute the board already holds with the same value under another namespace
+(`repo.default_branch = main` while `git.default_branch = main` exists) is refused, and the refusal names
+the key: the agent reuses it. With a different value the key is written, since `gh.version` and
+`az.version` are two things, and `show` lists the pair to check. `--new-key` overrides the refusal. Keys that differ in a name in the middle
 (`git.branch.a.on_remote`, `git.branch.b.on_remote`) are different facts and never refused.
 
 ## Gotchas
