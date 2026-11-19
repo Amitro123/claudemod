@@ -66,7 +66,7 @@ systems where it happened. You report; you change nothing.
    with no approval record, or anything that looks like a secret; fix the rows (or send them back) and run
    it again. Add `--show-identities` only if the user wants people named; otherwise emails show as ***@domain.
 6. **Close.** Run `context.py` again and compare heads: commits that landed during the audit are reported
-   as such. `board.py ... show` lists facts that two agents wrote with different values: settle each before
+   as such. `board.py ... show` lists each `disagreement` (two agents, two values, one key) with both evidence records: settle each with `add ... --resolve "<why>"` before
    reporting. Optionally run `/retro:agent-audit --board <scratch>/audit/board.jsonl` on this session to see
    whether the briefs held up and what the board saved.
 

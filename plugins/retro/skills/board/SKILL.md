@@ -43,8 +43,11 @@ that needs it (as `/inspector:audit` does) so that skill works on its own, in Cl
    Add a third line with the keys: `Keys now on the board:` and the output of `board.py --board <file> keys`,
    plus any key you expect the agent to write (`azure.resource_group`). Agents then reuse names instead of
    inventing their own.
-3. **Read it before you report**: `... show` lists every current fact, who wrote it, and who read what. A
-   fact that two agents wrote with different values is a contradiction to settle, not a choice to make.
+3. **Read it before you report**: `... show` lists every current fact, who wrote it, and who read what, and
+   each `disagreement`: a key whose value one agent replaced with a different value from another. That is a
+   contradiction to settle, not a choice to make: check the record, then
+   `add <key> <value> --by main --evidence "<command> -> <result>" --resolve "<why this value>"`. It is also
+   settled when the first writer confirms the new value. One writer replacing its own value is a refresh.
 4. **Measure it.** `/retro:agent-audit` counts each agent's board reads and writes, and flags a command an
    agent ran for a fact that was already on the board, and a verifier that read the board before its own probe.
 
@@ -68,6 +71,9 @@ the key: the agent reuses it. With a different value the key is written, since `
   board keeps both with their times (`get --history`), which is how a push during an audit shows. A fact
   written long ago is not current either: `get` and `show` give its last-confirmed time, so trust an old
   "false" only if someone confirmed it recently, or use `--max-age`.
+- **Freshness follows the level.** With `--min-level reproduced --max-age N`, only a confirm at that level or
+  above makes a fact fresh: a `claimed` confirm can't refresh a reproduced fact. `seed` records the time in
+  the context (`window.now`), not the time it ran, so re-seeding an old context never looks fresh.
 - **Agents that don't read it.** If the audit shows no reads, the brief's Board line was missing or vague.
 - **The same fact under two names.** In the first trial an agent wrote the default branch again under a key of
   its own, because the brief named none. The refusal stops the second write; the Keys line prevents it.

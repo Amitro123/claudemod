@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed (#162): two writers giving one key different values left only the last value in `show`, with no notice. A current fact that replaced another writer's different value is now a disagreement: `show` prints both values with their writers and evidence, and `get` carries it as `conflict`. It is settled by `add ... --resolve "<why>"` (on the new value or a confirm of it) or by the first writer confirming the new value; one writer replacing its own value is a refresh, and the same value is a confirm. History is kept.
+- Fixed (#157): under `--min-level L`, `--max-age` counts only confirms at level L or above, so a claimed confirm no longer makes a reproduced fact look fresh. `seed` writes each fact and confirm at the context's `window.now` (with the time it ran as `recorded`), so re-seeding an old context never refreshes it. A `--max-age` too large for a date is refused (`refused:`, exit 2) instead of an `OverflowError` traceback.
+- Fixed: a new record's id came from the count of parsed lines, so a line that won't parse could make two records share an id. Ids are now one more than the highest on the board.
+
 - Added: confirms on the board. An `add` with the value a key already has appends a `confirm` record (key, value, the fact's id, who, evidence, level, time), through the same refusals and lock as any `add`. `get` (text and `--json`: `last_confirmed`, `confirms`) and `show` give each fact's last-confirmed time and confirm count, and `show`'s header counts confirms. `get --max-age MINUTES` returns only facts written or confirmed in the last MINUTES minutes, for volatile facts such as branch state; the read log records `max_age`. A confirm does not change the fact's level, and a superseding fact starts with no confirms. The inspector's copy of `board.py` is updated with it.
 - Changed: a same-value `add` now returns `confirmed` (CLI: `confirmed: <key> = <value> (fact #<id>)`) and appends a record; it was `exists` and wrote nothing. `seed` counts `confirmed` instead of `exists`. `get` refusals (a secret in `--by` or the pattern, a bad `--max-age`) now print `refused: ...` and exit 2 instead of a traceback.
 

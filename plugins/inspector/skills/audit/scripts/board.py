@@ -133,8 +133,14 @@ def current(recs: list[dict]) -> dict[str, dict]:
     return facts
 
 
-def last_confirmed(recs: list[dict]) -> tuple[dict[int, str], dict[int, int]]:
-    """For each fact id: the latest of its own `ts` and the `ts` of its confirms, and how many confirms it has.
+def next_id(recs: list[dict]) -> int:
+    """One more than the highest id on the board: a line that won't parse is skipped, so counting lines could reuse one."""
+    return max((r["id"] for r in recs if isinstance(r.get("id"), int)), default=0) + 1
+
+
+def last_confirmed(recs: list[dict], min_level: str = "claimed") -> tuple[dict[int, str], dict[int, int]]:
+    """For each fact id: the latest of its own `ts` and the `ts` of its confirms at `min_level` or above, and how
+    many such confirms it has. A claimed confirm can't make a reproduced fact fresh under --min-level reproduced.
     A confirm whose `ts` won't parse is skipped; a fact whose own `ts` won't parse keeps the raw string."""
     latest: dict[int, str] = {}
     best: dict[int, datetime | None] = {}
@@ -147,6 +153,8 @@ def last_confirmed(recs: list[dict]) -> tuple[dict[int, str], dict[int, int]]:
     for r in recs:
         if r.get("type") != "confirm" or r.get("fact") not in latest:
             continue
+        if LEVELS.get(r.get("level"), 0) < LEVELS[min_level]:
+            continue
         fid = r["fact"]
         counts[fid] += 1
         t = _parse_ts(r.get("ts"))
@@ -155,6 +163,24 @@ def last_confirmed(recs: list[dict]) -> tuple[dict[int, str], dict[int, int]]:
         if best[fid] is None or t > best[fid]:
             best[fid], latest[fid] = t, r["ts"]
     return latest, counts
+
+
+def conflicts(recs: list[dict]) -> dict[str, dict]:
+    """Keys whose current fact replaced another writer's different value, with nothing settling it: an `add
+    --resolve` (on the new value or a confirm of it), or the first writer confirming the new value. One writer
+    replacing their own value is a refresh (the branch was pushed), not a disagreement."""
+    by_id = {r["id"]: r for r in recs if r.get("type") == "fact" and isinstance(r.get("id"), int)}
+    out = {}
+    for key, cur in current(recs).items():
+        prev = by_id.get(cur.get("supersedes"))
+        if not prev or prev.get("by") == cur.get("by") or prev.get("value") == cur.get("value") or cur.get("resolution"):
+            continue
+        settled = any(r.get("type") == "confirm" and r.get("fact") == cur["id"] and (r.get("resolution") or r.get("by") == prev.get("by"))
+                      for r in recs)
+        if not settled:
+            out[key] = {"key": key, "now": {k: cur.get(k) for k in ("value", "by", "evidence", "level", "ts")},
+                        "before": {k: prev.get(k) for k in ("value", "by", "evidence", "level", "ts")}}
+    return out
 
 
 def append(f, rec: dict) -> None:
@@ -196,7 +222,10 @@ def similar(facts: dict[str, dict], key: str) -> list[str]:
     return sorted(out)
 
 
-def add(path: Path, key: str, value: str, by: str, evidence: str, level: str = "read", new_key: bool = False) -> tuple[str, dict]:
+def add(path: Path, key: str, value: str, by: str, evidence: str, level: str = "read", new_key: bool = False,
+        resolve: str | None = None, at: str | None = None) -> tuple[str, dict]:
+    """`resolve`: why this value settles a disagreement (main agent). `at`: when the fact was observed, for facts
+    seeded from an earlier record (a context.json); the record keeps the time it was written as `recorded`."""
     err = check(key, value, level) or (None if evidence.strip() else "evidence: name the command, record or file that shows it")
     if err:
         raise ValueError(err)
@@ -206,13 +235,19 @@ def add(path: Path, key: str, value: str, by: str, evidence: str, level: str = "
         raise ValueError("the key or --by looks like it holds a secret; name the fact, not its value")
     if not by.strip() or len(by) > 80 or "\n" in by:
         raise ValueError("--by: the writer's name, one line, at most 80 characters")
+    if resolve is not None and (not resolve.strip() or "\n" in resolve or len(resolve) > MAX_VALUE or SECRET_RE.search(resolve)):
+        raise ValueError("--resolve: why this value settles it, one line, at most 500 characters, no secret")
+    if at is not None and _parse_ts(at) is None:
+        raise ValueError(f"at: {at!r} is not an ISO time")
+    stamp = {"ts": at, "recorded": now()} if at else {"ts": now()}
+    extra = {"resolution": resolve} if resolve else {}
     with Locked(path) as f:
         recs = records(f)
         facts = current(recs)
         old = facts.get(key)
         if old and old["value"] == value:
-            conf = {"type": "confirm", "id": len(recs) + 1, "key": key, "value": value, "fact": old["id"],
-                    "by": by, "evidence": evidence, "level": level, "ts": now()}
+            conf = {"type": "confirm", "id": next_id(recs), "key": key, "value": value, "fact": old["id"],
+                    "by": by, "evidence": evidence, "level": level, **stamp, **extra}
             append(f, conf)
             return "confirmed", conf
         twins = [] if old else similar(facts, key)
@@ -221,8 +256,8 @@ def add(path: Path, key: str, value: str, by: str, evidence: str, level: str = "
             have = "; ".join(f"{k} = {facts[k]['value']} (by {facts[k]['by']})" for k in same)
             raise DuplicateKey(f"the board already has this fact: {have}. Nothing to add; use that key from now on, "
                                f"or pass --new-key if {key} is a different fact that happens to have the same value")
-        rec = {"type": "fact", "id": len(recs) + 1, "key": key, "value": value, "by": by, "evidence": evidence,
-               "level": level, "ts": now(), "supersedes": old["id"] if old else None}
+        rec = {"type": "fact", "id": next_id(recs), "key": key, "value": value, "by": by, "evidence": evidence,
+               "level": level, **stamp, "supersedes": old["id"] if old else None, **extra}
         if twins:
             rec["similar_keys"] = twins
         append(f, rec)
@@ -241,11 +276,16 @@ def get(path: Path, pattern: str | None, by: str, min_level: str = "claimed", hi
         if pattern:
             facts = [r for r in facts if (r["key"].startswith(pattern[:-1]) if pattern.endswith("*") else r["key"] == pattern)]
         facts = [r for r in facts if LEVELS.get(r.get("level"), 0) >= LEVELS[min_level]]
-        latest, counts = last_confirmed(recs)
-        facts = [{**r, "last_confirmed": latest.get(r.get("id"), r.get("ts")), "confirms": counts.get(r.get("id"), 0)}
+        latest, counts = last_confirmed(recs, min_level)
+        open_ = conflicts(recs)
+        facts = [{**r, "last_confirmed": latest.get(r.get("id"), r.get("ts")), "confirms": counts.get(r.get("id"), 0),
+                  **({"conflict": open_[r["key"]]["before"]} if r["key"] in open_ and not history else {})}
                  for r in facts]
         if max_age is not None:
-            since = _utcnow() - timedelta(minutes=max_age)
+            try:
+                since = _utcnow() - timedelta(minutes=max_age)
+            except OverflowError:
+                raise ValueError(f"--max-age: {max_age:g} minutes reaches before the year 1; give fewer") from None
             facts = [r for r in facts if (t := _parse_ts(r["last_confirmed"])) is not None and t >= since]
         read = {"type": "read", "by": by, "pattern": pattern or "*", "keys": [r["key"] for r in facts], "ts": now()}
         if max_age is not None:
@@ -328,6 +368,7 @@ def main(argv=None) -> int:
     a_add.add_argument("--evidence", required=True)
     a_add.add_argument("--level", default="read", choices=list(LEVELS))
     a_add.add_argument("--new-key", action="store_true", help="add it although the same attribute exists under another key")
+    a_add.add_argument("--resolve", metavar="WHY", help="this value settles a disagreement between writers (main agent)")
     a_get = sub.add_parser("get")
     a_get.add_argument("pattern", nargs="?")
     a_get.add_argument("--by", required=True)
@@ -345,7 +386,7 @@ def main(argv=None) -> int:
     path = board_path(a.board)
     if a.cmd == "add":
         try:
-            what, rec = add(path, a.key, a.value, a.by, a.evidence, a.level, a.new_key)
+            what, rec = add(path, a.key, a.value, a.by, a.evidence, a.level, a.new_key, a.resolve)
         except ValueError as e:
             print(f"refused: {e}", file=sys.stderr)
             return 2
@@ -366,13 +407,17 @@ def main(argv=None) -> int:
             for r in facts:
                 old = " [superseded]" if a.history and r["id"] not in live else ""
                 seen = f", last confirmed {r['last_confirmed']}" if r["confirms"] else ""
-                print(f"{r['key']} = {r['value']}    [{r['level']}, by {r['by']}: {r['evidence']}, written {r['ts']}{seen}]{old}")
+                was = f" [disagreement: replaced {r['conflict']['value']} by {r['conflict']['by']}, not settled]" if r.get("conflict") else ""
+                print(f"{r['key']} = {r['value']}    [{r['level']}, by {r['by']}: {r['evidence']}, written {r['ts']}{seen}]{old}{was}")
     elif a.cmd == "seed":
         ctx = json.loads(Path(a.src).read_text(encoding="utf-8"))
+        observed = (ctx.get("window") or {}).get("now")
+        if observed is not None and _parse_ts(observed) is None:
+            observed = None
         n = {"added": 0, "superseded": 0, "confirmed": 0, "refused": 0}
         for key, value, ev in flatten_context(ctx):
             try:
-                what, _ = add(path, key, value, a.by, ev, "read")
+                what, _ = add(path, key, value, a.by, ev, "read", at=observed)
                 n[what] += 1
             except ValueError:
                 n["refused"] += 1
@@ -393,6 +438,7 @@ def main(argv=None) -> int:
             if r.get("type") == "fact":
                 writers[r["by"]] = writers.get(r["by"], 0) + 1
         latest, counts = last_confirmed(recs)
+        open_ = conflicts(recs)
         print(f"{len(facts)} facts ({sum(1 for r in recs if r.get('type') == 'fact')} records, "
               f"{sum(1 for r in recs if r.get('type') == 'confirm')} confirms); "
               f"written by: {', '.join(f'{k} {v}' for k, v in sorted(writers.items())) or 'nobody'}; "
@@ -401,6 +447,10 @@ def main(argv=None) -> int:
             n_conf = counts.get(r.get("id"), 0)
             seen = f", last confirmed {latest[r['id']]} ({n_conf}x)" if n_conf else ""
             print(f"{r['key']} = {r['value']}    [{r['level']}, by {r['by']}, {r.get('ts')}{seen}]")
+        for c in open_.values():
+            n_, b_ = c["now"], c["before"]
+            print(f"disagreement: {c['key']} = {n_['value']} (by {n_['by']}: {n_['evidence']}) replaced "
+                  f"{b_['value']} (by {b_['by']}: {b_['evidence']}); settle it: add {c['key']} <value> --resolve \"<why>\"")
         twins = sorted({tuple(sorted([k, *similar(facts, k)])) for k in facts if similar(facts, k)})
         for group in twins:
             vals = {facts[k]["value"] for k in group}
