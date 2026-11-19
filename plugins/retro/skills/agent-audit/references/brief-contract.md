@@ -20,6 +20,7 @@ Deliverables: <path of each file to write>, and the report file below
 Report file: <run>/agents/<name>.json
 Board: <run>/board.jsonl (optional, /retro:board). Read it before looking something up; add what you establish,
        with its evidence. A verifier reads it only after it has its own answer.
+Keys now on the board: <the output of board.py keys>, and the keys you expect it to add
 ```
 
 Rules for the main agent writing it:

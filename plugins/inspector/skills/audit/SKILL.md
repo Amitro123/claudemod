@@ -52,6 +52,8 @@ systems where it happened. You report; you change nothing.
    Board: <scratch>/audit/board.jsonl. Before looking something up: python <skill_root>/scripts/board.py
           --board <that file> get <prefix>* --by check-<n>. Add each fact a sibling may need (a resource group,
           an org, a branch's state) with add <key> <value> --by check-<n> --evidence "<command> -> <result>".
+   Keys now on the board: <paste `board.py --board <that file> keys`>; use these names, and azure.resource_group,
+          azure.subscription_name, ado.org.<org>.project for what you find.
    ```
    The secrets check uses `scan.py`: `--ref <remote>/<base>` (published), `--range <remote>/<base>..<branch>`
    for each local branch with commits in the window, and `--worktree --include-ignored` for files on disk.

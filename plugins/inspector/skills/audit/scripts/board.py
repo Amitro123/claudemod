@@ -3,6 +3,7 @@
     python board.py --board RUN/board.jsonl add KEY VALUE --by AGENT --evidence "command -> what it showed" [--level read]
     python board.py --board RUN/board.jsonl get [KEY | PREFIX*] --by AGENT [--min-level read] [--history] [--json]
     python board.py --board RUN/board.jsonl seed --from context.json --by main     # facts from /inspector:audit's context
+    python board.py --board RUN/board.jsonl keys                                   # the current keys, for a brief
     python board.py --board RUN/board.jsonl show                                   # facts, who wrote them, who read what
     (--board may be left out when $AGENT_BOARD names the file.)
 
@@ -10,7 +11,9 @@ A fact is a key (lowercase, dotted: `azure.resource_group`, `git.branch.feat-x.o
 most 500 characters), who wrote it, the evidence (the command or file that shows it) and a level: `reproduced`
 (ran something and saw it), `read` (read it in a record or file), `claimed` (someone's word: a report, a message).
 Nothing is deleted: a new value for a key supersedes the old one, and `get --history` shows both. Adding the
-value a key already has writes nothing. Values that look like a token, a bearer value or a private key are
+value a key already has writes nothing. A new key for an attribute the board already holds under another
+namespace (`repo.default_branch` when `git.default_branch` exists) is refused, naming the existing key;
+`--new-key` adds it anyway when it is a different fact. Values that look like a token, a bearer value or a private key are
 refused: the board holds where a secret is, never the secret.
 
 Every `get` is logged with who asked, so an audit can tell a fact that was read from one rediscovered.
@@ -128,13 +131,25 @@ def check(key: str, value: str, level: str) -> str | None:
     return None
 
 
+class DuplicateKey(ValueError):
+    """The board already holds this attribute under another key."""
+
+
 def similar(facts: dict[str, dict], key: str) -> list[str]:
-    """Other keys for the same attribute (`repo.default_branch` beside `git.default_branch`): one fact, two names."""
-    tail = key.rsplit(".", 1)[-1]
-    return sorted(k for k in facts if k != key and k.rsplit(".", 1)[-1] == tail and k.count(".") == key.count("."))
+    """Keys for the same attribute under another namespace (`repo.default_branch` beside `git.default_branch`).
+    Keys that differ in a name in the middle (`git.branch.a.on_remote`, `git.branch.b.on_remote`) are different facts."""
+    parts = key.split(".")
+    if len(parts) < 2:
+        return []
+    out = []
+    for k in facts:
+        q = k.split(".")
+        if k != key and len(q) == len(parts) and q[0] != parts[0] and q[1:] == parts[1:]:
+            out.append(k)
+    return sorted(out)
 
 
-def add(path: Path, key: str, value: str, by: str, evidence: str, level: str = "read") -> tuple[str, dict]:
+def add(path: Path, key: str, value: str, by: str, evidence: str, level: str = "read", new_key: bool = False) -> tuple[str, dict]:
     err = check(key, value, level) or (None if evidence.strip() else "evidence: name the command, record or file that shows it")
     if err:
         raise ValueError(err)
@@ -142,12 +157,17 @@ def add(path: Path, key: str, value: str, by: str, evidence: str, level: str = "
         raise ValueError("evidence looks like it holds a secret; cite the command, not its output")
     with Locked(path) as f:
         recs = records(f)
-        old = current(recs).get(key)
+        facts = current(recs)
+        old = facts.get(key)
         if old and old["value"] == value:
             return "exists", old
+        twins = [] if old else similar(facts, key)
+        if twins and not new_key:
+            have = "; ".join(f"{k} = {facts[k]['value']} (by {facts[k]['by']})" for k in twins)
+            raise DuplicateKey(f"the board already has this attribute: {have}. Use that key (add to it if your value "
+                               f"is newer), or pass --new-key if {key} is a different fact")
         rec = {"type": "fact", "id": len(recs) + 1, "key": key, "value": value, "by": by, "evidence": evidence,
                "level": level, "ts": now(), "supersedes": old["id"] if old else None}
-        twins = similar(current(recs), key)
         if twins:
             rec["similar_keys"] = twins
         append(f, rec)
@@ -224,6 +244,7 @@ def main(argv=None) -> int:
     a_add.add_argument("--by", required=True)
     a_add.add_argument("--evidence", required=True)
     a_add.add_argument("--level", default="read", choices=list(LEVELS))
+    a_add.add_argument("--new-key", action="store_true", help="add it although the same attribute exists under another key")
     a_get = sub.add_parser("get")
     a_get.add_argument("pattern", nargs="?")
     a_get.add_argument("--by", required=True)
@@ -234,18 +255,16 @@ def main(argv=None) -> int:
     a_seed.add_argument("--from", dest="src", required=True)
     a_seed.add_argument("--by", default="main")
     sub.add_parser("show")
+    sub.add_parser("keys", help="the current keys, one per line with its value: paste them into a brief")
     a = ap.parse_args(argv)
     path = board_path(a.board)
     if a.cmd == "add":
         try:
-            what, rec = add(path, a.key, a.value, a.by, a.evidence, a.level)
+            what, rec = add(path, a.key, a.value, a.by, a.evidence, a.level, a.new_key)
         except ValueError as e:
             print(f"refused: {e}", file=sys.stderr)
             return 2
         print(f"{what}: {rec['key']} = {rec['value']}" + (f" (supersedes #{rec['supersedes']})" if what == "superseded" else ""))
-        if rec.get("similar_keys") and what != "exists":
-            print(f"note: the board already has {', '.join(rec['similar_keys'])}; if it is the same fact, use that key "
-                  f"(get it first: get '<prefix>*')")
     elif a.cmd == "get":
         facts = get(path, a.pattern, a.by, a.min_level, a.history)
         if a.json:
@@ -266,6 +285,10 @@ def main(argv=None) -> int:
             except ValueError:
                 n["refused"] += 1
         print(", ".join(f"{v} {k}" for k, v in n.items() if v) or "nothing to seed")
+    elif a.cmd == "keys":
+        for r in sorted(current(load(path)).values(), key=lambda r: r["key"]):
+            v = r["value"] if len(r["value"]) <= 60 else r["value"][:59] + "…"
+            print(f"{r['key']} = {v}")
     else:
         recs = load(path)
         facts = current(recs)

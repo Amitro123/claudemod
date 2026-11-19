@@ -46,19 +46,43 @@ def test_refusals(tmp_path, key, value, evidence, why):
     assert not (tmp_path / "b.jsonl").exists() or "fact" not in (tmp_path / "b.jsonl").read_text()
 
 
-def test_the_same_attribute_under_another_key_is_noted(tmp_path, capsys):
+def test_the_same_attribute_under_another_namespace_is_refused(tmp_path):
     f = tmp_path / "b.jsonl"
     B.add(f, "git.default_branch", "main", "main", "git symbolic-ref")
-    _, rec = B.add(f, "repo.default_branch", "main", "check-1", "git branch -r")
+    with pytest.raises(B.DuplicateKey, match=r"git\.default_branch = main \(by main\).*--new-key"):
+        B.add(f, "repo.default_branch", "main", "check-1", "git branch -r")
+    assert [r["key"] for r in B.get(f, None, "t")] == ["git.default_branch"]
+    _, rec = B.add(f, "repo.default_branch", "main", "check-1", "git branch -r", new_key=True)
     assert rec["similar_keys"] == ["git.default_branch"]
-    B.add(f, "repo.root", "/r", "main", "git rev-parse")
-    B.add(f, "git.branch.a.on_remote", "true", "c", "ls-remote")
-    assert "similar_keys" not in json.loads(f.read_text().splitlines()[-1]), "a deeper key with the same last word is another fact"
+
+
+def test_entities_with_different_names_are_different_facts(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "git.branch.a.on_remote", "true", "c", "git ls-remote")
+    B.add(f, "git.branch.b.on_remote", "false", "c", "git ls-remote")
+    B.add(f, "tool.gh.installed", "true", "c", "which gh")
+    B.add(f, "tool.az.installed", "false", "c", "which az")
+    assert len(B.get(f, None, "t")) == 4
+
+
+def test_show_names_two_keys_for_one_fact_and_keys_lists_them(tmp_path, capsys):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "git.default_branch", "main", "main", "git symbolic-ref")
+    B.add(f, "repo.default_branch", "main", "c", "git branch -r", new_key=True)
+    B.add(f, "git.branch.a.on_remote", "true", "c", "git ls-remote")
     B.main(["--board", str(f), "show"])
-    assert "same fact, two keys: git.default_branch, repo.default_branch" in capsys.readouterr().out
-    B.add(f, "repo.default_branch", "master", "check-2", "git remote show origin")
-    B.main(["--board", str(f), "show"])
-    assert "conflict: git.default_branch, repo.default_branch" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "same fact, two keys: git.default_branch, repo.default_branch" in out and "on_remote," not in out
+    B.main(["--board", str(f), "keys"])
+    assert capsys.readouterr().out.splitlines() == ["git.branch.a.on_remote = true", "git.default_branch = main", "repo.default_branch = main"]
+
+
+def test_cli_refusal_names_the_existing_key(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "git.default_branch", "main", "main", "git symbolic-ref")
+    p = subprocess.run([sys.executable, str(BOARD / "board.py"), "--board", str(f), "add", "repo.default_branch", "main",
+                        "--by", "x", "--evidence", "e"], capture_output=True, text=True)
+    assert p.returncode == 2 and "git.default_branch = main" in p.stderr
 
 
 def test_min_level_and_reads_are_logged(tmp_path):

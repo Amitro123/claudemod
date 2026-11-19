@@ -37,7 +37,9 @@ that needs it (as `/inspector:audit` does) so that skill works on its own, in Cl
           When you establish a fact a sibling may need, add it: ... add <key> <value> --by <your name> --evidence "<command> -> <result>"
    ```
    For a verifier, replace the first line with: "Read the board only after you have your own answer."
-   Name the keys you expect (`azure.resource_group`, `git.branch.<name>.on_remote`) so agents use the same ones.
+   Add a third line with the keys: `Keys now on the board:` and the output of `board.py --board <file> keys`,
+   plus any key you expect the agent to write (`azure.resource_group`). Agents then reuse names instead of
+   inventing their own.
 3. **Read it before you report**: `... show` lists every current fact, who wrote it, and who read what. A
    fact that two agents wrote with different values is a contradiction to settle, not a choice to make.
 4. **Measure it.** `/retro:agent-audit` counts each agent's board reads and writes, and flags a command an
@@ -50,12 +52,19 @@ Lowercase, dotted, at most 120 characters: `<system>.<thing>[.<name>].<attribute
 `azure.resource_group`, `ado.org.<org>`, `tool.az.signed_in`. One value per key, one line, at most 500
 characters; a list goes under keys of its own, a long result in a file whose path is the value.
 
+A new key for an attribute the board already holds under another namespace (`repo.default_branch` while
+`git.default_branch` exists) is refused, and the refusal names the key and its value: the agent reuses it.
+`--new-key` writes it anyway, for a fact that only shares a name. Keys that differ in a name in the middle
+(`git.branch.a.on_remote`, `git.branch.b.on_remote`) are different facts and never refused.
+
 ## Gotchas
 
 - **A fact on the board is not evidence for a verdict.** It says where to look; the auditor cites the record.
 - **Superseded is not wrong.** "On the remote: false" at 10:00 and "true" at 10:20 can both be right; the
   board keeps both with their times (`get --history`), which is how a push during an audit shows.
 - **Agents that don't read it.** If the audit shows no reads, the brief's Board line was missing or vague.
+- **The same fact under two names.** In the first trial an agent wrote the default branch again under a key of
+  its own, because the brief named none. The refusal stops the second write; the Keys line prevents it.
 
 ## Output
 
