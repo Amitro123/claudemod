@@ -164,6 +164,7 @@ const STOPPED_DENY = 'The factory run was stopped. Stop now and answer with one 
 let maxRounds = 2
 let checksOption = ''
 let setupOption = ''
+let stopOnBaseFailure = false
 let autoPr = false
 let modelsOption: 'auto' | 'fixed' = 'auto'
 let skillsOption: Partial<Record<Role, string[]>> = {}
@@ -909,8 +910,58 @@ async function runChecks($: EngineInterface, rid: string) {
   }
   // A review has no builder: failing checks are for the reviewers, and for Claude after them.
   if (!failed.length || after.kind === 'review') return startReviews($, rid)
-  if (after.checkRound < MAX_CHECK_ROUNDS) return startBuild($, rid, [], failed)
-  await block($, rid, { on: 'checks' }, `The checks still fail after ${after.checkRound} builder passes: ${failed.map(c => c.cmd).join(', ')}.`)
+  // A check that fails on the base too fails without this change: the builder isn't sent after it.
+  const onBase = await failingOnBase($, rid, after, failed, new Map(cmds.map(a => [a.join(' '), a])))
+  if (onBase === null) return
+  const own = failed.filter(c => !onBase.includes(c.cmd))
+  if (onBase.length) {
+    const marked = results.map(c => (onBase.includes(c.cmd) ? { ...c, failsOnBase: true } : c))
+    const line = `Failing on the base (${after.base}) too, so not caused by this change: ${onBase.join(', ')}.`
+    await record($, rid, 'checks', line)
+    const noted = await patch($, rid, cur => ({ ...bump(cur, st => ({ ...st, baseFailed: [...new Set([...(st.baseFailed ?? []), ...onBase])] })), checks: marked, checksNote: [cur.checksNote, line].filter(Boolean).join(' ') }))
+    if (!noted || noted.phase !== 'checks') return
+    if (!own.length) {
+      if (stopOnBaseFailure) return block($, rid, { on: 'checks' }, `${line} Fix them on the default branch, or Skip the check, then Retry.`)
+      return startReviews($, rid)
+    }
+  }
+  if (after.checkRound < MAX_CHECK_ROUNDS) return startBuild($, rid, [], own)
+  await block($, rid, { on: 'checks' }, `The checks still fail after ${after.checkRound} builder passes: ${own.map(c => c.cmd).join(', ')}.`)
+}
+
+// Runs each failing check once on the run's base commit, in a worktree of its own (set up as the run's
+// was), and answers the ones that fail there too. Once per base and command: a Retry doesn't run them
+// again. A base that can't be checked out or set up answers none, so the builder goes as before.
+// null: the run moved on meanwhile.
+async function failingOnBase($: EngineInterface, rid: string, r: Run, failed: Check[], argvOf: Map<string, string[]>): Promise<string[] | null> {
+  const key = (cmd: string) => `${r.base} ${cmd}`
+  const todo = failed.filter(c => argvOf.has(c.cmd) && !(key(c.cmd) in (r.baseChecks ?? {})))
+  const seen: Record<string, boolean> = {}
+  if (todo.length) {
+    const root = rootOf(r)
+    const dir = `${root}/.factory/.base-${r.slug}`
+    await patch($, rid, cur => ({ ...cur, note: `running ${todo.map(c => c.cmd).join(', ')} on the base` }))
+    await git($, ['worktree', 'remove', '--force', dir], root)
+    const added = await git($, ['worktree', 'add', '--detach', dir, r.base], root)
+    if (added.exitCode === 0) {
+      try {
+        const setup = setupOption.trim() ? splitChecks(setupOption) : [detectSetup(await namesIn($, dir))].filter((c): c is string[] => c !== null)
+        let ready = true
+        for (const argv of setup) if ((await run$($, argv, dir)).exitCode !== 0) { ready = false; break }
+        for (const c of ready ? todo : []) {
+          if (!(await stillIn($, rid, 'checks'))) return null
+          const out = await run$($, argvOf.get(c.cmd)!, dir)
+          // A command that couldn't start or ran out of time says nothing about the base.
+          if (!out.notStarted && !out.timedOut) seen[key(c.cmd)] = out.exitCode !== 0
+        }
+      } finally {
+        await git($, ['worktree', 'remove', '--force', dir], root)
+      }
+    }
+  }
+  const cur = await patch($, rid, x => ({ ...x, baseChecks: { ...(x.baseChecks ?? {}), ...seen } }))
+  if (!cur || cur.phase !== 'checks') return null
+  return failed.filter(c => cur.baseChecks?.[key(c.cmd)] === true).map(c => c.cmd)
 }
 
 // Every reviewer looks at every round: a fix for one reviewer is new code for the others too.
@@ -1796,6 +1847,7 @@ export const register: Register = (on, options) => {
   checkTimeoutMs = Math.max(1, Math.min(10, Number(options.checkTimeout ?? 10) || 10)) * 60_000
   checksOption = String(options.checks ?? '')
   setupOption = String(options.setup ?? '')
+  stopOnBaseFailure = String(options.baseFailures ?? 'go-on') === 'stop'
   autoPr = String(options.autoPr ?? 'off') === 'on'
   modelsOption = String(options.models ?? 'auto') === 'fixed' ? 'fixed' : 'auto'
   skillsOption = parseSkills(String(options.skills ?? ''))

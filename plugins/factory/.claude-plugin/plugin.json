@@ -57,6 +57,13 @@
       "default": "10",
       "options": ["2", "5", "10"]
     },
+    "baseFailures": {
+      "type": "string",
+      "title": "A check that fails before the change too",
+      "description": "When a check fails, the factory runs it once on the run's base commit. If it fails there too, the change didn't cause it, and the builder isn't sent after it. go-on: the run goes on to the reviewers, who are told the check fails on the base. stop: the run stops for you",
+      "default": "go-on",
+      "options": ["go-on", "stop"]
+    },
     "models": {
       "type": "string",
       "title": "Models by feature size",

@@ -44,7 +44,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false, holdGoalCheck = false, remoteBase = false, mergeFails = false, configJson = '', issues = null as null | Record<number, object>, editsDuringReview = false } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false, holdGoalCheck = false, remoteBase = false, mergeFails = false, configJson = '', issues = null as null | Record<number, object>, editsDuringReview = false, baseFails = [] as string[] } = {}) {
   let reviewDiffs = 0
   // Files the install writes in the worktree (`setupMakes`, a lockfile npm install made): untracked from then on.
   const made: string[] = []
@@ -183,6 +183,10 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (issues && cmd.startsWith('gh ')) return ok()
     // `outputs`: what a command answers, as given.
     if (outputs[cmd]) return { value: outputs[cmd] } as never
+    // `baseFails`: the commands that fail in the base commit's worktree too; everything else passes there.
+    if (String((e as { init?: { cwd?: string } }).init?.cwd ?? '').includes('/.factory/.base-')) {
+      return baseFails.includes(cmd) ? ({ value: { exitCode: 1, stdout: 'FAIL on base', stderr: '' } } as never) : ok('ok')
+    }
     if ((cmd === 'npm install' || cmd === 'npm ci') && setupMakes.length) made.push(...setupMakes.filter(f => !made.includes(f)))
     if (missing.includes(cmd)) throw new Error(`spawn ${e.argv[0]} ENOENT`)
     if (cmd === 'sh-missing') return { value: { exitCode: 127, stdout: '', stderr: 'sh: vitest: not found' } } as never
@@ -525,6 +529,35 @@ describe('the checks come before any reviewer', () => {
     const tests = w.ran.filter(c => c === 'npm test').length
     expect(await command($, 'retry')).toMatch(/Retrying: the checks/)
     expect(w.ran.filter(c => c === 'npm test').length).toBe(tests + 1)
+  })
+
+  test('a check that fails on the base too is not sent to the builder: the reviewers are told', async ($, on) => {
+    const w = engine(on, { fails: 1, baseFails: ['npm test'] })
+    await toReviews($)
+    expect(w.ran).toContain('git worktree add --detach /repo/.factory/.base-rate-limiter abc123')
+    expect(w.ran.filter(c => c === 'git worktree remove --force /repo/.factory/.base-rate-limiter').length).toBeGreaterThan(0)
+    expect(w.spawned.filter(s => s.subagentType === 'factory:builder')).toHaveLength(1)
+    expect(w.spawned.slice(2).map(s => s.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
+    expect(last(w).prompt).toMatch(/npm test FAILED, and fails the same on the base commit/)
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/failed on the base too \(not sent to the builder\): npm test/)
+    expect(Object.entries(w.written).find(([k, v]) => k.includes('.record/') && k.endsWith('-checks.md') && v.includes('Failing on the base'))?.[1]).toMatch(/Failing on the base \(abc123\) too, so not caused by this change: npm test/)
+  })
+
+  test('a check that fails only with the change goes back to the builder, and the base runs it once', async ($, on) => {
+    const w = engine(on, { fails: 5 })
+    await toReviews($)
+    expect(last(w)).toMatchObject({ id: 'a3', subagentType: 'factory:builder' })
+    await answer($, 'a3', 'fixed?')
+    expect(await bandText($)).toMatch(/checks still fail after 2 builder passes: npm test/)
+    expect(w.ran.filter(c => c.startsWith('git worktree add --detach'))).toHaveLength(1)
+  })
+
+  test('with baseFailures stop, a check failing on the base stops the run for the person', { options: { baseFailures: 'stop' } }, async ($, on) => {
+    const w = engine(on, { fails: 1, baseFails: ['npm test'] })
+    await toReviews($)
+    expect(w.spawned.filter(s => s.subagentType === 'factory:builder')).toHaveLength(1)
+    expect(w.spawned.some(s => s.subagentType.endsWith('reviewer'))).toBe(false)
+    expect(await bandText($)).toMatch(/Failing on the base \(abc123\) too/)
   })
 
   test('no checks at all is a skip', async ($, on) => {

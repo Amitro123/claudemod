@@ -458,7 +458,7 @@ export const couldNotStart = (err: unknown) => !/time(d)?\s*out(?!ms)/i.test(Str
 
 // The checks that actually ran: one whose program isn't installed here was skipped, not run.
 export const ranChecks = (run: Pick<Run, 'checks'>) => run.checks.filter(c => !c.isMissing)
-const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' : c.why ? `not run (${c.why})` : c.isMissing ? 'not installed, not run' : c.ok ? 'passed' : 'FAILED')
+const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' : c.why ? `not run (${c.why})` : c.isMissing ? 'not installed, not run' : c.ok ? 'passed' : c.failsOnBase ? 'FAILED, and fails the same on the base commit, so not caused by this change' : 'FAILED')
 
 export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
   return [
@@ -961,6 +961,7 @@ export function statsReport(run: Run, now: number): string[] {
     `Iterations: ${run.kind === 'review' ? 'review only' : `${s?.builderStarts ?? 0} builder start${s?.builderStarts === 1 ? '' : 's'}`}, ${run.round} review round${run.round === 1 ? '' : 's'}${run.checkRound ? `, ${run.checkRound} fix pass${run.checkRound === 1 ? '' : 'es'} for red checks` : ''}.`,
     `Findings this round: ${by('blocker')} blocker, ${by('major')} major, ${by('minor')} minor; refuted by the skeptic so far: ${run.refuted?.filter(x => x.ruling === 'refuted').length ?? 0}${run.refuted?.some(x => x.ruling === 'fixed') ? `; fixed while the review ran: ${run.refuted.filter(x => x.ruling === 'fixed').length}` : ''}.`,
     `Tool calls the factory saw: ${calls || 'none'}; refused by its guard: ${s?.guardRefused ?? 0}${s?.overBudget?.length ? `; stopped at twice their budget: ${s.overBudget.join(', ')}` : ''}.`,
+    ...(s?.baseFailed?.length ? [`Checks that failed on the base too (not sent to the builder): ${s.baseFailed.join(', ')}.`] : []),
     `Answers missing a marker their prompt asks for: ${s?.formatMisses.length ? s.formatMisses.join('; ') : 'none'}.`,
     ...(run.ledger?.length ? [`Outcomes: ${outcomesLine(run.ledger)}`] : []),
     costLine(run.usage, run.prices ?? DEFAULT_CONFIG.prices),
