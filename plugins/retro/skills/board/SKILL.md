@@ -1,6 +1,6 @@
 ---
 name: board
-description: "A shared board of facts for a main agent and its sub-agents: one append-only file in the run folder where each fact carries who wrote it, the command that shows it and a level (reproduced, read, claimed). Sub-agents read what is already known instead of rediscovering it, and add what they establish for their siblings. Nothing is deleted (a new value supersedes the old one), secrets are refused, and every read is logged so /retro:agent-audit can measure what the board saved. /retro:board [show | the run folder]."
+description: "A shared board of facts for a main agent and its sub-agents: one append-only file in the run folder where each fact carries who wrote it, the command that shows it and a level (reproduced, read, claimed). Sub-agents read what is already known instead of rediscovering it, and add what they establish for their siblings. Nothing is deleted (a new value supersedes the old one, the same value again records a confirm with its time, and `get --max-age` keeps only recently checked facts), secrets are refused, and every read is logged so /retro:agent-audit can measure what the board saved. /retro:board [show | the run folder]."
 when_to_use: "Starting several sub-agents that need the same facts (an audit, a sweep, parallel checks), or the user asks for sub-agents to share what they learn, a blackboard, shared memory between agents, or less rediscovery: 'let the agents share facts', 'stop each agent finding the same thing', 'לוח משותף לסוכנים', 'שהסוכנים ישתפו מידע'. Not for memory across sessions (that is a skill's run log or brain-hud)."
 ---
 
@@ -37,6 +37,9 @@ that needs it (as `/inspector:audit` does) so that skill works on its own, in Cl
           When you establish a fact a sibling may need, add it: ... add <key> <value> --by <your name> --evidence "<command> -> <result>"
    ```
    For a verifier, replace the first line with: "Read the board only after you have your own answer."
+   Re-adding a fact you checked again, with the same value, confirms it: the board keeps who re-checked it and
+   when. For a volatile fact (a branch on the remote, signed in), read with `get '<prefix>*' --max-age <minutes>`
+   and re-check what it leaves out.
    Add a third line with the keys: `Keys now on the board:` and the output of `board.py --board <file> keys`,
    plus any key you expect the agent to write (`azure.resource_group`). Agents then reuse names instead of
    inventing their own.
@@ -62,7 +65,9 @@ the key: the agent reuses it. With a different value the key is written, since `
 
 - **A fact on the board is not evidence for a verdict.** It says where to look; the auditor cites the record.
 - **Superseded is not wrong.** "On the remote: false" at 10:00 and "true" at 10:20 can both be right; the
-  board keeps both with their times (`get --history`), which is how a push during an audit shows.
+  board keeps both with their times (`get --history`), which is how a push during an audit shows. A fact
+  written long ago is not current either: `get` and `show` give its last-confirmed time, so trust an old
+  "false" only if someone confirmed it recently, or use `--max-age`.
 - **Agents that don't read it.** If the audit shows no reads, the brief's Board line was missing or vague.
 - **The same fact under two names.** In the first trial an agent wrote the default branch again under a key of
   its own, because the brief named none. The refusal stops the second write; the Keys line prevents it.
