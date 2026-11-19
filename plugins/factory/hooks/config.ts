@@ -3,7 +3,7 @@
 // paths a run may not change, and the prices its cost is counted in. Every field is optional; a file
 // that is missing or wrong leaves the defaults, with a warning. Pure functions, no imports with effects.
 
-import type { Risk, Surface } from '../types'
+import type { Risk, Role, Surface } from '../types'
 
 export type Price = { input: number; output: number; cacheWrite: number; cacheRead: number }
 export type FactoryConfig = {
@@ -16,6 +16,9 @@ export type FactoryConfig = {
   protectedPaths: string[]
   // USD per million tokens, by model id or family (opus, sonnet, haiku, fable).
   prices: Record<string, Price>
+  // Tool calls per agent of a role: its prompt says the number, and past twice that every further call is
+  // refused so it answers with what it has. 0 turns it off for that role.
+  budgets: Record<Role, number>
   warnings: string[]
 }
 
@@ -32,6 +35,9 @@ export const DEFAULT_CONFIG: FactoryConfig = {
     sonnet: { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 },
     haiku: { input: 0.1, output: 0.5, cacheWrite: 0.125, cacheRead: 0.01 },
   },
+  // About twice what a run of each role took where measured (2026-11-19 review of #149: code 12,
+  // security 8, skeptic 32); the builder's and spec-writer's are wide, since a large feature needs many.
+  budgets: { intake: 20, spec: 60, builder: 200, security: 30, code: 30, approver: 25, skeptic: 60, extra: 30 },
   warnings: [],
 }
 
@@ -93,6 +99,17 @@ export function parseConfig(text: string | null): FactoryConfig {
       }
       const num = (v: unknown, d: number) => (typeof v === 'number' && v >= 0 ? v : d)
       out.prices[model] = { input: p.input, output: p.output, cacheWrite: num(p.cache_write_5m ?? p.cacheWrite, p.input * 1.25), cacheRead: num(p.cache_read ?? p.cacheRead, p.input * 0.1) }
+    }
+  }
+  if (raw.budgets !== undefined) {
+    if (!isObj(raw.budgets)) warn('budgets is not a map of role to a number of tool calls')
+    else {
+      for (const [role, n] of Object.entries(raw.budgets)) {
+        const key = (role === 'spec-writer' ? 'spec' : role) as Role
+        if (!(key in out.budgets)) warn(`budgets.${role} is not a role (${Object.keys(out.budgets).join(', ')})`)
+        else if (typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 2000) out.budgets[key] = n
+        else warn(`budgets.${role} is not a whole number of tool calls from 0 to 2000`)
+      }
     }
   }
   return out

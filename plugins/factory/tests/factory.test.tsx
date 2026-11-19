@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
-import { extrasFrom, LENSES } from '../hooks/flow'
+import { extrasFrom, ledgerOf, LENSES, outcomesLine, skepticPrompt } from '../hooks/flow'
 import { parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
 import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
 import { issueFile, parseIssue, queueLines, refusal } from '../hooks/issues'
@@ -43,7 +43,8 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false, holdGoalCheck = false, remoteBase = false, mergeFails = false, configJson = '', issues = null as null | Record<number, object> } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false, holdGoalCheck = false, remoteBase = false, mergeFails = false, configJson = '', issues = null as null | Record<number, object>, editsDuringReview = false } = {}) {
+  let reviewDiffs = 0
   // Files the install writes in the worktree (`setupMakes`, a lockfile npm install made): untracked from then on.
   const made: string[] = []
   const spawned: Spawned[] = []
@@ -111,7 +112,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (cmd === 'git merge-base HEAD origin/HEAD' && mergeBase) return ok(`${mergeBase}\n`)
     if (cmd.startsWith('git diff --quiet ')) return { value: { exitCode: reviewChange ? 1 : 0, stdout: '', stderr: '' } } as never
     if (cmd === 'git ls-files --others --exclude-standard -z') return ok(newFiles.join('\0'))
-    if (mergeBase && cmd === `git diff ${mergeBase}`) return ok('diff --git a/src/mw.ts b/src/mw.ts\n+const token = req.query.token\n')
+    if (mergeBase && cmd === `git diff ${mergeBase}`) return ok(editsDuringReview && ++reviewDiffs > 1 ? 'diff --git a/src/mw.ts b/src/mw.ts\n+const token = header(req)\n' : 'diff --git a/src/mw.ts b/src/mw.ts\n+const token = req.query.token\n')
     if (cmd === 'git rev-parse --show-toplevel') return noRepo ? ({ value: { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' } } as never) : ok('/repo\n')
     if (cmd === 'git rev-parse HEAD') return ok('abc123\n')
     if (cmd.startsWith('git worktree add')) {
@@ -2469,6 +2470,108 @@ describe("what became of each review finding: reported, kept, and added up over 
     engine(on)
     await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
     expect(await control($, { action: 'findings', outcomes: [{ id: 'F1', outcome: 'fixed' }] })).toBe('No review findings wait for their outcomes.')
+  })
+})
+
+describe("each run agent has a budget of tool calls: its prompt says it, and past twice it the guard stops the agent", () => {
+  test('budgets in .factory/config.json: by role, spec-writer as spec, 0 turns one off; a wrong one warns and keeps the default', () => {
+    const c = parseConfig(JSON.stringify({ budgets: { code: 12, 'spec-writer': 40, builder: 0, reviewer: 5, security: -1, skeptic: 2.5 } }))
+    expect([c.budgets.code, c.budgets.spec, c.budgets.builder, c.budgets.security, c.budgets.skeptic]).toEqual([12, 40, 0, DEFAULT_CONFIG.budgets.security, DEFAULT_CONFIG.budgets.skeptic])
+    expect(c.warnings.join(' ')).toMatch(/budgets\.reviewer is not a role/)
+    expect(c.warnings.join(' ')).toMatch(/budgets\.security is not a whole number/)
+    expect(c.warnings.join(' ')).toMatch(/budgets\.skeptic is not a whole number/)
+    expect(parseConfig(JSON.stringify({ budgets: 5 })).warnings[0]).toMatch(/budgets is not a map/)
+  })
+
+  test("a reviewer is told its budget, and its calls past twice it are refused, with the reason in the stats; the hand-back still goes", async ($, on) => {
+    on('tool.call', { tool: 'Read' }, () => ({ result: 'read' }) as never)
+    on('tool.call', { tool: 'SubagentHandback' }, () => ({ result: 'delivered' }) as never)
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true, configJson: JSON.stringify({ budgets: { security: 2, code: 2 } }) })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    const first = w.spawned.find(x => x.id === 'a1')!
+    expect(first.prompt).toMatch(/Budget: about 2 tool calls\. Past it, finish with what you have[^\n]*At 4 every further call is refused\./)
+    for (let i = 0; i < 4; i++) expect((await $.tool.call({ tool: 'Read', file_path: `/repo/src/${i}.ts`, agentId: 'a1' } as never) as { deny?: string }).deny).toBeUndefined()
+    const fifth = await $.tool.call({ tool: 'Read', file_path: '/repo/src/4.ts', agentId: 'a1' } as never)
+    expect(String((fifth as { deny?: string }).deny)).toMatch(/Budget spent: 4 tool calls against a budget of 2\. Make no more calls: answer now/)
+    expect((await $.tool.call({ tool: 'SubagentHandback', message: 'VERDICT: PASS', agentId: 'a1' } as never) as { deny?: string }).deny).toBeUndefined()
+    expect((await $.tool.call({ tool: 'Read', file_path: '/repo/src/0.ts', agentId: 'a2' } as never) as { deny?: string }).deny).toBeUndefined()
+    const status = await $.tool.call({ tool: 'mcp__factory__status' } as never).then(r => String((r as { result?: unknown }).result))
+    expect(status).toMatch(/stopped at twice their budget: [^\n]*review 4\/2/)
+  })
+
+  test('a budget of 0 for a role: no line in its prompt and no stop', async ($, on) => {
+    on('tool.call', { tool: 'Read' }, () => ({ result: 'read' }) as never)
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true, configJson: JSON.stringify({ budgets: { security: 0, code: 0 } }) })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    expect(w.spawned.find(x => x.id === 'a1')!.prompt).not.toMatch(/Budget: about/)
+    for (let i = 0; i < 10; i++) expect((await $.tool.call({ tool: 'Read', file_path: `/repo/src/${i}.ts`, agentId: 'a1' } as never) as { deny?: string }).deny).toBeUndefined()
+  })
+})
+
+describe('a finding fixed while the review ran is FIXED, not refuted: it does not count against the reviewer', () => {
+  test('the FIXED ruling is read, with its evidence, and is dropped from what is left to fix', () => {
+    const f = [0, 1].map(i => ({ severity: 'major' as const, where: `a.ts:${i}`, text: `t${i}` }))
+    const { kept, dropped } = applyRulings(f, 'F1: FIXED a.ts:12 now checks the key too\nF2: REFUTED a.ts:1 never reached', () => false)
+    expect(kept).toEqual([])
+    expect(dropped.map(d => [d.ruling, d.why])).toEqual([['fixed', 'a.ts:12 now checks the key too'], ['refuted', 'a.ts:1 never reached']])
+  })
+
+  test('the skeptic is offered FIXED, told what REFUTED means, and told when the checkout changed under the review', () => {
+    const base = { feature: 'x', kind: 'review', worktree: '/repo', base: 'def999', diffFile: '/rec/diff-round-1.patch' } as never
+    const finding = [{ role: 'code' as const, finding: { severity: 'major' as const, where: 'a.ts:1', text: 't' } }]
+    const quiet = skepticPrompt(base, finding)
+    expect(quiet).toMatch(/F<n>: FIXED <real in the diff the reviewers read, and gone in the code now/)
+    expect(quiet).toMatch(/REFUTED means the reviewer was wrong about the code they read/)
+    expect(quiet).not.toMatch(/The checkout changed after the reviewers read it/)
+    expect(skepticPrompt({ ...(base as object), changedSinceReview: true } as never, finding)).toMatch(/The checkout changed after the reviewers read it: their diff is \/rec\/diff-round-1\.patch/)
+  })
+
+  test('a FIXED ruling is counted as fixed in the ledger, so the false-positive rate is not skewed', () => {
+    const run = { reviews: [], refuted: [
+      { role: 'code', finding: { severity: 'major', where: 'a.ts:1', text: 't1' }, ruling: 'fixed', why: 'a.ts:12 now' },
+      { role: 'code', finding: { severity: 'major', where: 'b.ts:1', text: 't2' }, ruling: 'refuted', why: 'b.ts:9' },
+    ] } as never
+    const ledger = ledgerOf(run)
+    expect(ledger.map(x => x.outcome)).toEqual(['fixed', 'refuted'])
+    expect(outcomesLine(ledger)).toBe('2 findings: 1 fixed, 1 refuted by the skeptic. False positives among those judged: 0% (0 of 1).')
+  })
+
+  test('the factory sees the checkout changed under the review and tells the skeptic', async ($, on) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true, editsDuringReview: true })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    await answer($, 'a1', 'VERDICT: PASS\nFINDINGS:\n- [minor] src/mw.ts:1 the token comes from the query string')
+    await answer($, 'a2', 'VERDICT: PASS')
+    const sk = last(w)
+    expect(sk.subagentType).toBe('factory:skeptic')
+    expect(sk.prompt).toMatch(/The checkout changed after the reviewers read it: their diff is \S+diff-round-1\.patch/)
+  })
+
+  test('an unchanged checkout is not flagged to the skeptic', async ($, on) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true, editsDuringReview: false })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    await answer($, 'a1', 'VERDICT: PASS\nFINDINGS:\n- [minor] src/mw.ts:1 the token comes from the query string')
+    await answer($, 'a2', 'VERDICT: PASS')
+    const sk = last(w)
+    expect(sk.subagentType).toBe('factory:skeptic')
+    expect(sk.prompt).not.toMatch(/The checkout changed after the reviewers read it/)
+  })
+
+  test('in a review run, a FIXED ruling goes back to Claude as already fixed and is counted as fixed', async ($, on) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    await answer($, 'a1', 'VERDICT: PASS\nFINDINGS:\n- [minor] src/a.ts:1 the key is not checked')
+    await answer($, 'a2', 'VERDICT: CHANGES\nFINDINGS:\n- [major] src/b.ts:2 the lock fails open')
+    const sk = last(w)
+    expect(sk.subagentType).toBe('factory:skeptic')
+    await answer($, sk.id, 'F1: FIXED src/a.ts:4 now checks the key\nF2: STANDS src/b.ts:2 writes unlocked after 10 s')
+    const told = w.sent.at(-1)!
+    expect(told).toMatch(/Already fixed in the checkout since the reviewers read it[^\n]*\n- security src\/a\.ts:1 the key is not checked: src\/a\.ts:4 now checks the key/)
+    expect(await $.tool.call({ tool: 'mcp__factory__control', action: 'findings', outcomes: [{ id: 'F1', outcome: 'fixed' }] } as never).then(r => String(r.result))).toMatch(/2 findings: 2 fixed\. False positives among those judged: 0% \(0 of 2\)/)
   })
 })
 
