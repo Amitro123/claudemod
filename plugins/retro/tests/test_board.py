@@ -22,14 +22,153 @@ import transcript as T  # noqa: E402
 TOKEN = "ghp_" + "Kp" * 18
 
 
-def test_add_exists_supersede_and_history(tmp_path):
+def test_add_confirm_supersede_and_history(tmp_path):
     f = tmp_path / "board.jsonl"
     assert B.add(f, "azure.resource_group", "rg-a", "check-1", "az group list -> 1")[0] == "added"
-    assert B.add(f, "azure.resource_group", "rg-a", "check-2", "az group show")[0] == "exists"
+    assert B.add(f, "azure.resource_group", "rg-a", "check-2", "az group show")[0] == "confirmed"
     what, rec = B.add(f, "azure.resource_group", "rg-b", "check-2", "az group show -> rg-b")
     assert what == "superseded" and rec["supersedes"] == 1
     assert [r["value"] for r in B.get(f, "azure.*", "main")] == ["rg-b"]
     assert [r["value"] for r in B.get(f, "azure.resource_group", "main", history=True)] == ["rg-a", "rg-b"]
+
+
+def _lines(f: Path) -> list[dict]:
+    return [json.loads(ln) for ln in f.read_text().splitlines() if ln.strip()]
+
+
+def _write(f: Path, recs: list[dict]) -> None:
+    f.write_text("".join(json.dumps(r) + "\n" for r in recs))
+
+
+def test_same_value_add_appends_a_confirm(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "git.branch.x.on_remote", "false", "check-1", "git ls-remote --heads origin")
+    what, rec = B.add(f, "git.branch.x.on_remote", "false", "check-2", "ev2")
+    assert what == "confirmed"
+    assert rec["type"] == "confirm" and rec["fact"] == 1 and rec["by"] == "check-2" and rec["evidence"] == "ev2"
+    assert rec["id"] == 2 and rec["key"] == "git.branch.x.on_remote" and rec["value"] == "false" and rec["level"] == "read"
+    assert rec["ts"]
+    recs = _lines(f)
+    assert len(recs) == 2 and [r["type"] for r in recs].count("fact") == 1
+
+
+def test_last_confirmed_and_confirm_counts(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "1", "w", "e")
+    B.add(f, "a.c", "2", "w", "e")
+    recs = _lines(f)
+    recs[0]["ts"] = recs[1]["ts"] = "2026-11-19T09:00:00+00:00"
+    _write(f, recs)
+    _, conf = B.add(f, "a.b", "1", "w2", "e2")
+    got = {r["key"]: r for r in B.get(f, None, "t")}
+    assert got["a.b"]["last_confirmed"] == conf["ts"] and got["a.b"]["confirms"] == 1
+    assert got["a.c"]["last_confirmed"] == got["a.c"]["ts"] and got["a.c"]["confirms"] == 0
+
+
+def test_a_malformed_confirm_ts_is_skipped(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "1", "w", "e")
+    _, conf = B.add(f, "a.b", "1", "w2", "e2")
+    recs = _lines(f)
+    recs[1]["ts"] = "not a time"
+    _write(f, recs)
+    r = B.get(f, "a.b", "t")[0]
+    assert r["last_confirmed"] == r["ts"] and r["confirms"] == 1
+
+
+def test_confirms_do_not_carry_over_to_a_superseding_fact(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "v1", "w", "e")
+    B.add(f, "a.b", "v1", "w", "e")
+    B.add(f, "a.b", "v2", "w", "e")
+    cur = B.get(f, "a.b", "t")[0]
+    assert cur["value"] == "v2" and cur["confirms"] == 0 and cur["last_confirmed"] == cur["ts"]
+    hist = {r["value"]: r for r in B.get(f, "a.b", "t", history=True)}
+    assert hist["v1"]["confirms"] == 1 and hist["v2"]["confirms"] == 0
+
+
+def test_a_confirm_with_a_secret_is_refused(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "x", "w", "e")
+    with pytest.raises(ValueError, match="evidence looks like"):
+        B.add(f, "a.b", "x", "w", f"cat .env -> {TOKEN}")
+    with pytest.raises(ValueError, match="key or --by"):
+        B.add(f, "a.b", "x", TOKEN, "e")
+    assert '"type": "confirm"' not in f.read_text()
+
+
+def test_a_confirm_under_the_windows_lock_writes_nothing(tmp_path, monkeypatch):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "x", "w", "e")
+    before = f.read_bytes()
+    monkeypatch.setitem(sys.modules, "msvcrt", _AlwaysLocked)
+    monkeypatch.setattr(B.os, "name", "nt")
+    monkeypatch.setattr(B, "LOCK_WAIT_S", 0.2)
+    with pytest.raises(TimeoutError, match="nothing was written"):
+        B.add(f, "a.b", "x", "w2", "e2")
+    assert f.read_bytes() == before
+
+
+def _aged(f: Path, ages_min: dict[str, float]) -> None:
+    recs = _lines(f)
+    now = B._utcnow()
+    for r in recs:
+        if r.get("key") in ages_min and r["type"] == "fact":
+            r["ts"] = (now - B.timedelta(minutes=ages_min[r["key"]])).isoformat(timespec="seconds")
+    _write(f, recs)
+
+
+def test_get_max_age_keeps_recent_facts_and_recently_confirmed_ones(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "git.branch.a.on_remote", "true", "w", "git ls-remote")
+    B.add(f, "git.branch.b.on_remote", "false", "w", "git ls-remote")
+    _aged(f, {"git.branch.a.on_remote": 10, "git.branch.b.on_remote": 120})
+    assert [r["key"] for r in B.get(f, None, "t", max_age=30)] == ["git.branch.a.on_remote"]
+    assert len(B.get(f, None, "t")) == 2, "without --max-age nothing is filtered"
+    B.add(f, "git.branch.b.on_remote", "false", "w2", "git ls-remote again")
+    assert sorted(r["key"] for r in B.get(f, None, "t", max_age=30)) == ["git.branch.a.on_remote", "git.branch.b.on_remote"]
+
+
+def test_get_max_age_bound_is_inclusive_and_uses_one_clock(tmp_path, monkeypatch):
+    f = tmp_path / "b.jsonl"
+    _write(f, [{"type": "fact", "id": 1, "key": "a.b", "value": "1", "by": "w", "evidence": "e", "level": "read",
+                "ts": "2026-11-19T11:30:00+00:00", "supersedes": None},
+               {"type": "fact", "id": 2, "key": "a.c", "value": "1", "by": "w", "evidence": "e", "level": "read",
+                "ts": "garbage", "supersedes": None}])
+    monkeypatch.setattr(B, "_utcnow", lambda: B.datetime(2026, 11, 19, 12, 0, tzinfo=B.timezone.utc))
+    assert [r["key"] for r in B.get(f, None, "t", max_age=30)] == ["a.b"], "malformed ts is excluded"
+    assert B.get(f, None, "t", max_age=29.9) == []
+
+
+@pytest.mark.parametrize("bad", [0, -5, float("nan"), float("inf")])
+def test_get_max_age_must_be_a_positive_number(tmp_path, bad):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "1", "w", "e")
+    with pytest.raises(ValueError, match="--max-age"):
+        B.get(f, None, "t", max_age=bad)
+    assert '"type": "read"' not in f.read_text()
+
+
+def test_the_read_log_records_max_age(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "1", "w", "e")
+    B.add(f, "a.c", "1", "w", "e")
+    _aged(f, {"a.c": 120})
+    got = B.get(f, None, "t", max_age=30)
+    B.get(f, None, "u")
+    reads = [r for r in _lines(f) if r["type"] == "read"]
+    assert reads[0]["max_age"] == 30 and reads[0]["keys"] == [r["key"] for r in got] == ["a.b"]
+    assert "max_age" not in reads[1]
+    assert B.get(f, "a.c", "t", max_age=30) == []
+    assert [r for r in _lines(f) if r["type"] == "read"][-1]["keys"] == [], "an empty read is still logged"
+
+
+def test_load_board_ignores_confirm_records(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "a.b", "1", "w", "e")
+    B.add(f, "a.b", "1", "w2", "e2")
+    B.get(f, None, "t")
+    assert [r["type"] for r in A.load_board(str(f))] == ["fact"]
 
 
 @pytest.mark.parametrize("key,value,evidence,why", [
@@ -172,19 +311,21 @@ def _writer(args):
     path, who, n = args
     for i in range(n):
         B.add(Path(path), f"p.{who}.{i}", "v", who, "e")
-    return n
+    assert B.add(Path(path), f"p.{who}.0", "v", who, "checked again")[0] == "confirmed"
+    return n + 1
 
 
 def test_parallel_writers_lose_nothing(tmp_path):
     f = tmp_path / "b.jsonl"
     with ProcessPoolExecutor(max_workers=6) as ex:
-        assert sum(ex.map(_writer, [(str(f), f"w{k}", 10) for k in range(6)])) == 60
+        assert sum(ex.map(_writer, [(str(f), f"w{k}", 10) for k in range(6)])) == 66
     recs = [json.loads(ln) for ln in f.read_text().splitlines()]
     ids = [r["id"] for r in recs]
-    assert len(recs) == 60 and len(set(ids)) == 60 and sorted(ids) == list(range(1, 61))
+    assert len(recs) == 66 and len(set(ids)) == 66 and sorted(ids) == list(range(1, 67))
+    assert sum(r["type"] == "confirm" for r in recs) == 6
 
 
-def test_seed_from_audit_context(tmp_path):
+def test_seed_from_audit_context(tmp_path, capsys):
     ctx = {"window": {"now": "2026-11-19T12:00:00+00:00", "since": "2026-11-16"}, "repo": {"root": "/r"},
            "remotes": [{"name": "origin", "url": "https://github.com/o/r", "kind": "github", "owner": "o", "repo": "r"}],
            "default_branch": "main", "base_ref": "origin/main", "base_commits": [{}, {}],
@@ -199,8 +340,12 @@ def test_seed_from_audit_context(tmp_path):
     branch = [k for k in facts if k.startswith("git.branch.feat/x:") and k.endswith(".on_remote")]
     assert len(branch) == 1 and facts[branch[0]] == "false" and facts["git.base_commits_in_window"] == "2"
     assert facts["ado.org.contoso"] == "P" and facts["tool.gh.signed_in"] == "true" and "tool.az.signed_in" not in facts
+    capsys.readouterr()
     assert B.main(["--board", str(f), "seed", "--from", str(tmp_path / "c.json")]) == 0
-    assert len(B.get(f, None, "t", history=True)) == len(facts), "seeding twice adds nothing"
+    out = capsys.readouterr().out
+    assert f"{len(facts)} confirmed" in out and "exists" not in out and "added" not in out
+    assert len(B.get(f, None, "t", history=True)) == len(facts), "seeding twice adds no fact"
+    assert sum(1 for ln in f.read_text().splitlines() if '"type": "confirm"' in ln) == len(facts)
 
 
 def test_cli_uses_agent_board_env_and_exit_codes(tmp_path):
@@ -209,8 +354,23 @@ def test_cli_uses_agent_board_env_and_exit_codes(tmp_path):
     assert run("add", "a.b", "1", "--by", "x", "--evidence", "e").returncode == 0
     bad = run("add", "a.c", TOKEN, "--by", "x", "--evidence", "e")
     assert bad.returncode == 2 and TOKEN not in bad.stdout + bad.stderr
-    assert "a.b = 1" in run("get", "a.*", "--by", "y").stdout
-    assert "read by: y 1" in run("show").stdout
+    again = run("add", "a.b", "1", "--by", "z", "--evidence", "checked again")
+    assert again.returncode == 0 and again.stdout.strip() == "confirmed: a.b = 1 (fact #1)"
+    got = run("get", "a.*", "--by", "y").stdout
+    assert "a.b = 1    [" in got and "written " in got and "last confirmed" in got
+    shown = run("show").stdout
+    assert "read by: y 1" in shown and "last confirmed" in shown and "1 confirms" in shown and "(1x)" in shown
+    js = json.loads(run("get", "a.b", "--by", "y", "--json").stdout)
+    assert js[0]["confirms"] == 1 and js[0]["last_confirmed"]
+    assert "a.b = 1" in run("get", "a.*", "--by", "y", "--max-age", "30").stdout
+    n_reads = Path(env["AGENT_BOARD"]).read_text().count('"type": "read"')
+    for bad in ("0", "-5", "nan"):
+        p = run("get", "--by", "x", "--max-age", bad)
+        assert p.returncode == 2 and "refused:" in p.stderr and "Traceback" not in p.stderr
+    assert run("get", "--by", "x", "--max-age", "abc").returncode == 2
+    p = run("get", "--by", TOKEN)
+    assert p.returncode == 2 and "refused:" in p.stderr and "Traceback" not in p.stderr
+    assert Path(env["AGENT_BOARD"]).read_text().count('"type": "read"') == n_reads
 
 
 def test_audit_skill_carries_an_identical_copy():
@@ -294,3 +454,5 @@ def test_board_skill_passes_the_skill_lint():
     sys.path.insert(0, str(ROOT / "skills" / "distill" / "scripts"))
     import lint_skill as L
     assert L.lint(ROOT / "skills" / "board") == ([], [])
+    text = (ROOT / "skills" / "board" / "SKILL.md").read_text(encoding="utf-8")
+    assert "--max-age" in text and "confirm" in text

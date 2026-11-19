@@ -1,5 +1,10 @@
 # Retro changelog
 
+## Unreleased
+
+- Added: confirms on the board. An `add` with the value a key already has appends a `confirm` record (key, value, the fact's id, who, evidence, level, time), through the same refusals and lock as any `add`. `get` (text and `--json`: `last_confirmed`, `confirms`) and `show` give each fact's last-confirmed time and confirm count, and `show`'s header counts confirms. `get --max-age MINUTES` returns only facts written or confirmed in the last MINUTES minutes, for volatile facts such as branch state; the read log records `max_age`. A confirm does not change the fact's level, and a superseding fact starts with no confirms. The inspector's copy of `board.py` is updated with it.
+- Changed: a same-value `add` now returns `confirmed` (CLI: `confirmed: <key> = <value> (fact #<id>)`) and appends a record; it was `exists` and wrote nothing. `seed` counts `confirmed` instead of `exists`. `get` refusals (a secret in `--by` or the pattern, a bad `--max-age`) now print `refused: ...` and exit 2 instead of a traceback.
+
 ## 0.2.0 (2026-11-19)
 
 - Added: `/retro:board`, a shared board of facts for a main agent and its sub-agents. `scripts/board.py` is one append-only JSONL file in the run folder: `add` (a key, a one-line value, who, the evidence, a level: reproduced, read or claimed), `get` (a key or a prefix, each read logged with who asked), `seed --from context.json` (the facts of `/inspector:audit`'s context), `show`. A new value supersedes the old one and both are kept (`get --history`); the same value again writes nothing; a value or evidence that looks like a token, a bearer value, a private key or an Azure DevOps PAT is refused. Each record is one locked append (`fcntl` on POSIX, `msvcrt` on Windows): 60 writes from 6 processes at once all land with unique ids (`tests/test_board.py`). The locking on Windows was not run here.
