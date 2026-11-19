@@ -24,7 +24,8 @@ const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…
 export function states(run: Run) {
   // Approved once the builder has been started; a run stopped before that never had its plan approved.
   const planState: StepState = run.phase === 'plan' ? 'run' : run.steps.builder.state !== 'wait' ? 'pass' : 'wait'
-  const reviewing = run.reviews.filter(r => r.round === run.round && r.round > 0)
+  // A reviewer the review route skipped this round isn't waited for.
+  const reviewing = run.reviews.filter(r => r.round === run.round && r.round > 0 && r.state !== 'skip')
   const inCount = reviewing.filter(r => r.state === 'pass' || r.state === 'changes' || r.state === 'fail').length
   const waitState: StepState = !reviewing.length ? 'wait' : inCount < reviewing.length ? 'run' : reviewing.some(r => r.state !== 'pass') ? 'changes' : 'pass'
   // Opened only once the main Claude reported the PR's link; a run from before that state kept none.
@@ -36,10 +37,22 @@ export function states(run: Run) {
     inCount,
     outOf: reviewing.length,
     // Ready: approved, the PR waits for the person's press.
-    pr: (opened ? 'pass' : run.phase === 'ready' || done ? 'run' : 'wait') as StepState,
+    pr: (opened ? 'pass' : run.phase === 'ready' || run.phase === 'merging' || done ? 'run' : 'wait') as StepState,
     human: (run.phase === 'needs-human' ? 'changes' : 'wait') as StepState,
+    intake: intakeState(run),
   }
 }
+
+// The intake's step: none for a run without one.
+function intakeState(run: Run): StepState | null {
+  if (run.phase === 'intake') return 'run'
+  if (run.phase === 'needs-human' && run.blocked?.on === 'intake') return 'changes'
+  if (run.phase === 'needs-human' && run.blocked?.on === 'start' && run.blocked.role === 'intake') return 'fail'
+  if (!run.intake) return null
+  return 'pass'
+}
+const intakeMeta = (run: Run) =>
+  run.intake ? `${run.intake.verdict.toLowerCase()} · risk ${run.intake.risk}${run.intake.surfaces.length ? ` · ${run.intake.surfaces.join(', ')}` : ''}` : run.phase === 'intake' ? 'weighing the feature' : ''
 
 const checksLine = (run: Run) =>
   run.phase === 'checks' && run.isAskingChecks ? 'waiting for your OK'
@@ -69,7 +82,11 @@ export function diagramSvg(run: Run, frame: number, theme: Theme = 'light'): str
 
   const bw = 230
   const bx = cx - bw / 2
-  s += box(bx, 10, bw, 44, ROLES.spec.label, modelOf(run, 'spec'), run.steps.spec.state, run.steps.spec.tokens ? `${tok(run.steps.spec.tokens)} tokens · ${run.tasks.length} tasks${run.size ? ` · ${run.size}` : ''}` : 'writing the spec')
+  if (st.intake) {
+    s += box(12, 10, 150, 44, ROLES.intake.label, modelOf(run, 'intake'), st.intake, intakeMeta(run))
+    s += `<line x1="162" y1="32" x2="${bx - 6}" y2="32" stroke="${P.line}" stroke-width="1.6"/><path d="M${bx - 7} 28l7 4-7 4z" fill="${P.line}"/>`
+  }
+  s += box(bx, 10, bw, 44, ROLES.spec.label, modelOf(run, 'spec'), run.steps.spec.state, run.steps.spec.tokens ? `${tok(run.steps.spec.tokens)} tokens · ${run.tasks.length} tasks${run.size ? ` · ${run.size}` : ''}` : run.steps.spec.state === 'run' ? 'writing the spec' : '')
   s += arrow(54, 72)
   s += box(bx, 72, bw, 44, 'plan approval', 'you', st.planState, st.planState === 'run' ? 'waiting for you (Goal pane or here)' : '')
   s += arrow(116, 130)
@@ -88,7 +105,7 @@ export function diagramSvg(run: Run, frame: number, theme: Theme = 'light'): str
   run.reviews.forEach((r, i) => {
     const x = x0 + i * (rw + gap)
     s += arrow(256, 272, x + rw / 2)
-    const meta = r.state === 'pass' ? `PASS${r.tokens ? ` · ${tok(r.tokens)}` : ''}` : r.state === 'changes' ? `${r.findings.length} finding${r.findings.length === 1 ? '' : 's'}${r.tokens ? ` · ${tok(r.tokens)}` : ''}` : r.state === 'run' ? 'reviewing' : ''
+    const meta = r.state === 'pass' ? `PASS${r.tokens ? ` · ${tok(r.tokens)}` : ''}` : r.state === 'changes' ? `${r.findings.length} finding${r.findings.length === 1 ? '' : 's'}${r.tokens ? ` · ${tok(r.tokens)}` : ''}` : r.state === 'run' ? 'reviewing' : r.state === 'skip' ? 'not routed' : ''
     s += box(x, 272, rw, 48, reviewerLabel(r.role), reviewerModel(run, r.role), r.state, meta)
     s += `<line x1="${x + rw / 2}" y1="320" x2="${x + rw / 2}" y2="338" stroke="${P.line}" stroke-width="1.6"/>`
   })
@@ -116,6 +133,7 @@ export function diagramSvg(run: Run, frame: number, theme: Theme = 'light'): str
 // The PR's step in words: waiting on the person's Open PR, requested of Claude, handed to the person
 // as commands, or opened.
 export function prLabel(run: Run, state: StepState): string {
+  if (run.phase === 'merging') return 'latest base: checks again'
   if (state === 'pass') return run.pr?.url ? `PR opened · ${run.pr.url}` : 'open PR'
   if (run.phase === 'ready') return 'open PR (you)'
   if (run.pr?.state === 'handed') return 'PR: commands handed to you'
@@ -123,21 +141,25 @@ export function prLabel(run: Run, state: StepState): string {
   return 'open PR'
 }
 
+const reviewMeta = (r: Run['reviews'][number]) =>
+  r.state === 'changes' ? `${r.findings.length} finding${r.findings.length === 1 ? '' : 's'}` : r.state === 'pass' ? 'PASS' : r.state === 'skip' ? 'not routed: risk and surfaces' : ''
+
 // The terminal's pipeline: one line a step.
 export function pipelineLines(run: Run): string[] {
   const st = states(run)
   const line = (state: StepState, label: string, extra = '') => `${MARK[state]} ${label}${extra ? ` · ${extra}` : ''}`
   if (run.kind === 'review')
     return [
-      ...run.reviews.map(r => line(r.state, `${reviewerLabel(r.role)} (${reviewerModel(run, r.role)})`, r.state === 'changes' ? `${r.findings.length} findings` : r.state === 'pass' ? 'PASS' : '')),
+      ...run.reviews.map(r => line(r.state, `${reviewerLabel(r.role)} (${reviewerModel(run, r.role)})`, reviewMeta(r))),
       line(run.phase === 'done' ? 'pass' : 'wait', 'findings to Claude'),
     ]
   return [
+    ...(st.intake ? [line(st.intake, `intake (${modelOf(run, 'intake')})`, intakeMeta(run))] : []),
     line(run.steps.spec.state, `spec-writer (${modelOf(run, 'spec')})`, run.tasks.length ? `${run.tasks.length} tasks${run.size ? `, ${run.size}` : ''}` : ''),
     line(st.planState, 'plan approval (you)'),
     line(run.steps.builder.state, `builder${buildRound(run) > 1 ? ` · round ${buildRound(run)}` : ''} (${modelOf(run, 'builder')})`),
     line(run.steps.checks.state, 'checks', checksLine(run)),
-    ...run.reviews.map(r => `  ${line(r.state, `${reviewerLabel(r.role)} (${reviewerModel(run, r.role)})`, r.state === 'changes' ? `${r.findings.length} findings` : r.state === 'pass' ? 'PASS' : '')}`),
+    ...run.reviews.map(r => `  ${line(r.state, `${reviewerLabel(r.role)} (${reviewerModel(run, r.role)})`, reviewMeta(r))}`),
     line(run.steps.approver.state, `approver (${modelOf(run, 'approver')})`),
     line(st.pr !== 'wait' ? st.pr : st.human === 'changes' ? 'changes' : 'wait', st.pr !== 'wait' ? prLabel(run, st.pr) : st.human === 'changes' ? 'needs-human' : 'PR or needs-human'),
   ]
