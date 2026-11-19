@@ -23,6 +23,7 @@ Several agents may write at once: each record is one locked append.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -200,8 +201,12 @@ def get(path: Path, pattern: str | None, by: str, min_level: str = "claimed", hi
 
 
 def slug(name: str) -> str:
-    """A name as one key segment: lowercase, `/` kept so `feat/x` and `feat-x` stay two keys, dots made `_`."""
-    return re.sub(r"[^a-z0-9_:/-]", "_", name.lower()).strip("/") or "_"
+    """A name as key text: `/` and `.` kept, so `feat/x`, `feat-x`, `release/1.2` and `release/1_2` stay apart;
+    a name with capitals gets a short hash so `Feat` and `feat` do too."""
+    out = re.sub(r"[^a-z0-9_.:/-]", "_", name.lower()).strip("/.") or "_"
+    if name != name.lower():
+        out += ":" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
+    return out
 
 
 def flatten_context(ctx: dict) -> list[tuple[str, str, str]]:

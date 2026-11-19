@@ -93,10 +93,11 @@ def test_seed_keys_do_not_collide_and_take_any_remote_name(tmp_path):
            "worktrees": [{"path": "/r", "branch": "main"}, {"path": "/r/.factory/a/app", "branch": "f1"}, {"path": "/r/other/app", "branch": "f2"}]}
     keys = {k: v for k, v, _ in B.flatten_context(ctx)}
     assert keys["git.branch.feat/x.on_remote"] == "true" and keys["git.branch.feat-x.on_remote"] == "false"
-    assert keys["git.branch.release/1_2.on_remote"] == "true"
-    assert keys["remote.upstream.url"] == "https://github.com/o/r"
+    assert keys["git.branch.release/1.2.on_remote"] == "true"
+    assert [k for k in keys if k.startswith("remote.upstream:")] and not any(k.startswith("remote.upstream.") for k in keys)
+    assert len({B.slug(n) for n in ("release/1.2", "release/1_2", "Feat", "feat", "feat/x", "feat-x")}) == 6
     assert keys["git.worktree.root.branch"] == "main"
-    assert keys["git.worktree._factory/a/app.branch"] == "f1" and keys["git.worktree.other/app.branch"] == "f2"
+    assert keys["git.worktree.factory/a/app.branch"] == "f1" and keys["git.worktree.other/app.branch"] == "f2"
     f = tmp_path / "b.jsonl"
     for k, v, ev in B.flatten_context(ctx):
         B.add(f, k, v, "main", ev)
@@ -195,7 +196,8 @@ def test_seed_from_audit_context(tmp_path):
     f = tmp_path / "b.jsonl"
     assert B.main(["--board", str(f), "seed", "--from", str(tmp_path / "c.json")]) == 0
     facts = {r["key"]: r["value"] for r in B.get(f, None, "t")}
-    assert facts["git.branch.feat/x.on_remote"] == "false" and facts["git.base_commits_in_window"] == "2"
+    branch = [k for k in facts if k.startswith("git.branch.feat/x:") and k.endswith(".on_remote")]
+    assert len(branch) == 1 and facts[branch[0]] == "false" and facts["git.base_commits_in_window"] == "2"
     assert facts["ado.org.contoso"] == "P" and facts["tool.gh.signed_in"] == "true" and "tool.az.signed_in" not in facts
     assert B.main(["--board", str(f), "seed", "--from", str(tmp_path / "c.json")]) == 0
     assert len(B.get(f, None, "t", history=True)) == len(facts), "seeding twice adds nothing"

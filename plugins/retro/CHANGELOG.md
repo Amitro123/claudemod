@@ -12,7 +12,7 @@
   - A fact written in the same second an agent started counted as unknown (`0 or -1`).
   - With `--all`, one board was applied to every session; it now applies only to the session whose time span holds its facts.
   - The board refused `az.version` after `gh.version` and told the agent to use the other key, which would overwrite one tool's fact with another's. It now refuses only when the value is the same, and lists a pair with different values for checking.
-  - `seed` turned `feat/x` and `feat-x` into one key, and two worktrees with the same folder name into one key. It also dropped a remote with capital letters in its name. Slugs now keep `/` and are lowercased, and a worktree is named by its path inside the repository.
+  - `seed` turned `feat/x` and `feat-x` into one key, and two worktrees with the same folder name into one key. It also dropped a remote with capital letters in its name. Slugs now keep `/` and `.` and are lowercased, a name with capitals gets a short hash (`Feat` and `feat` stay two keys), and a worktree is named by its path inside the repository.
   - `get --history` re-read the board for every row it printed.
   - The audit skill's brief named `ado.org.<org>.project`, while `seed` writes `ado.org.<org>`.
   - `get <prefix>*` in the docs is now quoted, since an unquoted glob fails in zsh or expands to a file name.
