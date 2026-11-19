@@ -1,6 +1,6 @@
 # claudemod: mods for Claude Code
 
-Eight mods, each installed on its own. They also work side by side: each draws its part of the band above the prompt, and the others' parts stay.
+Nine mods, each installed on its own. They also work side by side: each draws its part of the band above the prompt, and the others' parts stay.
 
 | Mod | What it does |
 |---|---|
@@ -11,7 +11,8 @@ Eight mods, each installed on its own. They also work side by side: each draws i
 | [goal-run](#goal-run-a-goal-for-the-session) | Asks for a goal when a session starts, has Claude plan it, and runs a pixel Claude to 100% as the tasks get done |
 | [brain-hud](#brain-hud-the-agents-memory-made-visible) | Agent memory with its skill built in: mistake-brain logs and routes lessons, a pixel Claude with a brain reacts to each entry, and a pane draws the memory as a graph |
 | [factory](#factory-a-software-factory) | `/factory <feature>`: a spec, your approval of its plan, a build on its own branch, checks, parallel reviews and an approver, then Claude opens the PR |
-| [inspector](#inspector-a-bug-detective-for-the-history) | `/inspector:inspect`: reads what the project promises, traces every fix PR back to the change that broke it, classifies the bugs and writes a case file of what still needs fixing |
+| [inspector](#inspector-a-bug-detective-for-the-history) | `/inspector:inspect`: reads what the project promises, traces every fix PR back to the change that broke it, classifies the bugs and writes a case file of what still needs fixing; `/inspector:audit`: a read-only audit of who deployed or changed what, matched to its approval |
+| [retro](#retro-learn-from-a-finished-run) | `/retro:distill` turns a finished run into a skill for next time; `/retro:agent-audit` checks each sub-agent against its brief and says whether the brief, the agent, the host or the model was at fault |
 
 Add the marketplace once, then install the ones you want:
 
@@ -419,6 +420,7 @@ Fix enough bugs in a project whose parts work together, and the fixes start brea
 - **The open leads.** For each pattern it sweeps today's code for the same bug not yet fixed: the replaced expression elsewhere, other readers of a changed format, other components on the same seam. Each lead is reproduced, read or suspect, with the change it needs and the test that would prove it. What it checked and found handled is listed too. It changes no code.
 - **The case file** goes to `docs/inspector/<date>-case.md`, in the language you write in. It ends with the sha it investigated through, so the next run starts there; units left past the budget are listed by label. In the chat: the verdict, the top leads, and an offer to fix them (one `/factory` run each, with factory installed), flag them (followups) or turn a class that recurred 3+ times into a rule (brain-hud's `promote`).
 - **The handoff.** `scripts/handoff.py` turns the readers' leads into a list for whoever fixes them, word for word, each with its level and its impact's own level. A level can be lowered, never raised, and a note added afterwards is marked as unverified. (The first handoff was typed by hand, and the one wrong claim of 14 came from that.)
+- **The audit (`/inspector:audit`).** A different job from the history: what was done in a window (deployments, commits, PRs, branches, sensitive material in the repository and its commits, notifications sent) and whether each action has the record that authorizes it. `scripts/context.py` settles the facts every check needs from git (remotes with credentials stripped, the default branch's commits by committer date, branches that exist only in the clone, worktrees, ignored folders, CLIs signed in, Azure DevOps organizations named in the repository); one `auditor` agent per check reads git, GitHub, the Azure Activity Log and Azure DevOps, read-only; an `audit-verifier` re-derives every yes and no from a second source; `scripts/table.py` builds the table of action, evidence source and yes/no/unknown, refusing a row with no evidence, a yes with no approval record or a secret. `scripts/scan.py` finds emails, tokens, tenant ids and raw logs at a ref, in a commit range or on disk and prints where and what kind, never the value. Agents' own reports are never evidence.
 - **Limits.** It finds siblings of bug kinds the history already shows, not new kinds. A lead it didn't reproduce was never seen failing. In a repository that rebase-merges, each commit is its own unit.
 
 Tests: `python -m pytest plugins/inspector/tests`. They build small repositories and check:
@@ -500,6 +502,24 @@ Cross-check keeps decisions scoped to each unit, fix commit, copied expression a
 A commit with no blamed lines does not inherit another commit's blame; an ambiguous or missing
 commit is reported rather than guessed. Two unknown culprits are counted separately from
 actual agreement. These checks establish consistency of evidence, not proof of causality.
+
+## retro: learn from a finished run
+
+A long run that worked out a process by trial and error holds that process, and its sub-agents' transcripts say whether the instructions they got were any good. retro takes both out.
+
+```text
+/plugin install retro@claudemod
+/retro:distill                       # the newest session of this folder -> a draft skill
+/retro:distill path/to/cursor-chat.md   # a Cursor export or a pasted chat
+/retro:distill --update .claude/skills/my-skill   # tighten the skill the run used
+/retro:agent-audit                   # each sub-agent of the newest session against its brief
+```
+
+- **distill.** `scripts/trace.py` digests the transcript: the task, the steps with repeats collapsed, each failure and the call after it, what was tried 3+ times, what was blocked, the final answer. It reads Claude Code sessions (with their sub-agents), role/content JSONL, and plain-text or markdown exports such as a Cursor chat. Emails, GUIDs, tokens, session links and user names in paths are masked. The skill turns it into a draft `SKILL.md`: facts to resolve first, a numbered procedure, rules, gotchas (symptom, cause, what to do instead), the output and a budget, and `scripts/lint_skill.py` refuses it if it names a missing file or holds private data. Nothing is installed until you say yes; Claude Code `.claude/skills/`, Cursor `.cursor/skills/`. `--update` gives a diff to an existing skill and a row in its run log, so you can see it get tighter.
+- **agent-audit.** `scripts/agents.py` measures each sub-agent from its own transcript (`<session>/subagents/`): calls, failures, loops, minutes, the brief's budget and deliverables, writes under a read-only brief, its own count against the transcript's. Each problem gets an owner: **brief** (no budget, asks or paths; facts the main agent had and didn't pass, seen as commands it or a sibling had already run), **execution** (a clear brief and the agent looped or missed), **host** (blocked, 401/403, a CLI missing) or **model** (a small model struggling on a clear brief, or a large one on a trivial one). It records the skill that was loaded when each brief was written and rolls up by skill and by model: `--all --skill <name>` is an eval of that skill's briefs across sessions. Where sub-agent transcripts can't be read (Cursor), sub-agents write a report file under `references/brief-contract.md` and `--reports <dir>` audits those.
+- **Cursor.** The skills are plain `SKILL.md` folders with stdlib Python 3.9+ scripts. Copy or link `plugins/retro/skills/distill` and `plugins/retro/skills/agent-audit` side by side into `.cursor/skills/` (agent-audit reads its sibling's `transcript.py`), and `plugins/inspector/skills/audit` the same way. Cursor's own transcript folder (`~/.cursor/projects/*/agent-transcripts/`) is searched where it exists; an exported chat always works.
+
+Tests: `python -m pytest plugins/retro/tests`.
 
 ## Developing
 

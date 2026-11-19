@@ -4,7 +4,7 @@
     "name": "Amit Rosen",
     "url": "https://github.com/Amitro123"
   },
-  "description": "Claude Code mods: a pixel spark HUD, a task/sub-agent HUD, a follow-ups tracker, an RTL toggle, a session goal runner, an agent-memory view, a software factory and a bug detective for the history",
+  "description": "Claude Code mods: a pixel spark HUD, a task/sub-agent HUD, a follow-ups tracker, an RTL toggle, a session goal runner, an agent-memory view, a software factory, a bug detective for the history and a retro that turns runs into skills",
   "plugins": [
     {
       "name": "clawd-hud",
@@ -45,6 +45,11 @@
       "name": "inspector",
       "source": "./plugins/inspector",
       "description": "A bug detective: reads what the project promises, traces every fix PR back to the change that broke it, classifies the bugs and writes a case file of what still needs fixing"
+    },
+    {
+      "name": "retro",
+      "source": "./plugins/retro",
+      "description": "Learns from finished runs: turns a run into a skill or tightens the skill it used, and audits sub-agents against their briefs (brief, agent, host or model at fault)"
     }
   ]
 }
