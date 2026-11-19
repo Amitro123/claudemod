@@ -55,7 +55,11 @@ def test_context_names_local_only_branches_and_strips_nothing_secret(tmp_path):
     d = C.collect(repo, "2000-01-01", 24, None, network=True, auth=False)
     assert d["default_branch"] == "main" and d["primary_remote"] == "origin"
     br = {b["name"]: b for b in d["branches"]}
-    assert br["feat/local-only"]["on_remote"] is False and br["feat/local-only"]["unpushed_in_window"] == 2
+    # 2 commits in the window, 1 of them the pushed base: 1 unpublished (counting the shared base was #161)
+    assert br["feat/local-only"]["on_remote"] is False and br["feat/local-only"]["commits_in_window"] == 2
+    assert br["feat/local-only"]["unpublished_in_window"] == 1 and br["feat/local-only"]["unpublished"] == 1
+    assert br["feat/local-only"]["review"] == "unknown"
+    assert br["main"]["unpublished"] == 0
     assert br["main"]["on_remote"] is True
     assert d["remote_heads"]["names"] == ["main"] and "ls-remote" in d["remote_heads"]["source"]
     assert [f["path"] for f in d["ignored_folders"]] == [".local/"]
@@ -151,14 +155,16 @@ def test_table_refuses_rows_that_do_not_hold_up(tmp_path, bad, why):
 def test_table_merges_verdicts_and_hides_identities(tmp_path):
     rows = [ROW, {**ROW, "id": "c1-r2", "authorized": "yes", "approval": "PR 7 approved by a reviewer"},
             {**ROW, "id": "c2-r1", "check": 2, "authorized": "unknown", "blocked": True, "notes": "403 on branch protection"}]
-    verdicts = [{"id": "c1-r1", "verdict": "contradicted", "authorized": "yes", "evidence": ["gh pr view 7"], "why": "approved after all"},
+    verdicts = [{"id": "c1-r1", "verdict": "contradicted", "authorized": "yes", "approval": "PR 7 approved by a reviewer",
+                 "evidence": ["gh pr view 7"], "why": "approved after all"},
                 {"id": "c1-r2", "verdict": "unverifiable", "why": "no access"}]
     rc, out, err = run_table(tmp_path, rows, verdicts)
     assert rc == 0, err
     assert "ops@" not in out and "***@contoso-corp.com" in out
     assert "Re-check changed no to yes" in out and "Re-check could not confirm yes" in out
     assert "(not re-checked)" in out and "Could not be checked:" in out
-    assert "3 rows: 1 yes, 0 no, 2 unknown; 2 re-checked" in out
+    assert "3 rows: 1 yes, 0 no, 2 unknown; 1 re-checked with evidence by the verifier (0 confirmed, 1 contradicted), 1 it could not check." in out
+    assert "PR 7 approved by a reviewer" in out
     rc, out, _ = run_table(tmp_path, rows, verdicts, "--show-identities")
     assert "ops@contoso-corp.com" in out
 
@@ -170,3 +176,157 @@ def test_audit_skill_names_only_files_that_exist():
     agents = SCRIPTS.parent.parent.parent / "agents"
     assert (agents / "auditor.md").exists() and (agents / "audit-verifier.md").exists()
     assert "inspector:auditor" in skill and "inspector:audit-verifier" in skill
+
+
+def git_repo(tmp: Path) -> tuple[Path, dict]:
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@example.com"}
+    r = tmp / "r"
+    sh(tmp, "git", "init", "-q", "-b", "main", str(r))
+    (r / "a.txt").write_text("base\n")
+    sh(r, "git", "add", ".", env=env)
+    sh(r, "git", "commit", "-qm", "base", env=env)
+    return r, env
+
+
+def findings(repo: Path, rng: str) -> list[dict]:
+    p = subprocess.run([sys.executable, str(SCRIPTS / "scan.py"), "--repo", str(repo), "--range", rng, "--json"],
+                       capture_output=True, text=True, encoding="utf-8")
+    assert p.returncode == 0, p.stderr
+    assert TOKEN not in p.stdout
+    return [i for i in json.loads(p.stdout)["items"] if i["kind"] == "token"]
+
+
+@pytest.mark.slow
+def test_a_credential_added_only_by_a_merge_is_found_after_it_was_deleted(tmp_path):
+    r, env = git_repo(tmp_path)
+    base = sh(r, "git", "rev-parse", "HEAD").strip()
+    sh(r, "git", "checkout", "-qb", "side", env=env)
+    (r / "side.txt").write_text("side\n")
+    sh(r, "git", "add", ".", env=env)
+    sh(r, "git", "commit", "-qm", "side", env=env)
+    sh(r, "git", "checkout", "-q", "main", env=env)
+    (r / "main.txt").write_text("main\n")
+    sh(r, "git", "add", ".", env=env)
+    sh(r, "git", "commit", "-qm", "main", env=env)
+    sh(r, "git", "merge", "--no-commit", "--no-ff", "-q", "side", env=env)
+    (r / ".env").write_text(f"TOKEN={TOKEN}\n")
+    sh(r, "git", "add", ".env", env=env)
+    sh(r, "git", "commit", "-qm", "merge side", env=env)
+    merge = sh(r, "git", "rev-parse", "HEAD").strip()
+    (r / ".env").unlink()
+    sh(r, "git", "commit", "-qam", "remove env", env=env)
+    got = findings(r, f"{base}..HEAD")
+    assert [(f["path"], f["where"]) for f in got] == [(".env", f"commit:{merge[:12]}")]
+
+
+@pytest.mark.slow
+def test_a_side_branch_add_and_delete_is_found_and_a_clean_merge_stays_clean(tmp_path):
+    r, env = git_repo(tmp_path)
+    base = sh(r, "git", "rev-parse", "HEAD").strip()
+    sh(r, "git", "checkout", "-qb", "side", env=env)
+    (r / "k.txt").write_text(f"{TOKEN}\n")
+    sh(r, "git", "add", ".", env=env)
+    sh(r, "git", "commit", "-qm", "add", env=env)
+    added = sh(r, "git", "rev-parse", "HEAD").strip()
+    (r / "k.txt").unlink()
+    sh(r, "git", "commit", "-qam", "del", env=env)
+    sh(r, "git", "checkout", "-q", "main", env=env)
+    (r / "m.txt").write_text("m\n")
+    sh(r, "git", "add", ".", env=env)
+    sh(r, "git", "commit", "-qm", "m", env=env)
+    sh(r, "git", "merge", "--no-ff", "-q", "-m", "merge", "side", env=env)
+    got = findings(r, f"{base}..HEAD")
+    assert [(f["path"], f["where"]) for f in got] == [("k.txt", f"commit:{added[:12]}")], "once, at the side commit, not again at the merge"
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("name", ["נתונים.txt", "with space.txt", 'quo"te.txt', "tab\there.txt"])
+def test_file_names_git_quotes_are_scanned_with_their_real_name(tmp_path, name):
+    r, env = git_repo(tmp_path)
+    (r / name).write_text(f"x\nTOKEN={TOKEN}\n")
+    sh(r, "git", "add", "-A", env=env)
+    sh(r, "git", "commit", "-qm", "add", env=env)
+    (r / name).unlink()
+    sh(r, "git", "commit", "-qam", "del", env=env)
+    got = findings(r, "HEAD~2..HEAD")
+    assert [(f["path"], f["line"]) for f in got] == [(name, 2)]
+
+
+def test_git_quoted_paths_decode():
+    import scan as S
+    assert S.unquote_path(r'"b/\327\240\327\252.txt"') == "b/נת.txt"
+    assert S.unquote_path(r'"b/tab\there"') == "b/tab\there"
+    assert S.unquote_path(r'"b/quo\"te"') == 'b/quo"te'
+    assert S.unquote_path("b/with space.txt\t") == "b/with space.txt"
+    assert S.unquote_path("b/plain.txt") == "b/plain.txt"
+
+
+@pytest.mark.slow
+def test_an_added_line_starting_with_plus_plus_is_content_not_a_file_name(tmp_path):
+    r, env = git_repo(tmp_path)
+    (r / "notes.md").write_text(f"++ heading\nTOKEN={TOKEN}\n")
+    sh(r, "git", "add", ".", env=env)
+    sh(r, "git", "commit", "-qm", "add", env=env)
+    assert [(f["path"], f["line"]) for f in findings(r, "HEAD~1..HEAD")] == [("notes.md", 2)]
+
+
+NO_ROW = {"id": "r1", "check": 1, "action": "deploy", "evidence": ["deployment record"], "authorized": "no"}
+
+
+@pytest.mark.parametrize("verdicts,why", [
+    ([{"id": "r1", "verdict": "confirmed"}], "confirmed needs the verifier's own evidence"),
+    ([{"id": "r1", "verdict": "banana", "evidence": ["x"]}], "use confirmed, contradicted or unverifiable"),
+    ([{"id": "r1", "verdict": "contradicted", "authorized": "yes", "evidence": ["query"], "why": "ok"}], "without the approval record"),
+    ([{"id": "r9", "verdict": "confirmed", "evidence": ["x"]}], "no row has this id"),
+    ([{"id": "r1", "verdict": "confirmed", "evidence": ["x"]}, {"id": "r1", "verdict": "unverifiable"}], "a second verdict for the same row"),
+    ([{"id": "r1", "verdict": "contradicted", "evidence": ["x"]}], "needs the authorized value"),
+])
+def test_verdicts_are_held_to_the_rows_rules(tmp_path, verdicts, why):
+    rc, out, err = run_table(tmp_path, [NO_ROW], verdicts)
+    assert rc == 2 and why in err and out == ""
+    rc, out, err = run_table(tmp_path, [NO_ROW], verdicts, "--json")
+    assert rc == 2 and out == ""
+
+
+def test_a_no_to_yes_correction_with_an_approval_record_goes_through(tmp_path):
+    v = [{"id": "r1", "verdict": "contradicted", "authorized": "yes", "approval": "ADO approval 4411 by the release owner",
+          "evidence": ["az rest .../approvals -> approved"], "why": "approved in ADO"}]
+    rc, out, err = run_table(tmp_path, [NO_ROW], v, "--json")
+    row = json.loads(out)[0]
+    assert rc == 0 and row["authorized"] == "yes" and row["approval"].startswith("ADO approval") and row["checked"] == "contradicted"
+
+
+def test_an_unverifiable_verdict_leaves_unknown_and_is_not_counted_as_checked(tmp_path):
+    rc, out, err = run_table(tmp_path, [NO_ROW], [{"id": "r1", "verdict": "unverifiable", "why": "no access"}])
+    assert rc == 0 and "| unknown (re-check could not settle it) |" in out
+    assert "0 re-checked with evidence by the verifier (0 confirmed, 0 contradicted), 1 it could not check." in out
+
+
+@pytest.mark.slow
+def test_a_local_alias_of_published_commits_has_nothing_unpublished(tmp_path):
+    repo = make_repo(tmp_path)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    sh(repo, "git", "fetch", "-q", "origin", env=env)
+    sh(repo, "git", "branch", "--no-track", "local-alias", "origin/main", env=env)
+    d = C.collect(repo, "2000-01-01", 24, None, network=True, auth=False)
+    br = {b["name"]: b for b in d["branches"]}
+    assert br["local-alias"]["on_remote"] is False and br["local-alias"]["unpublished"] == 0
+    assert br["local-alias"]["commits_in_window"] == 1 and br["local-alias"]["unpublished_in_window"] == 0
+    sh(repo, "git", "checkout", "-q", "local-alias", env=env)
+    (repo / "x.txt").write_text("x\n")
+    sh(repo, "git", "add", "x.txt", env=env)
+    sh(repo, "git", "commit", "-qm", "one local commit", env=env)
+    br = {b["name"]: b for b in C.collect(repo, "2000-01-01", 24, None, network=True, auth=False)["branches"]}
+    assert br["local-alias"]["unpublished"] == 1
+    assert not any("has no pull request" in n for n in C.collect(repo, None, 24, None, network=False, auth=False)["notes"])
+
+
+@pytest.mark.slow
+def test_a_renamed_branch_tracking_a_remote_branch_is_on_the_remote(tmp_path):
+    repo = make_repo(tmp_path)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    sh(repo, "git", "push", "-q", "-u", "origin", "feat/local-only:feat/published-as", env=env)
+    d = C.collect(repo, None, 24, None, network=True, auth=False)
+    b = {x["name"]: x for x in d["branches"]}["feat/local-only"]
+    assert b["name_on_remote"] is False and b["upstream_on_remote"] is True and b["on_remote"] is True and b["unpublished"] == 0

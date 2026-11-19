@@ -6,7 +6,7 @@ Prints JSON: the time window (UTC), the repository, its remotes (credentials str
 DevOps or other, with owner and repo), the default branch, the commits on it since --since (filtered by
 committer date, which is what `git log --since` uses), the remote's branches (live from `git ls-remote` unless
 --no-network), each local branch (upstream, ahead/behind, on the remote or not, commits in the window), each
-worktree (branch, uncommitted and untracked counts), ignored folders that hold files, the CLIs on PATH (git, gh,
+worktree (branch, uncommitted and untracked counts), each local branch's commits that no remote ref holds, ignored folders that hold files, the CLIs on PATH (git, gh,
 az, gitleaks, rg), Azure DevOps organizations named in pipeline files. With --auth also whether `gh` and `az`
 are signed in (their exit codes only; nothing they print is kept).
 
@@ -103,6 +103,18 @@ def commits(repo: Path, ref: str, since: str | None, first_parent: bool = False)
         if len(f) == 6:
             rows.append({"sha": f[0][:12], "committed": f[1], "authored": f[2], "author": f[3], "merge": len(f[4].split()) > 1, "subject": f[5]})
     return rows
+
+
+def unpublished(repo: Path, ref: str, remote: str | None, since: str | None = None) -> int | None:
+    """Commits of `ref` that no ref of `remote` holds (its remote-tracking refs, as of the last fetch): what was
+    never pushed there, whatever the branch is called. History shared with a published branch counts 0."""
+    if not remote:
+        return None
+    args = ["rev-list", "--count", ref, f"--not", f"--remotes={remote}"]
+    if since:
+        args.insert(2, f"--since={since}")
+    rc, out = git(repo, *args)
+    return int(out.strip()) if rc == 0 and out.strip().isdigit() else None
 
 
 def worktrees(repo: Path) -> list[dict]:
@@ -202,13 +214,15 @@ def collect(repo: Path, since: str | None, hours: int, base: str | None, network
         name, up, track, date = (ln.split("\t") + ["", "", "", ""])[:4]
         ahead = re.search(r"ahead (\d+)", track)
         behind = re.search(r"behind (\d+)", track)
+        upstream_alive = bool(up) and "gone" not in track and up.startswith(f"{primary}/")
         b = {"name": name, "upstream": up or None, "ahead": int(ahead.group(1)) if ahead else 0,
              "behind": int(behind.group(1)) if behind else 0, "upstream_gone": "gone" in track,
-             "on_remote": name in heads, "last_commit": date}
+             "name_on_remote": name in heads, "upstream_on_remote": upstream_alive,
+             "on_remote": name in heads or upstream_alive, "last_commit": date,
+             "unpublished": unpublished(repo, name, primary), "review": "unknown"}
         if since:
             b["commits_in_window"] = len(commits(repo, name, since))
-            if not b["on_remote"]:
-                b["unpushed_in_window"] = b["commits_in_window"]
+            b["unpublished_in_window"] = unpublished(repo, name, primary, since)
         branches.append(b)
     window = {"now": now.isoformat(), "deploy_window_start": (now - timedelta(hours=hours)).isoformat(), "hours": hours, "since": since}
     rc, head = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
@@ -229,7 +243,9 @@ def collect(repo: Path, since: str | None, hours: int, base: str | None, network
             "`git log --since` filters by committer date; `%ad`/`%aI` print the author date. A rebased or "
             "cherry-picked commit can be authored before the window and committed in it, or the reverse.",
             "Times are UTC. Convert a local time before comparing it with the window.",
-            "A branch with on_remote false exists only in this clone: it has no pull request and no review.",
+            "unpublished counts a branch's commits that no ref of the remote holds, from the remote-tracking refs as "
+            "of the last fetch (git fetch first for the live answer). A name missing from the remote says nothing about "
+            "review: a merged PR's branch is often deleted. review is unknown until the PR system is asked.",
             "Worktrees share refs with the main checkout; run git -C <worktree> for its status, not for its log.",
         ],
     }

@@ -11,7 +11,7 @@ none creates, changes, approves or sends. Write large output to a file under `<s
 | Is a commit on the base branch? | `git merge-base --is-ancestor <sha> <remote>/<base>` (exit 0: yes) |
 | Which remote branches hold it? | `git branch -r --contains <sha>` |
 | Branches on the remote now | `git ls-remote --heads <remote>` |
-| A branch's commits not on the remote | `git log <remote>/<base>..<branch> --format=...` and `on_remote` in `context.json` |
+| A branch's commits not on the remote | `unpublished` in `context.json` (`git rev-list --count <branch> --not --remotes=<remote>`, as of the last fetch). A name missing from the remote is not evidence of no review: a merged PR's branch is often deleted |
 | A worktree's state | `git -C <worktree> status --short` |
 | Sensitive material | `scan.py` (`--ref`, `--range`, `--worktree --include-ignored`) |
 
