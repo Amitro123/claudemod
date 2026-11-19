@@ -60,6 +60,8 @@ class AgentRun:
     end: str | None = None
     launched: str | None = None  # the main agent's call time
     started_by: str = "main"  # "plugin" for one a plugin or mod started, with no Agent call of the main agent
+    dispatch: int = 1  # which dispatch of this agent id (a resume is the next), of `dispatches`
+    dispatches: int = 1
 
     @property
     def work_calls(self) -> list[Call]:
@@ -211,6 +213,27 @@ def _agent_from_call(c: Call, session_dir: Path | None, main_rows: list[dict]) -
     return a
 
 
+def _split_resumed(agents: list[AgentRun]) -> None:
+    """A resumed agent is dispatched again under the same id, and each dispatch loaded its whole transcript.
+    Each dispatch keeps its own brief and gets the calls from its launch to the next dispatch's: every call is
+    counted once, against the brief it was made under."""
+    by_id: dict[str, list[AgentRun]] = {}
+    for a in agents:
+        if a.agent_id:
+            by_id.setdefault(a.agent_id, []).append(a)
+    for runs in by_id.values():
+        if len(runs) < 2:
+            continue
+        runs.sort(key=lambda a: a.launched or "")
+        calls = runs[0].calls
+        for i, a in enumerate(runs):
+            start = a.launched if i else None
+            end = runs[i + 1].launched if i + 1 < len(runs) else None
+            a.calls = [c for c in calls if (start is None or (c.ts or "") >= start) and (end is None or (c.ts or "") < end)]
+            a.dispatch = i + 1
+            a.dispatches = len(runs)
+
+
 def _agents_without_a_call(session_dir: Path, seen: set[str]) -> list[AgentRun]:
     """Sub-agents a plugin or mod started (the factory's reviewers): their transcripts sit in `subagents/` with no
     Agent call in the main transcript. The brief is the first user message, the type and model come from the meta."""
@@ -251,6 +274,7 @@ def _load_claude(path: Path) -> Session:
     for c in sess.calls:
         if c.tool in AGENT_TOOLS:
             sess.agents.append(_agent_from_call(c, session_dir if session_dir.is_dir() else None, rows))
+    _split_resumed(sess.agents)
     sess.agents += _agents_without_a_call(session_dir, {a.agent_id for a in sess.agents if a.agent_id})
     for a in sess.agents:
         if not a.calls:
@@ -371,20 +395,30 @@ def project_slug(cwd: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", str(Path(cwd).resolve()))
 
 
-def candidates(cwd: str | None = None, home: str | None = None) -> list[Path]:
-    """Known transcript locations, newest first. Claude Code's are certain; Cursor's
-    (`~/.cursor/projects/*/agent-transcripts/`) are where recent versions write them, unverified on every version."""
+def _norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def candidates(cwd: str | None = None, home: str | None = None, everywhere: bool = False) -> list[Path]:
+    """Known transcript locations, newest first, for the project at `cwd` only: Claude Code's folder for that path,
+    and a Cursor project folder whose name is that path's (Cursor's `~/.cursor/projects/<name>/agent-transcripts/`,
+    unverified on every version). No match is an empty list, never another project's transcript. `everywhere`
+    (or no `cwd`) lists every project's."""
     h = Path(home or Path.home())
     found: list[Path] = []
     base = h / ".claude" / "projects"
-    if cwd:
+    cur = h / ".cursor" / "projects"
+    scoped = bool(cwd) and not everywhere
+    if scoped:
         d = base / project_slug(cwd)
         found += list(d.glob("*.jsonl")) if d.is_dir() else []
-    if not found and base.is_dir():
+    elif base.is_dir():
         found += list(base.glob("*/*.jsonl"))
-    cur = h / ".cursor" / "projects"
     if cur.is_dir():
+        want = _norm(project_slug(cwd)) if scoped else None
         for d in cur.glob("*/agent-transcripts"):
+            if want is not None and _norm(d.parent.name) != want:
+                continue
             found += [f for f in d.rglob("*") if f.is_file() and f.suffix.lower() in (".jsonl", ".txt", ".md", ".json")]
     return sorted(set(found), key=lambda f: f.stat().st_mtime, reverse=True)
 
@@ -404,12 +438,19 @@ TOKEN_RE = re.compile(r"\b(ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_
                       r"xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)")
 BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
 SESSION_URL_RE = re.compile(r"https://claude\.ai/code/session_[A-Za-z0-9]+")
+# The board's refusals, shared: a whole private-key block (to its END line, or to the end of the text), and the
+# 52-character lowercase base32 shape of an Azure DevOps PAT.
+PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S)
+ADO_PAT_RE = re.compile(r"(?<![A-Za-z0-9])[a-z2-7]{52}(?![A-Za-z0-9])")
 HOME_RE = re.compile(r"(?i)(?<![\w/])([A-Z]:\\Users\\|/Users/|/home/)([^\\/\s'\"`\[]+)")
 
 
 def mask(text: str) -> str:
-    """Hide values a skill must never carry: emails (domain kept), GUIDs, tokens, session links, user names in paths."""
+    """Hide values a skill must never carry: private-key blocks, tokens and PAT shapes, emails (domain kept), GUIDs,
+    session links, user names in paths. Heuristics: a secret in no known shape is not caught."""
+    text = PRIVATE_KEY_RE.sub("[private-key]", text)
     text = TOKEN_RE.sub("[token]", text)
+    text = ADO_PAT_RE.sub("[token]", text)
     text = BEARER_RE.sub(r"\1[token]", text)
     text = EMAIL_RE.sub(lambda m: "[address]@" + m.group(1).lower(), text)
     text = GUID_RE.sub("[guid]", text)

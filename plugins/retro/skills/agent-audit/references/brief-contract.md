@@ -39,7 +39,7 @@ The sub-agent writes this as its last step, whatever the outcome:
 
 ```json
 {
-  "agent": "<name from the brief>",
+  "agent": "<the <name> of the brief's Report file line: the join key>",
   "brief_id": "<the main agent's label for this brief>",
   "type": "<agent type>",
   "asked": ["<each ask, as numbered>"],
@@ -52,7 +52,10 @@ The sub-agent writes this as its last step, whatever the outcome:
 }
 ```
 
-`tool_calls` counts the agent's own work calls, not the call that hands its report back. A report file is the
+`agent` is the join key: the audit matches a report to its transcript row by the `<name>` in the brief's
+`Report file:` line (or the host's agent id, or the brief's description), and only when exactly one row
+matches; a name two rows share joins neither and is flagged ambiguous. `tool_calls` counts the agent's own
+work calls, not the call that hands its report back. A report file is the
 agent's word: where a transcript exists the audit compares the two and flags a difference.
 
 ## Iteration caps
