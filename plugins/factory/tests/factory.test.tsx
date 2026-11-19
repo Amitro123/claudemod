@@ -2398,7 +2398,7 @@ describe('what every run measures, and the test commands every agent is given', 
   test("the reviewers get the project's checks the factory ran, and are told to use exactly those", async ($, on) => {
     const w = engine(on)
     await toReviews($)
-    expect(w.spawned.find(s => s.subagentType === 'factory:code-reviewer')!.prompt).toContain("The project's checks, which the factory ran itself after the last build: npm test passed. To run tests yourself, use exactly these commands.")
+    expect(w.spawned.find(s => s.subagentType === 'factory:code-reviewer')!.prompt).toContain("The project's checks, which the factory ran itself after the last build: npm test passed. Don't run them again: they passed on exactly this code. Run a test yourself only to check something they don't cover, or a result you doubt, and then with these commands.")
   })
 
   test('a review run runs the checks it found on the checkout first, once the person lets it; the reviewers get the result', async ($, on) => {
@@ -2407,7 +2407,7 @@ describe('what every run measures, and the test commands every agent is given', 
     await command($, 'review x')
     expect(w.asked.at(-1)).toMatch(/^Before the factory runs the checks it found in the project, in \/repo:\n\$ npm test/)
     expect(w.ran).toContain('npm test')
-    expect(w.spawned[0]!.prompt).toContain("The project's checks, which the factory ran itself on the checkout: npm test passed. To run tests yourself, use exactly these commands.")
+    expect(w.spawned[0]!.prompt).toContain("The project's checks, which the factory ran itself on the checkout: npm test passed. Don't run them again: they passed on exactly this code. Run a test yourself only to check something they don't cover, or a result you doubt, and then with these commands.")
   })
 
   test("a review whose checks the person doesn't let run goes on without them; failing ones go to the reviewers, not a builder; nothing is installed", async ($, on) => {

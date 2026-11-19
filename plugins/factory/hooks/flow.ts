@@ -319,9 +319,16 @@ export const RULES_LINE =
 
 // The project's own test commands, so no agent guesses one (bun test, in a repo that runs claude
 // plugin test): those the factory ran with their result, else those detection found.
-export function testsLine(run: Pick<Run, 'checks' | 'testCommands' | 'kind'>): string[] {
+// `reviewer`: a reviewer is told not to run passed checks again; a builder, who changes the code, is not.
+export function testsLine(run: Pick<Run, 'checks' | 'testCommands' | 'kind'>, reviewer = false): string[] {
   const ran = ranChecks(run as Run)
-  if (ran.length) return [`The project's checks, which the factory ran itself ${run.kind === 'review' ? 'on the checkout' : 'after the last build'}: ${run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ')}. To run tests yourself, use exactly these commands.`]
+  if (ran.length) {
+    const allPassed = reviewer && ran.every(c => c.ok || c.isSkipped)
+    return [`The project's checks, which the factory ran itself ${run.kind === 'review' ? 'on the checkout' : 'after the last build'}: ${run.checks.map(c => `${c.cmd} ${checkWord(c)}`).join(', ')}. ` +
+      (allPassed
+        ? "Don't run them again: they passed on exactly this code. Run a test yourself only to check something they don't cover, or a result you doubt, and then with these commands."
+        : 'To run tests yourself, use exactly these commands.')]
+  }
   if (run.testCommands?.length) return [`The project's test commands (not run by the factory): ${run.testCommands.join('; ')}. To run tests yourself, use exactly these.`]
   return []
 }
@@ -450,7 +457,7 @@ export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
         ]
       : [`The spec is ${specPathOf(run)}. The change is the commits on branch ${run.branch} since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD): exactly what will be pushed.`]),
     whereLine(run),
-    ...testsLine(run),
+    ...testsLine(run, true),
     ...(run.diffFile ? [`The whole diff is in ${run.diffFile}: read it with the Read tool (by range when it is long) instead of running git.`] : []),
     stat ? `Files changed:\n${stat}` : '',
     ...builderSaid(run),
