@@ -552,11 +552,14 @@ export function planPrompt(run: Run): string {
 export const CONTROL_TOOL_NAME = 'mcp__factory__control'
 export const prBase = (run: Pick<Run, 'baseRef'>) => run.baseRef?.replace(/^(origin|upstream)\//, '') ?? ''
 
-// How the PR is opened, as commands: what the person runs when the feature says not to push.
+// How the PR is opened, as commands: what the person runs when the feature says not to push. GitHub's
+// REST API, not gh pr (GraphQL, which Claude Code cloud sessions refuse); REST needs a base, so with
+// none the command names the default-branch lookup.
 export const prCommands = (run: Run) => [
   `git -C ${run.worktree} push -u origin ${run.branch}`,
-  `gh pr create --head ${run.branch}${prBase(run) ? ` --base ${prBase(run)}` : ''} --title ${JSON.stringify(titleOf(run.feature, 70))} --body-file <the body below, saved to a file>`,
+  `gh api -X POST repos/{owner}/{repo}/pulls -f head=${run.branch} -f base=${prBase(run) || '<the default branch: gh api repos/{owner}/{repo} --jq .default_branch>'} -f title=${JSON.stringify(titleOf(run.feature, 70))} -F body=@<the body below, saved to a file> --jq .html_url`,
 ]
+export const prMergeCommand = 'gh api -X PUT repos/{owner}/{repo}/pulls/<number>/merge -f merge_method=merge'
 
 export function prPrompt(run: Run, reason: string): string {
   const minor = run.reviews.flatMap(r => r.findings.filter(f => f.severity === 'minor').map(f => `- ${r.role}: ${f.where} ${f.text}`))
@@ -571,9 +574,9 @@ export function prPrompt(run: Run, reason: string): string {
           `If the person opens it and gives you the link, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the link as url.`,
         ]
       : [
-          `Push branch ${run.branch} (git -C ${run.worktree} push -u origin ${run.branch}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}.`,
+          `Push branch ${run.branch} (git -C ${run.worktree} push -u origin ${run.branch}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}. Open it through GitHub's REST API (${prCommands(run)[1]}) or the session's own GitHub tools, not gh pr create, which uses GitHub's GraphQL API that Claude Code cloud sessions refuse.`,
           ...(run.issue ? [`The PR body says "Closes #${run.issue}".`] : []),
-          ...(run.autoMerge ? [`The approver approved and the checks passed again on the latest ${prBase(run) || 'base'}, and the autoMerge option is on: once the PR is open, merge it with gh pr merge <number> --merge. If branch protection, a required check or a review rule refuses, leave it open and tell the person why; don't force it.`] : []),
+          ...(run.autoMerge ? [`The approver approved and the checks passed again on the latest ${prBase(run) || 'base'}, and the autoMerge option is on: once the PR is open, merge it with ${prMergeCommand} (or the session's own GitHub tools). If branch protection, a required check or a review rule refuses, leave it open and tell the person why; don't force it.`] : []),
           `Once it is open, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the PR's link as url: until then the factory shows the PR as requested, not opened. If you can't open it, tell the person why, with these commands: ${prCommands(run).join(' && ')}.`,
         ]),
     `Title it after the feature. In the body: what it does (from ${run.specFile}), the checks (${run.checks.map(c => `${c.cmd} ${c.isSkipped ? '– skipped' : c.isMissing ? '– not installed' : c.ok ? '✓' : '✗'}`).join(', ') || 'none ran'}), and ${run.round} review round${run.round === 1 ? '' : 's'}: ${run.reviews.filter(r => r.state !== 'skip').map(r => `${r.role} ${r.state === 'pass' ? 'PASS' : 'CHANGES'}`).join(', ')}.`,
