@@ -27,16 +27,18 @@ the ask, the host's settings, or the model.
    (Cursor, a run you didn't start), use the report files the sub-agents wrote under
    `references/brief-contract.md`: `--reports <run>/agents/`. Both together compare the two.
 2. **Measure.** `python <skill_root>/scripts/agents.py --latest --out <scratch>/agent-audit.md`, and the same
-   with `--json --out <scratch>/agent-audit.json`. Read the whole of the first.
+   with `--json --out <scratch>/agent-audit.json`. Read the whole of the first. If the run used a board
+   (`/retro:board`), add `--board <its file>`: each agent's reads and writes, and the facts it re-derived.
 3. **Judge each ask.** For every agent, every item under "Asks in the brief" (or each request in the brief):
    *met* (name the step), *partly*, *missed*, *claimed only*, or *not checkable*. Note work nobody asked for.
 4. **Give each problem one owner.** The script tags signals; you confirm or move them:
    - **brief**: an ask that can't be checked, a deliverable named as prose, no budget, rules that conflict,
      or a fact withheld: the agent re-ran what the main agent had already run, or siblings each rediscovered
-     the same thing. The fix goes to whatever wrote the brief: the skill named in the Skill column, its
+     the same thing (a board shared during the run is the fix; a brief that never named the board owns it). The fix goes to whatever wrote the brief: the skill named in the Skill column, its
      agent file, or a plan its script printed.
    - **execution**: a clear brief, and the agent looped, didn't recover from a failure, broke a rule, went
-     over budget or left a deliverable out.
+     over budget, left a deliverable out, ignored a board its brief named, or (a verifier) read the board
+     before its own check.
    - **host**: blocked, denied, 401/403, a CLI missing or signed out. Not the agent's fault, and not fixed
      by rewording: name the setting or access that's missing.
    - **model**: the same clear brief failing on a small model (failures, loops, missed asks) where it

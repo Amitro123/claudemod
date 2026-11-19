@@ -52,6 +52,27 @@ DISCOVERY_TOOLS = {"Bash", "Shell", "PowerShell", "Grep", "Glob", "run_terminal_
 SMALL_MODELS = re.compile(r"haiku|mini|flash|small|lite", re.I)
 LARGE_MODELS = re.compile(r"opus|sonnet|gpt-5|pro\b|large", re.I)
 CAUSES = ("brief", "execution", "host", "model")
+BOARD_GET_RE = re.compile(r"board\.py\b.*\sget\b")
+BOARD_ADD_RE = re.compile(r"board\.py\b.*\s(?:add|seed)\b")
+VERIFIER_RE = re.compile(r"verif|skeptic|re-?check", re.I)
+
+
+def load_board(path: str | None) -> list[dict]:
+    if not path or not Path(path).exists():
+        return []
+    out = []
+    for ln in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            r = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(r, dict) and r.get("type") == "fact":
+            out.append(r)
+    return out
+
+
+def evidence_command(ev: str) -> str:
+    return " ".join(ev.split("->", 1)[0].split()).strip("` ")
 
 
 def norm_call(c) -> str:
@@ -179,6 +200,27 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
         causes["execution"].append("broke the brief's read-only rule")
     if not (a.report or "").strip() or a.finished is False:
         causes["execution"].append("ended without a report" if not (a.report or "").strip() else "did not finish")
+    cmds = [(i, str(c.input.get("command", ""))) for i, c in enumerate(calls) if c.tool in DISCOVERY_TOOLS]
+    board_reads = [i for i, cmd in cmds if BOARD_GET_RE.search(cmd)]
+    board_writes = [i for i, cmd in cmds if BOARD_ADD_RE.search(cmd)]
+    brief_names_board = bool(re.search(r"\bboard\b", a.prompt, re.I))
+    if ctx.get("board_in_use"):
+        checks["board"] = brief_names_board
+        if not brief_names_board:
+            causes["brief"].append("brief has no Board line, while the run used a board")
+    known = [f for f in ctx.get("board_facts", []) if a.launched and (T.seconds_between(f.get("ts"), a.launched) or -1) >= 0]
+    rerun = []
+    for f in known:
+        ev = evidence_command(f.get("evidence", ""))
+        if len(ev) >= 8 and any(ev in norm_call(c) or norm_call(c) in ev for c in calls if c.tool in DISCOVERY_TOOLS and not BOARD_GET_RE.search(str(c.input.get("command", "")))):
+            rerun.append(f["key"])
+    if rerun:
+        (causes["execution"] if brief_names_board else causes["brief"]).append(
+            f"re-ran the command for {len(rerun)} fact(s) already on the board: " + ", ".join(sorted(set(rerun))[:5]))
+    first_work = next((i for i, c in enumerate(calls) if not (c.tool in DISCOVERY_TOOLS and (BOARD_GET_RE.search(str(c.input.get("command", ""))) or BOARD_ADD_RE.search(str(c.input.get("command", "")))))), None)
+    if VERIFIER_RE.search(f"{a.subagent_type} {a.description}") and board_reads and (first_work is None or board_reads[0] < first_work):
+        causes["execution"].append(
+            "a verifier read the board before its own check: its verdicts may copy what it was meant to test")
     struggled = bool(loops or unrecovered or missing or (b and measured is not None and measured > b["n"]))
     fail_rate = (len(failed) / measured) if measured else 0.0
     model = a.model or ctx.get("default_model") or ""
@@ -196,7 +238,10 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
         "asks": terms["asks"], "brief": a.prompt, "report": a.report,
         "steps": [f"{c.tool}: {c.brief(120)}" + ("" if c.ok is not False else "  [failed]") for c in calls][:60],
         "flags": flags, "causes": causes, "brief_checks": checks, "skill": ctx.get("skill"),
-        "failure_rate": round(fail_rate, 2), "discovery": sorted({norm_call(c) for c in calls if c.tool in DISCOVERY_TOOLS}),
+        "failure_rate": round(fail_rate, 2), "discovery": sorted({norm_call(c) for c in calls if c.tool in DISCOVERY_TOOLS
+                                                                   and not BOARD_GET_RE.search(str(c.input.get("command", "")))
+                                                                   and not BOARD_ADD_RE.search(str(c.input.get("command", "")))}),
+        "board": {"reads": len(board_reads), "writes": len(board_writes), "reran_known": sorted(set(rerun))} if (board_reads or board_writes or ctx.get("board_in_use")) else None,
     }
 
 
@@ -304,6 +349,9 @@ def render(rows: list[dict], bud: list[dict], session: str | None, notes: list[s
     for r in rows:
         out += ["", f"## {r['agent']}: {r['description']}", "", f"source: {r['source']}"
                 + (f"; {r['minutes']} min" if r["minutes"] else "") + (f"; brief written under skill {r['skill']}" if r.get("skill") else ""), ""]
+        if r.get("board"):
+            bd = r["board"]
+            out.append(f"- board: {bd['reads']} reads, {bd['writes']} writes" + (f"; re-derived {', '.join(bd['reran_known'])}" if bd["reran_known"] else ""))
         for k in CAUSES:
             for x in (r.get("causes") or {}).get(k, []):
                 out.append(f"- **{k}**: {x}")
@@ -329,6 +377,7 @@ def main(argv=None) -> int:
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--cwd", default=".")
     ap.add_argument("--reports")
+    ap.add_argument("--board", help="the run's board.jsonl (/retro:board): facts already known when each agent started")
     ap.add_argument("--skill", help="only agents started while this skill was loaded (with --all: an eval of that skill across sessions)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--out")
@@ -345,6 +394,7 @@ def main(argv=None) -> int:
             print("No session transcript found. Pass its path, or --reports DIR with end-of-run report files.", file=sys.stderr)
             return 2
     rows, notes = [], []
+    board_facts = load_board(a.board)
     for s in sessions:
         sess = T.load(s)
         notes += sess.notes
@@ -352,7 +402,9 @@ def main(argv=None) -> int:
             before = [c for c in sess.calls if c.ts and x.launched and c.ts < x.launched and c.tool not in T.AGENT_TOOLS]
             skills = [str(c.input.get("skill")) for c in before if c.tool == "Skill" and c.input.get("skill")]
             ctx = {"main_before": {norm_call(c) for c in before if c.tool in DISCOVERY_TOOLS},
-                   "skill": skills[-1] if skills else None}
+                   "skill": skills[-1] if skills else None, "board_facts": board_facts,
+                   "board_in_use": bool(board_facts) or any(BOARD_GET_RE.search(str(c.input.get("command", ""))) or BOARD_ADD_RE.search(str(c.input.get("command", "")))
+                                                           for y in sess.agents for c in y.calls)}
             rows.append(audit_run(x, cwd, ctx))
     shared_discovery(rows)
     if a.skill:

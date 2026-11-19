@@ -35,7 +35,8 @@ systems where it happened. You report; you change nothing.
    `python <skill_root>/scripts/context.py --repo . --since <date> --hours <n> --auth --out <scratch>/audit/context.json`.
    It holds the window in UTC, remotes, the default branch and its commits, which branches are only local,
    worktrees, ignored folders, which CLIs are installed and signed in, and Azure DevOps organizations named
-   in the repository. Every brief carries it, so no agent rediscovers it.
+   in the repository. Every brief carries it, so no agent rediscovers it. Then seed the board the auditors
+   share: `python <skill_root>/scripts/board.py --board <scratch>/audit/board.jsonl seed --from <scratch>/audit/context.json`.
 3. **Start one auditor per check, in parallel** (agent type `inspector:auditor`; where the host has none,
    give the agent file's text as the prompt, and with no sub-agents at all run the checks yourself in order,
    to the same files). Each brief, in this shape:
@@ -48,18 +49,24 @@ systems where it happened. You report; you change nothing.
    Budget: <15 for one system, 30 for several> tool calls; at the budget, write what you have and stop.
    Deliverables: <scratch>/audit/rows-<n>.json
    Report file: <scratch>/audit/agents/check-<n>.json
+   Board: <scratch>/audit/board.jsonl. Before looking something up: python <skill_root>/scripts/board.py
+          --board <that file> get <prefix>* --by check-<n>. Add each fact a sibling may need (a resource group,
+          an org, a branch's state) with add <key> <value> --by check-<n> --evidence "<command> -> <result>".
    ```
    The secrets check uses `scan.py`: `--ref <remote>/<base>` (published), `--range <remote>/<base>..<branch>`
    for each local branch with commits in the window, and `--worktree --include-ignored` for files on disk.
 4. **Verify.** When every rows file exists, start `inspector:audit-verifier` agents in parallel, at most 12
    rows each, yes and no rows first, with a budget of 2 calls per row. Each writes
-   `<scratch>/audit/verdicts-<k>.json`.
+   `<scratch>/audit/verdicts-<k>.json`. Their brief names the board with "read it only after you have your
+   own answer for a row": a verifier that reads the auditors' facts first copies them instead of checking.
 5. **Build the table.** `python <skill_root>/scripts/table.py <scratch>/audit/rows-*.json --verdicts
    <scratch>/audit/verdicts-*.json --out <scratch>/audit/table.md`. It refuses a row with no evidence, a yes
    with no approval record, or anything that looks like a secret; fix the rows (or send them back) and run
    it again. Add `--show-identities` only if the user wants people named; otherwise emails show as ***@domain.
 6. **Close.** Run `context.py` again and compare heads: commits that landed during the audit are reported
-   as such. Optionally run `/retro:agent-audit` on this session to see whether the briefs held up.
+   as such. `board.py ... show` lists facts that two agents wrote with different values: settle each before
+   reporting. Optionally run `/retro:agent-audit --board <scratch>/audit/board.jsonl` on this session to see
+   whether the briefs held up and what the board saved.
 
 ## Gotchas
 

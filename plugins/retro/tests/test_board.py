@@ -1,0 +1,180 @@
+"""retro board: the shared fact file, its refusals, parallel writers, and what agent-audit measures from it."""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+BOARD = ROOT / "skills" / "board" / "scripts"
+sys.path.insert(0, str(BOARD))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from test_retro import Writer  # noqa: E402  (also puts distill/ and agent-audit/ scripts on the path)
+import agents as A  # noqa: E402
+import board as B  # noqa: E402
+
+TOKEN = "ghp_" + "Kp" * 18
+
+
+def test_add_exists_supersede_and_history(tmp_path):
+    f = tmp_path / "board.jsonl"
+    assert B.add(f, "azure.resource_group", "rg-a", "check-1", "az group list -> 1")[0] == "added"
+    assert B.add(f, "azure.resource_group", "rg-a", "check-2", "az group show")[0] == "exists"
+    what, rec = B.add(f, "azure.resource_group", "rg-b", "check-2", "az group show -> rg-b")
+    assert what == "superseded" and rec["supersedes"] == 1
+    assert [r["value"] for r in B.get(f, "azure.*", "main")] == ["rg-b"]
+    assert [r["value"] for r in B.get(f, "azure.resource_group", "main", history=True)] == ["rg-a", "rg-b"]
+
+
+@pytest.mark.parametrize("key,value,evidence,why", [
+    ("Azure.RG", "x", "e", "lowercase"),
+    ("a.b", "two\nlines", "e", "one line"),
+    ("a.b", "x" * 501, "e", "at most 500"),
+    ("a.b", TOKEN, "e", "looks like a secret"),
+    ("a.b", "Bearer abcdefghijklmnopqrstuvwx", "e", "looks like a secret"),
+    ("a.b", "x", "  ", "evidence"),
+    ("a.b", "x", f"cat .env -> {TOKEN}", "evidence looks like"),
+])
+def test_refusals(tmp_path, key, value, evidence, why):
+    with pytest.raises(ValueError, match=why):
+        B.add(tmp_path / "b.jsonl", key, value, "a", evidence)
+    assert not (tmp_path / "b.jsonl").exists() or "fact" not in (tmp_path / "b.jsonl").read_text()
+
+
+def test_the_same_attribute_under_another_key_is_noted(tmp_path, capsys):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "git.default_branch", "main", "main", "git symbolic-ref")
+    _, rec = B.add(f, "repo.default_branch", "main", "check-1", "git branch -r")
+    assert rec["similar_keys"] == ["git.default_branch"]
+    B.add(f, "repo.root", "/r", "main", "git rev-parse")
+    B.add(f, "git.branch.a.on_remote", "true", "c", "ls-remote")
+    assert "similar_keys" not in json.loads(f.read_text().splitlines()[-1]), "a deeper key with the same last word is another fact"
+    B.main(["--board", str(f), "show"])
+    assert "same fact, two keys: git.default_branch, repo.default_branch" in capsys.readouterr().out
+    B.add(f, "repo.default_branch", "master", "check-2", "git remote show origin")
+    B.main(["--board", str(f), "show"])
+    assert "conflict: git.default_branch, repo.default_branch" in capsys.readouterr().out
+
+
+def test_min_level_and_reads_are_logged(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "git.branch.x.on_remote", "false", "check-2", "git ls-remote --heads origin", "read")
+    B.add(f, "approval.pr.7", "approved", "check-2", "commit message says so", "claimed")
+    assert [r["key"] for r in B.get(f, None, "verifier", min_level="read")] == ["git.branch.x.on_remote"]
+    reads = [json.loads(ln) for ln in f.read_text().splitlines() if '"read"' in ln and '"type": "read"' in ln]
+    assert reads[-1]["by"] == "verifier" and reads[-1]["keys"] == ["git.branch.x.on_remote"]
+
+
+def _writer(args):
+    path, who, n = args
+    for i in range(n):
+        B.add(Path(path), f"p.{who}.{i}", "v", who, "e")
+    return n
+
+
+def test_parallel_writers_lose_nothing(tmp_path):
+    f = tmp_path / "b.jsonl"
+    with ProcessPoolExecutor(max_workers=6) as ex:
+        assert sum(ex.map(_writer, [(str(f), f"w{k}", 10) for k in range(6)])) == 60
+    recs = [json.loads(ln) for ln in f.read_text().splitlines()]
+    ids = [r["id"] for r in recs]
+    assert len(recs) == 60 and len(set(ids)) == 60 and sorted(ids) == list(range(1, 61))
+
+
+def test_seed_from_audit_context(tmp_path):
+    ctx = {"window": {"now": "2026-11-19T12:00:00+00:00", "since": "2026-11-16"}, "repo": {"root": "/r"},
+           "remotes": [{"name": "origin", "url": "https://github.com/o/r", "kind": "github", "owner": "o", "repo": "r"}],
+           "default_branch": "main", "base_ref": "origin/main", "base_commits": [{}, {}],
+           "remote_heads": {"count": 3, "source": "git ls-remote (live)"},
+           "branches": [{"name": "feat/X", "on_remote": False, "commits_in_window": 2}],
+           "worktrees": [{"path": "/r", "branch": "main"}], "tools": {"az": True}, "signed_in": {"gh": True, "az": None},
+           "azure_devops": [{"org": "Contoso", "projects": ["P"], "files": ["pipe.yml"]}]}
+    (tmp_path / "c.json").write_text(json.dumps(ctx))
+    f = tmp_path / "b.jsonl"
+    assert B.main(["--board", str(f), "seed", "--from", str(tmp_path / "c.json")]) == 0
+    facts = {r["key"]: r["value"] for r in B.get(f, None, "t")}
+    assert facts["git.branch.feat-x.on_remote"] == "false" and facts["git.base_commits_in_window"] == "2"
+    assert facts["ado.org.contoso"] == "P" and facts["tool.gh.signed_in"] == "true" and "tool.az.signed_in" not in facts
+    assert B.main(["--board", str(f), "seed", "--from", str(tmp_path / "c.json")]) == 0
+    assert len(B.get(f, None, "t", history=True)) == len(facts), "seeding twice adds nothing"
+
+
+def test_cli_uses_agent_board_env_and_exit_codes(tmp_path):
+    env = {"AGENT_BOARD": str(tmp_path / "b.jsonl"), "PATH": "/usr/bin:/bin"}
+    run = lambda *a: subprocess.run([sys.executable, str(BOARD / "board.py"), *a], capture_output=True, text=True, env=env)
+    assert run("add", "a.b", "1", "--by", "x", "--evidence", "e").returncode == 0
+    bad = run("add", "a.c", TOKEN, "--by", "x", "--evidence", "e")
+    assert bad.returncode == 2 and TOKEN not in bad.stdout + bad.stderr
+    assert "a.b = 1" in run("get", "a.*", "--by", "y").stdout
+    assert "read by: y 1" in run("show").stdout
+
+
+def test_audit_skill_carries_an_identical_copy():
+    copy = ROOT.parent / "inspector" / "skills" / "audit" / "scripts" / "board.py"
+    assert copy.read_bytes() == (BOARD / "board.py").read_bytes(), "copy plugins/retro/skills/board/scripts/board.py over it"
+
+
+def board_session(tmp: Path, verifier_reads_first: bool, brief_has_board: bool) -> tuple[Path, Path]:
+    board = tmp / "board.jsonl"
+    B.add(board, "azure.resource_group", "rg-a", "main", "az group list --query [].name -> rg-a")
+    rec = json.loads(board.read_text().splitlines()[0])
+    rec["ts"] = "2026-11-19T09:00:00+00:00"
+    board.write_text(json.dumps(rec) + "\n")
+    main = Writer()
+    brief = "Goal: g\nContext: c\nAsks:\n1. a\nRules: read-only\nBudget: 9 tool calls\nDeliverables: write out/r.json\n" + \
+            (f"Board: {board}\n" if brief_has_board else "")
+    for cid, aid, desc in (("t1", "aud", "check 1"), ("t2", "ver", "verify chunk 1")):
+        main.call(cid, "Agent", {"description": desc, "subagent_type": "inspector:audit-verifier" if aid == "ver" else "inspector:auditor",
+                                 "model": "sonnet", "prompt": brief}, f"agentId: {aid}", tur={"status": "completed", "agentId": aid, "handbackReport": {"text": "ok"}})
+    path = tmp / "proj" / "s.jsonl"
+    main.save(path)
+    sub = path.with_suffix("") / "subagents"
+    a = Writer()
+    a.call("a1", "Bash", {"command": "az group list --query [].name"}, "rg-a", side=True, aid="aud")
+    a.call("a2", "Bash", {"command": f"python board.py --board {board} add git.x y --by check-1 --evidence e"}, "added", side=True, aid="aud")
+    a.save(sub / "agent-aud.jsonl")
+    v = Writer()
+    steps = [("v1", f"python board.py --board {board} get 'azure.*' --by ver"), ("v2", "git ls-remote --heads origin")]
+    for cid, cmd in (steps if verifier_reads_first else steps[::-1]):
+        v.call(cid, "Bash", {"command": cmd}, "ok", side=True, aid="ver")
+    v.save(sub / "agent-ver.jsonl")
+    return path, board
+
+
+def audited(tmp: Path, **kw) -> dict[str, dict]:
+    path, board = board_session(tmp, **kw)
+    out = tmp / "a.json"
+    A.main([str(path), "--cwd", str(tmp), "--board", str(board), "--json", "--out", str(out)])
+    return {r["agent"]: r for r in json.loads(out.read_text())["agents"]}
+
+
+def test_rerunning_a_board_fact_is_execution_when_the_brief_named_the_board(tmp_path):
+    r = audited(tmp_path, verifier_reads_first=False, brief_has_board=True)["aud"]
+    assert r["board"] == {"reads": 0, "writes": 1, "reran_known": ["azure.resource_group"]}
+    assert any("already on the board" in x for x in r["causes"]["execution"])
+    assert not any("Board line" in x for x in r["causes"]["brief"])
+
+
+def test_rerunning_a_board_fact_is_the_brief_when_it_never_named_the_board(tmp_path):
+    r = audited(tmp_path, verifier_reads_first=False, brief_has_board=False)["aud"]
+    assert any("already on the board" in x for x in r["causes"]["brief"])
+    assert any("no Board line" in x for x in r["causes"]["brief"])
+
+
+def test_a_verifier_that_reads_the_board_first_is_flagged(tmp_path):
+    first = audited(tmp_path / "1", verifier_reads_first=True, brief_has_board=True)["ver"]
+    later = audited(tmp_path / "2", verifier_reads_first=False, brief_has_board=True)["ver"]
+    assert any("read the board before its own check" in x for x in first["causes"]["execution"])
+    assert not any("read the board" in x for x in later["causes"]["execution"])
+    assert first["board"]["reads"] == 1
+
+
+def test_board_skill_passes_the_skill_lint():
+    sys.path.insert(0, str(ROOT / "skills" / "distill" / "scripts"))
+    import lint_skill as L
+    assert L.lint(ROOT / "skills" / "board") == ([], [])

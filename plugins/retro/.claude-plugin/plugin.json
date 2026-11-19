@@ -1,7 +1,7 @@
 {
   "name": "retro",
-  "version": "0.1.0",
-  "description": "Learns from finished agent runs: /retro:distill turns a run's transcript (Claude Code, a Cursor export, a pasted chat) into a skill for next time or tightens the skill it used; /retro:agent-audit checks each sub-agent against its brief and says who owns each problem (the brief, the agent, the host or the model), across sessions an eval of a skill's briefs",
+  "version": "0.2.0",
+  "description": "Learns from finished agent runs: /retro:distill turns a run's transcript (Claude Code, a Cursor export, a pasted chat) into a skill for next time or tightens the skill it used; /retro:agent-audit checks each sub-agent against its brief and says who owns each problem (the brief, the agent, the host or the model), across sessions an eval of a skill's briefs; /retro:board gives a main agent and its sub-agents one shared file of facts with evidence",
   "author": {
     "name": "Amit Rosen",
     "url": "https://github.com/Amitro123"
