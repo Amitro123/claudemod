@@ -9,6 +9,7 @@ import type { Theme } from './art'
 import {
   approvePrompt,
   SESSION_LINK_FILTER,
+  SQUELCHED_FILTER_BRANCH,
   sessionLinkCommits,
   BUDGET_STOP,
   budgetDeny,
@@ -708,7 +709,9 @@ async function onBuilt($: EngineInterface, rid: string) {
   }
   const linked = sessionLinkCommits(msgs.stdout)
   if (linked.length) {
-    const fixed = await git($, ['filter-branch', '-f', '--msg-filter', SESSION_LINK_FILTER, '--', ...own], r.worktree)
+    // filter-branch waits 10 s on its deprecation warning unless FILTER_BRANCH_SQUELCH_WARNING is set; a git
+    // alias sets it in git's own shell, the same on every platform (filter-branch is a shell script anyway).
+    const fixed = await git($, ['-c', SQUELCHED_FILTER_BRANCH, 'factory-scrub', '-f', '--msg-filter', SESSION_LINK_FILTER, '--', ...own], r.worktree)
     // filter-branch keeps the old commits under refs/original: dropped, so nothing still holds the link.
     if (fixed.exitCode === 0) {
       const kept = await git($, ['for-each-ref', '--format=%(refname)', 'refs/original/'], r.worktree)

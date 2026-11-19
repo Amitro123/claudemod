@@ -181,3 +181,12 @@ def test_an_ambiguous_label_joins_nothing(tmp_path):
     rows = json.loads(out.read_text())["agents"]
     assert sorted(r["agent"] for r in rows) == ["aaa", "bbb", "check-1"]
     assert any("ambiguous" in f for f in next(r for r in rows if r["agent"] == "check-1")["flags"])
+
+
+def test_timestamps_in_mixed_formats_compare_by_the_instant():
+    from transcript import _instant
+    assert _instant("2026-11-19T10:00:01Z") == _instant("2026-11-19T10:00:01+00:00") == _instant("2026-11-19T10:00:01.000Z")
+    assert _instant("2026-11-19T10:00:01.5Z") > _instant("2026-11-19T10:00:01Z"), "as text, '.5Z' sorts before 'Z'"
+    assert _instant("2026-11-19T12:00:00+02:00") == _instant("2026-11-19T10:00:00Z")
+    assert _instant("2026-11-19T10:00:00.1234567Z") is not None, "more than six fraction digits"
+    assert _instant("") is None and _instant("yesterday") is None
