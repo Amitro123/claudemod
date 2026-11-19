@@ -104,6 +104,9 @@ export type Run = {
   // A review of the person's checkout that changed after the reviewers read it (someone fixed things while
   // they worked): the skeptic is told to rule on the reviewed diff, and a finding gone since is FIXED.
   changedSinceReview?: boolean
+  // Each agent's budget of tool calls (from the config, by role) and the calls the guard saw it make.
+  agentBudgets?: Record<string, number>
+  agentCalls?: Record<string, number>
   // New files the setup command wrote in the worktree (a lockfile npm install made): never committed.
   setupFiles?: string[]
   // review: only the reviewers (and the skeptic), on the change already in the person's checkout,
@@ -120,7 +123,7 @@ export type Run = {
   ledger?: LedgerEntry[]
   // How the run went, for its record and the status: builder starts, the run agents' tool calls the
   // mod saw (by role), the calls its guard refused, and answers that missed a marker their prompt asks for.
-  stats?: { builderStarts: number; toolCalls: Record<string, number>; guardRefused: number; formatMisses: string[] }
+  stats?: { builderStarts: number; toolCalls: Record<string, number>; guardRefused: number; formatMisses: string[]; overBudget?: string[] }
   steps: Record<'spec' | 'builder' | 'checks' | 'approver', { state: StepState; tokens: number }>
   checks: Check[]
   // Why no check ran, or what detection warned about: what the reviewers and the approver are told.

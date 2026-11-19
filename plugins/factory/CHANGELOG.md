@@ -2,6 +2,14 @@
 
 Earlier releases are described in the repository README.
 
+## Unreleased
+
+Found by running a factory review of this repository's #149 and auditing its agents with `/retro:agent-audit`.
+
+- Added: **a budget of tool calls per agent** (`budgets` in `.factory/config.json`, by role). Each agent's prompt ends with it; past twice it the guard refuses that agent's further tool calls, except its hand-back, telling it to answer with what it has, and the stats name it (`stopped at twice their budget`). `0` turns it off for a role. Counted per agent, not per role, so a reviewer's second round starts from zero. Before, nothing bounded an agent but the review rounds: the run's skeptic took 32 calls and none of its three agents' briefs named a number.
+- Fixed: a finding the person fixed while a review ran was ruled REFUTED and counted against the reviewer. The skeptic reads the checkout as it is, and in that run 11 findings fixed during the review were set down as refuted, leaving the false-positive tally at "1 fixed, 11 refuted". The skeptic now has a FIXED ruling (real in the diff the reviewers read, gone from the code now), is told REFUTED means the reviewer was wrong about the code they read, and is told when the checkout's diff changed after the reviewers read it. A FIXED finding counts as fixed. The stats line counts only REFUTED rulings as refuted, and names those fixed while the review ran.
+- Fixed: `claude plugin test` was detected for every plugin, and fails on a plugin with no hooks module ("no hooks module to load"). A plugin of skills and agents only now gets `claude plugin validate`; one whose `hooks/hooks.json` names modules still gets `claude plugin test`.
+
 ## 0.27.0 (2026-11-19)
 
 Factory v2: the intake, the review route by risk, `.factory/config.json`, the gate on the latest base before the PR, `autoMerge`, cost per run, GitHub issues as the queue, and several runs at once. Also every fix listed below that was waiting for a release.

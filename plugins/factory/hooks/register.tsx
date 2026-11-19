@@ -8,6 +8,9 @@ import { buildRound, DIAGRAM, diagramSvg, pipelineLines } from './art'
 import type { Theme } from './art'
 import {
   approvePrompt,
+  BUDGET_STOP,
+  budgetDeny,
+  budgetLine,
   buildPrompt,
   cleanFeature,
   detectProjectChecks,
@@ -294,6 +297,8 @@ async function spawnRole($: EngineInterface, rid: string, role: Role, prompt: st
   }
   const skills = skillsOf(role)
   if (skills.length) prompt = `${skillsLine(skills)}\n\n${prompt}`
+  const budget = (await configOf($, rootOf(r)).catch(() => DEFAULT_CONFIG)).budgets[role] ?? 0
+  if (budget > 0) prompt = `${prompt}\n\n${budgetLine(budget)}`
   // An agent of the session's own runs on its own model.
   const asked = model || modelOf(r, role)
   const base = { prompt, description: `factory · ${label}`, ...(onSessionModel || agentType ? {} : { model: asked }), cwd: r.worktree }
@@ -317,6 +322,7 @@ async function spawnRole($: EngineInterface, rid: string, role: Role, prompt: st
   await patch($, rid, cur => ({
     ...cur,
     agents: { ...cur.agents, [id]: role },
+    ...(budget > 0 ? { agentBudgets: { ...cur.agentBudgets, [id]: budget } } : {}),
     activity: { role, text: 'starting', at: t0, calls: 0 },
     ...(role === 'builder' ? { builderId: id, stats: bump(cur, s => ({ ...s, builderStarts: s.builderStarts + 1 })).stats } : {}),
     reviews: cur.reviews.map(x => (x.role === (review || role) ? { ...x, agentId: id } : x)),
@@ -1881,9 +1887,18 @@ export const register: Register = (on, options) => {
       // What the run's agent does now: the band shows it, so a working step never reads as stuck.
       const role = r?.agents[e.agentId]
       if (role) {
+        // Past twice its budget an agent's calls are refused, so it answers with what it has. The hand-back
+        // and the answer itself are not tool calls of its work.
+        const budget = r.agentBudgets?.[e.agentId] ?? 0
+        const used = r.agentCalls?.[e.agentId] ?? 0
+        if (budget > 0 && used >= BUDGET_STOP * budget && e.tool !== 'SubagentHandback') {
+          const who = `${describe(role, r)} ${used}/${budget}`
+          await patch($, rid, cur => bump(cur, s => ({ ...s, guardRefused: s.guardRefused + 1, overBudget: [...new Set([...(s.overBudget ?? []).filter(x => !x.startsWith(`${describe(role, r)} `)), who])] }))).catch(() => null)
+          return { deny: budgetDeny(used, budget) }
+        }
         const t = await $.clock.now()
         const text = activityText(e.tool, e as unknown as Record<string, unknown>)
-        await patch($, rid, cur => bump({ ...cur, activity: { role, text, at: t, calls: (cur.activity?.role === role ? cur.activity.calls : 0) + 1 } }, s => ({ ...s, toolCalls: { ...s.toolCalls, [role]: (s.toolCalls[role] ?? 0) + 1 } })))
+        await patch($, rid, cur => bump({ ...cur, agentCalls: { ...cur.agentCalls, [e.agentId!]: (cur.agentCalls?.[e.agentId!] ?? 0) + 1 }, activity: { role, text, at: t, calls: (cur.activity?.role === role ? cur.activity.calls : 0) + 1 } }, s => ({ ...s, toolCalls: { ...s.toolCalls, [role]: (s.toolCalls[role] ?? 0) + 1 } })))
         await update($, now, () => t)
       }
     }

@@ -2473,6 +2473,43 @@ describe("what became of each review finding: reported, kept, and added up over 
   })
 })
 
+describe("each run agent has a budget of tool calls: its prompt says it, and past twice it the guard stops the agent", () => {
+  test('budgets in .factory/config.json: by role, spec-writer as spec, 0 turns one off; a wrong one warns and keeps the default', () => {
+    const c = parseConfig(JSON.stringify({ budgets: { code: 12, 'spec-writer': 40, builder: 0, reviewer: 5, security: -1, skeptic: 2.5 } }))
+    expect([c.budgets.code, c.budgets.spec, c.budgets.builder, c.budgets.security, c.budgets.skeptic]).toEqual([12, 40, 0, DEFAULT_CONFIG.budgets.security, DEFAULT_CONFIG.budgets.skeptic])
+    expect(c.warnings.join(' ')).toMatch(/budgets\.reviewer is not a role/)
+    expect(c.warnings.join(' ')).toMatch(/budgets\.security is not a whole number/)
+    expect(c.warnings.join(' ')).toMatch(/budgets\.skeptic is not a whole number/)
+    expect(parseConfig(JSON.stringify({ budgets: 5 })).warnings[0]).toMatch(/budgets is not a map/)
+  })
+
+  test("a reviewer is told its budget, and its calls past twice it are refused, with the reason in the stats; the hand-back still goes", async ($, on) => {
+    on('tool.call', { tool: 'Read' }, () => ({ result: 'read' }) as never)
+    on('tool.call', { tool: 'SubagentHandback' }, () => ({ result: 'delivered' }) as never)
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true, configJson: JSON.stringify({ budgets: { security: 2, code: 2 } }) })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    const first = w.spawned.find(x => x.id === 'a1')!
+    expect(first.prompt).toMatch(/Budget: about 2 tool calls\. Past it, finish with what you have[^\n]*At 4 every further call is refused\./)
+    for (let i = 0; i < 4; i++) expect((await $.tool.call({ tool: 'Read', file_path: `/repo/src/${i}.ts`, agentId: 'a1' } as never) as { deny?: string }).deny).toBeUndefined()
+    const fifth = await $.tool.call({ tool: 'Read', file_path: '/repo/src/4.ts', agentId: 'a1' } as never)
+    expect(String((fifth as { deny?: string }).deny)).toMatch(/Budget spent: 4 tool calls against a budget of 2\. Make no more calls: answer now/)
+    expect((await $.tool.call({ tool: 'SubagentHandback', message: 'VERDICT: PASS', agentId: 'a1' } as never) as { deny?: string }).deny).toBeUndefined()
+    expect((await $.tool.call({ tool: 'Read', file_path: '/repo/src/0.ts', agentId: 'a2' } as never) as { deny?: string }).deny).toBeUndefined()
+    const status = await $.tool.call({ tool: 'mcp__factory__status' } as never).then(r => String((r as { result?: unknown }).result))
+    expect(status).toMatch(/stopped at twice their budget: [^\n]*review 4\/2/)
+  })
+
+  test('a budget of 0 for a role: no line in its prompt and no stop', async ($, on) => {
+    on('tool.call', { tool: 'Read' }, () => ({ result: 'read' }) as never)
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true, configJson: JSON.stringify({ budgets: { security: 0, code: 0 } }) })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'review x')
+    expect(w.spawned.find(x => x.id === 'a1')!.prompt).not.toMatch(/Budget: about/)
+    for (let i = 0; i < 10; i++) expect((await $.tool.call({ tool: 'Read', file_path: `/repo/src/${i}.ts`, agentId: 'a1' } as never) as { deny?: string }).deny).toBeUndefined()
+  })
+})
+
 describe('a finding fixed while the review ran is FIXED, not refuted: it does not count against the reviewer', () => {
   test('the FIXED ruling is read, with its evidence, and is dropped from what is left to fix', () => {
     const f = [0, 1].map(i => ({ severity: 'major' as const, where: `a.ts:${i}`, text: `t${i}` }))

@@ -905,6 +905,13 @@ export function doctorReport(items: DoctorItem[]): string {
   ].join('\n')
 }
 
+// The line every run agent's prompt ends with, when its role has a budget.
+export const BUDGET_STOP = 2
+export const budgetLine = (n: number) =>
+  `Budget: about ${n} tool calls. Past it, finish with what you have, in the answer format above. At ${BUDGET_STOP * n} every further call is refused.`
+export const budgetDeny = (used: number, n: number) =>
+  `Budget spent: ${used} tool calls against a budget of ${n}. Make no more calls: answer now with what you have, in the answer format your prompt asks for, and say what you did not get to.`
+
 // How the run went, in a few lines: for its record (stats.md) and the status.
 export function statsReport(run: Run, now: number): string[] {
   const s = run.stats
@@ -914,8 +921,8 @@ export function statsReport(run: Run, now: number): string[] {
   return [
     `Time: ${mmss(now - run.startedAt)} from start${run.kind === 'review' ? ' (a review run)' : ''}.`,
     `Iterations: ${run.kind === 'review' ? 'review only' : `${s?.builderStarts ?? 0} builder start${s?.builderStarts === 1 ? '' : 's'}`}, ${run.round} review round${run.round === 1 ? '' : 's'}${run.checkRound ? `, ${run.checkRound} fix pass${run.checkRound === 1 ? '' : 'es'} for red checks` : ''}.`,
-    `Findings this round: ${by('blocker')} blocker, ${by('major')} major, ${by('minor')} minor; refuted by the skeptic so far: ${run.refuted?.length ?? 0}.`,
-    `Tool calls the factory saw: ${calls || 'none'}; refused by its guard: ${s?.guardRefused ?? 0}.`,
+    `Findings this round: ${by('blocker')} blocker, ${by('major')} major, ${by('minor')} minor; refuted by the skeptic so far: ${run.refuted?.filter(x => x.ruling === 'refuted').length ?? 0}${run.refuted?.some(x => x.ruling === 'fixed') ? `; fixed while the review ran: ${run.refuted.filter(x => x.ruling === 'fixed').length}` : ''}.`,
+    `Tool calls the factory saw: ${calls || 'none'}; refused by its guard: ${s?.guardRefused ?? 0}${s?.overBudget?.length ? `; stopped at twice their budget: ${s.overBudget.join(', ')}` : ''}.`,
     `Answers missing a marker their prompt asks for: ${s?.formatMisses.length ? s.formatMisses.join('; ') : 'none'}.`,
     ...(run.ledger?.length ? [`Outcomes: ${outcomesLine(run.ledger)}`] : []),
     costLine(run.usage, run.prices ?? DEFAULT_CONFIG.prices),
