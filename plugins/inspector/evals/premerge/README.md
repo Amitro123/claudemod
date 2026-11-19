@@ -76,3 +76,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-16 | a `where` written as another path is compared; a merge before every verifier finished is refused; the verifier is told the allowed labels (same branch, this commit alone) | none (4 of 4 answered; typesafe/jev-1.13, $0.0003) | — |
 | 2026-11-18 | #145 factory v2: intake, risk routing, issue queue, concurrent runs | none (4 of 4 answered; typesafe/jev-1.13, $0.0004; the diff was cut at 40k characters, so only its first part was seen) | — |
 | 2026-11-19 | factory release 0.27.0 (version, changelog heading, descriptions) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001) | — |
+| 2026-11-19 | #144 inspector: `--recon`, Windows interpreter in printed commands | none (4 of 4 answered; typesafe/jev-1.13, $0.0004) | — |
