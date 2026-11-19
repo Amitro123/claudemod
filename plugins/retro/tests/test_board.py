@@ -85,6 +85,43 @@ def test_cli_refusal_names_the_existing_key(tmp_path):
     assert p.returncode == 2 and "git.default_branch = main" in p.stderr
 
 
+ADO_SHAPE = "abcdefghij" * 5 + "kl"  # 52 lowercase letters: the shape of an Azure DevOps PAT
+
+
+def test_a_secret_in_the_key_or_the_writer_is_refused(tmp_path):
+    f = tmp_path / "b.jsonl"
+    with pytest.raises(ValueError, match="key or --by"):
+        B.add(f, f"ado.pat.{ADO_SHAPE}", "x", "a", "e")
+    with pytest.raises(ValueError, match="key or --by"):
+        B.add(f, "a.b", "x", TOKEN, "e")
+    with pytest.raises(ValueError, match="--by"):
+        B.add(f, "a.b", "x", "  ", "e")
+    with pytest.raises(ValueError, match="pattern"):
+        B.get(f, None, TOKEN)
+    assert not f.exists() or '"type": "fact"' not in f.read_text()
+
+
+class _AlwaysLocked:
+    LK_NBLCK, LK_UNLCK = 2, 0
+    calls: list = []
+
+    @classmethod
+    def locking(cls, fd, mode, n):
+        cls.calls.append(mode)
+        if mode == cls.LK_NBLCK:
+            raise OSError("locked by another writer")
+
+
+def test_windows_lock_gives_up_with_an_error_not_an_unlocked_write(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "msvcrt", _AlwaysLocked)
+    monkeypatch.setattr(B.os, "name", "nt")
+    monkeypatch.setattr(B, "LOCK_WAIT_S", 0.2)
+    f = tmp_path / "b.jsonl"
+    with pytest.raises(TimeoutError, match="nothing was written"):
+        B.add(f, "a.b", "x", "w", "e")
+    assert f.read_text() == "" and _AlwaysLocked.LK_UNLCK not in _AlwaysLocked.calls
+
+
 def test_min_level_and_reads_are_logged(tmp_path):
     f = tmp_path / "b.jsonl"
     B.add(f, "git.branch.x.on_remote", "false", "check-2", "git ls-remote --heads origin", "read")

@@ -38,6 +38,7 @@ SECRET_RE = re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}|\bgithub_pat
                        r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|"
                        r"(?<![A-Za-z0-9])[a-z2-7]{52}(?![A-Za-z0-9])")
 MAX_VALUE = 500
+LOCK_WAIT_S = 60  # Windows only: fcntl blocks; msvcrt has no blocking lock without a 10 s cap, so we poll
 
 
 def now() -> str:
@@ -55,12 +56,17 @@ class Locked:
         self.f = open(self.path, "a+", encoding="utf-8")
         if os.name == "nt":
             import msvcrt
-            for _ in range(200):
+            deadline = time.monotonic() + LOCK_WAIT_S
+            while True:
                 try:
                     self.f.seek(0)
                     msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
                     break
                 except OSError:
+                    if time.monotonic() > deadline:
+                        self.f.close()
+                        raise TimeoutError(f"{self.path}: another writer held the board's lock for {LOCK_WAIT_S} s; "
+                                           f"nothing was written, run the command again") from None
                     time.sleep(0.05)
         else:
             import fcntl
@@ -155,6 +161,10 @@ def add(path: Path, key: str, value: str, by: str, evidence: str, level: str = "
         raise ValueError(err)
     if SECRET_RE.search(evidence):
         raise ValueError("evidence looks like it holds a secret; cite the command, not its output")
+    if SECRET_RE.search(key) or SECRET_RE.search(by):
+        raise ValueError("the key or --by looks like it holds a secret; name the fact, not its value")
+    if not by.strip() or len(by) > 80 or "\n" in by:
+        raise ValueError("--by: the writer's name, one line, at most 80 characters")
     with Locked(path) as f:
         recs = records(f)
         facts = current(recs)
@@ -175,6 +185,8 @@ def add(path: Path, key: str, value: str, by: str, evidence: str, level: str = "
 
 
 def get(path: Path, pattern: str | None, by: str, min_level: str = "claimed", history: bool = False) -> list[dict]:
+    if SECRET_RE.search(by) or SECRET_RE.search(pattern or ""):
+        raise ValueError("--by or the pattern looks like it holds a secret")
     with Locked(path) as f:
         recs = records(f)
         facts = [r for r in recs if r.get("type") == "fact"] if history else list(current(recs).values())
