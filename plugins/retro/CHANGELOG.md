@@ -18,6 +18,15 @@
   - `get <prefix>*` in the docs is now quoted, since an unquoted glob fails in zsh or expands to a file name.
   - A secret in a key or in `--by` was not checked (security, minor).
   - On Windows the lock gave up after 10 s and wrote without it; it now raises after 60 s and writes nothing (security, minor; tested with a stand-in `msvcrt`, not on Windows).
+- Fixed (agent-audit on a real factory review, 2026-11-19): `agents.py` saw 5 of the session's 8 sub-agents. The three the factory started (code, security, skeptic) have transcripts in `subagents/` but no Agent call in the main transcript. They are now read from the folder too, with the brief from the first message and the type, model and `pluginSteered` from the meta, and attributed to their plugin (`factory (plugin)` in the By skill table). On that run, six of the audit's flags were its own false positives, each fixed with a test built from the run's shape:
+  - "the brief named the board": the reviewers' brief described `board.py`, because it was the feature under review. Only a `Board:` line counts now.
+  - "no Board line" for agents started before any board existed: now only with `--board`, and only for agents started after its first fact.
+  - "the same call 3x": one patch read in three ranges. Calls are compared with their whole input now.
+  - "also run by siblings": the reviewers read the same diff. Only shell commands count; both reviewers running the same test suite still counts, as duplicated work.
+  - "deliverable": a path that appeared near "write" in the description of the change. Deliverables come from a `Deliverables:` line or a path right after write, save or create.
+  - "unrecovered failure": a last command that failed and was explained in the report. A last failure counts only when the report does not mention it.
+  - A brief without the contract's labels (Context, Rules, numbered asks, deliverable paths) is shape, not a problem: those are shown under `brief_checks`, and only a missing budget is a brief problem.
+  What stood on the factory: none of its three agents' briefs sets a tool-call budget; measured, code 11 calls, security 7, skeptic 31.
 - Measured in one live trial (2026-11-19, two haiku sub-agents, a board seeded with the default branch): the checker read the board first and did not look the branch up again, and added its count with the command behind it; the verifier made its own two counts before reading the board, and confirmed. `agents.py --board` flagged neither. The checker also wrote the branch a second time as `repo.default_branch`, because the brief named no keys: the refusal above and the Keys line came from that. A second trial with the same brief (naming no keys) and the refusal in place: the checker tried `repo.default_branch`, was refused with `git.default_branch = main` named, read the board and wrote only its count; the board ended with two facts and no duplicate. Two trials on a trivial task, not a measurement of what the board saves.
 
 ## 0.1.0 (2026-11-19)

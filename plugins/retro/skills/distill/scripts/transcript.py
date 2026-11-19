@@ -59,6 +59,7 @@ class AgentRun:
     start: str | None = None
     end: str | None = None
     launched: str | None = None  # the main agent's call time
+    started_by: str = "main"  # "plugin" for one a plugin or mod started, with no Agent call of the main agent
 
     @property
     def work_calls(self) -> list[Call]:
@@ -210,6 +211,38 @@ def _agent_from_call(c: Call, session_dir: Path | None, main_rows: list[dict]) -
     return a
 
 
+def _agents_without_a_call(session_dir: Path, seen: set[str]) -> list[AgentRun]:
+    """Sub-agents a plugin or mod started (the factory's reviewers): their transcripts sit in `subagents/` with no
+    Agent call in the main transcript. The brief is the first user message, the type and model come from the meta."""
+    sub = session_dir / "subagents"
+    out = []
+    for f in sorted(sub.glob("agent-*.jsonl")) if sub.is_dir() else []:
+        aid = f.stem[len("agent-"):]
+        if aid in seen:
+            continue
+        meta = {}
+        m = sub / f"agent-{aid}.meta.json"
+        if m.exists():
+            try:
+                meta = json.loads(m.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                meta = {}
+        rows = _rows(f)
+        s = Session(path=str(f), format="claude-jsonl")
+        _parse_claude_rows(rows, s, sidechain=True)
+        brief = next((_text_of(r["message"]["content"]) for r in rows if r.get("type") == "user" and not r.get("isMeta")
+                      and isinstance((r.get("message") or {}).get("content"), str)), "")
+        a = AgentRun(call_id=f"file:{aid}", agent_id=aid, description=meta.get("description", ""),
+                     subagent_type=meta.get("agentType") or "?", model=meta.get("model"), prompt=brief,
+                     status="completed" if meta.get("finished") else None, transcript=str(f), calls=s.calls,
+                     finished=meta.get("finished"), start=s.start, end=s.end, launched=s.start)
+        a.started_by = "plugin" if meta.get("pluginSteered") or meta.get("modShaped") else "unknown"
+        hb = [c for c in s.calls if c.tool in HANDBACK_TOOLS]
+        a.report = str(hb[-1].input.get("message", "")) if hb else (s.texts[-1] if s.texts else "")
+        out.append(a)
+    return out
+
+
 def _load_claude(path: Path) -> Session:
     rows = _rows(path)
     sess = Session(path=str(path), format="claude-jsonl")
@@ -218,6 +251,7 @@ def _load_claude(path: Path) -> Session:
     for c in sess.calls:
         if c.tool in AGENT_TOOLS:
             sess.agents.append(_agent_from_call(c, session_dir if session_dir.is_dir() else None, rows))
+    sess.agents += _agents_without_a_call(session_dir, {a.agent_id for a in sess.agents if a.agent_id})
     for a in sess.agents:
         if not a.calls:
             sess.notes.append(f"agent {a.agent_id or a.call_id}: no transcript of its own found; only its brief and report")
