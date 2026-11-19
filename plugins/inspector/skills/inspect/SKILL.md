@@ -1,7 +1,7 @@
 ---
 name: inspect
 description: "Investigates a repository's history of bug fixes: what the project promises, which PRs fixed something, which earlier change each fix undid (git blame on the fix's parent), the kinds of bugs and the seams they cluster at, and which bugs of the same kinds are still in today's code. Writes a case file with evidence for each claim and a ranked list of open leads. /inspector:inspect [#PR | sha | since <ref|date> | <path>]."
-when_to_use: "The user asks why things keep breaking, wants a post-mortem of past fixes or PRs, asks what kinds of bugs a project has had, wants to know which change introduced a bug, or asks what still needs fixing after a run of fixes, or is about to change a multi-component or high-churn seam (recon mode, in Scope). Also: 'investigate the history', 'analyze the bug-fix PRs', 'root-cause the regressions', 'בלש', 'תחקור', 'למה זה נשבר'. Not for reviewing a pending diff (use a code review) or fixing one known bug."
+when_to_use: "The user asks why things keep breaking, wants a post-mortem of past fixes or PRs, asks what kinds of bugs a project has had, wants to know which change introduced a bug, or asks what still needs fixing after a run of fixes, or is about to change a multi-component or high-churn seam (recon mode, in Scope). Also: 'investigate the history', 'analyze the bug-fix PRs', 'root-cause the regressions', 'בלש', 'תחקור', 'למה זה נשבר'. Not for a pending diff (code review), one known bug, or who-did-what audits (/inspector:audit)."
 ---
 
 # The inspector

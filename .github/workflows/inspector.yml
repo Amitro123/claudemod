@@ -1,10 +1,10 @@
-name: inspector skill
+name: inspector and retro skills
 
 on:
   push:
-    paths: ['plugins/inspector/**', '.github/workflows/inspector.yml']
+    paths: ['plugins/inspector/**', 'plugins/retro/**', '.github/workflows/inspector.yml']
   pull_request:
-    paths: ['plugins/inspector/**', '.github/workflows/inspector.yml']
+    paths: ['plugins/inspector/**', 'plugins/retro/**', '.github/workflows/inspector.yml']
 
 jobs:
   pytest:
@@ -18,3 +18,4 @@ jobs:
           python-version: '3.12'
       - run: pip install pytest
       - run: python -m pytest plugins/inspector/tests -q
+      - run: python -m pytest plugins/retro/tests -q
