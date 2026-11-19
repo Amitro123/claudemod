@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
-import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, SESSION_LINK_FILTER, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
+import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, resumeState, SESSION_LINK_FILTER, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
 import type { Run } from '../types'
 import { linesByFile, parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
 import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
@@ -575,6 +575,34 @@ describe('the checks come before any reviewer', () => {
     await answer($, 'a4', PASS)
     await answer($, 'a5', 'DECISION: APPROVE\nREASON: good')
     expect(w.sent.at(-1)).toMatch(/Push branch factory\/rate-limiter/)
+  })
+})
+
+describe('a run survives a restart of the session (#153)', () => {
+  const WT = 'worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree /repo/.factory/rate-limiter\nHEAD def456\nbranch refs/heads/factory/rate-limiter\n'
+
+  test('each step saves the run in its record; the saved state goes on from the step it was in', async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    const saved = JSON.parse(w.written['/repo/.factory/rate-limiter.record/run.json']!)
+    expect(saved).toMatchObject({ slug: 'rate-limiter', branch: 'factory/rate-limiter', phase: 'review' })
+    const back = resumeState(saved, 2)!
+    expect(back).toMatchObject({ phase: 'needs-human', agents: {}, blocked: { on: 'start' } })
+    expect(back.reviews.every(r => r.state !== 'run' && r.agentId === null)).toBe(true)
+    expect(resumeState({ ...saved, phase: 'build' }, 2)!.blocked).toEqual({ on: 'checks' })
+    expect(resumeState({ ...saved, phase: 'build' }, 0)!.blocked).toEqual({ on: 'start', role: 'builder' })
+    expect(resumeState({ ...saved, phase: 'done' }, 2)).toBeNull()
+    expect(resumeState('not a run', 2)).toBeNull()
+  })
+
+  test('after a restart, the same feature is offered its earlier branch, the doctor lists it, and /factory new starts over', async ($, on) => {
+    const w = engine(on, { outputs: { 'git worktree list --porcelain': { exitCode: 0, stdout: WT, stderr: '' }, 'git rev-list --count abc123..factory/rate-limiter': { exitCode: 0, stdout: '2\n', stderr: '' } } })
+    w.written['/repo/.factory/rate-limiter.record/run.json'] = JSON.stringify({ slug: 'rate-limiter', feature: 'Rate limiter', branch: 'factory/rate-limiter', base: 'abc123', phase: 'approve', reviews: [] })
+    const said = await startRun($)
+    expect(said).toMatch(/An earlier run of this feature is on branch factory\/rate-limiter \(2 commits of its own, stopped at approve\)\. \/factory resume rate-limiter goes on from there/)
+    expect(w.ran.filter(c => c.startsWith('git worktree add -b'))).toEqual([])
+    expect(await command($, 'doctor')).toMatch(/A run from an earlier session: rate-limiter on factory\/rate-limiter, 2 commits of its own, stopped at approve/)
+    expect(await command($, 'new Rate limiter')).toMatch(/Factory run started/)
   })
 })
 
@@ -1694,7 +1722,7 @@ describe('what the factory did, and the PR asked in the conversation', () => {
     const w = engine(on)
     await toReviews($)
     const files = Object.keys(w.written).filter(p => p.startsWith('/repo/.factory/rate-limiter.record/')).map(p => p.split('/').pop())
-    expect(files).toEqual(['01-spec-writer.md', '02-builder-round-1.md', '03-changes-after-builder-round-1.md', '04-checks.md', 'diff-round-1.patch'])
+    expect(files.sort()).toEqual(['01-spec-writer.md', '02-builder-round-1.md', '03-changes-after-builder-round-1.md', '04-checks.md', 'diff-round-1.patch', 'run.json'])
     expect(w.written['/repo/.factory/rate-limiter.record/02-builder-round-1.md']).toBe('# builder, round 1\n\nModel asked: sonnet; ran on: no step seen.\n\nbuilt\n')
     expect(w.written['/repo/.factory/rate-limiter.record/04-checks.md']).toMatch(/^# checks\n\n✓ npm test/)
     const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
@@ -2255,7 +2283,7 @@ describe('the doctor, and the next actions the status tool lists', () => {
     expect(t).toMatch(/✓ goal-run is installed/)
     expect(t).toMatch(/✓ gh is installed/)
     expect(w.spawned).toEqual([])
-    expect(w.ran.some(c => c.startsWith('git worktree'))).toBe(false)
+    expect(w.ran.some(c => c.startsWith('git worktree add'))).toBe(false)
   })
 
   test('the doctor names a blocker and what to do; no checks and no goal-run are warnings', async ($, on) => {

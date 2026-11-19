@@ -1,7 +1,7 @@
 // The factory's pure parts: what each role is told, how its answer is read, which checks run, and
 // how a run starts. The hooks module only spawns, runs and draws.
 
-import type { Check, Extra, Finding, LedgerEntry, Outcome, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
+import type { Blocked, Check, Extra, Finding, LedgerEntry, Outcome, Phase, Review, Reviewer, Role, Run, Severity, Size, SpecTask, StepState } from '../types'
 import { FACTORY_SOURCE } from './texts'
 import { costLine, DEFAULT_CONFIG } from './config'
 
@@ -633,6 +633,29 @@ export const worktreeOf = (root: string, slug: string) => `${root.replace(/[\\/]
 export const rootOf = (run: { worktree: string; slug: string }) => run.worktree.slice(0, -`/.factory/${run.slug}`.length)
 // Beside the worktree, never in it: a slug has no dot, so no run's worktree is named so.
 export const recordOf = (root: string, slug: string) => `${root.replace(/[\\/]+$/, '')}/.factory/${slug}.record`
+// The run's state, saved in its record at each step, so a restart of the session doesn't lose it (#153).
+export const SAVED_RUN = 'run.json'
+
+// A run saved by an earlier session, made ready to go on in this one: it waits on the person, and Retry
+// runs again the step it was in (its agents are gone with that session). `commits`: the branch's own
+// commits, so a build that got that far isn't started over. null: an ended run, or not a run.
+export function resumeState(saved: unknown, commits: number): Run | null {
+  const r = saved as Run
+  if (!r || typeof r !== 'object' || typeof r.slug !== 'string' || typeof r.branch !== 'string' || typeof r.phase !== 'string' || !Array.isArray(r.reviews)) return null
+  if (!isLive(r.phase)) return null
+  const base: Run = { ...r, agents: {}, builderId: undefined, checking: null, isAskingChecks: false, reviews: r.reviews.map(x => (x.state === 'run' ? { ...x, state: 'fail', agentId: null } : x)) }
+  if (r.phase === 'ready' || r.phase === 'needs-human') return { ...base, note: `${r.note} (picked up after a restart)` }
+  const blocked: Blocked =
+    r.phase === 'intake' ? { on: 'start', role: 'intake' }
+    : r.phase === 'spec' || r.phase === 'plan' ? { on: 'start', role: 'spec' }
+    : r.phase === 'build' ? (commits > 0 ? { on: 'checks' } : { on: 'start', role: 'builder' })
+    : r.phase === 'checks' ? { on: 'checks' }
+    : r.phase === 'approve' ? { on: 'start', role: 'approver' }
+    : r.phase === 'merging' ? { on: 'merge' }
+    : { on: 'start', role: (r.reviews.find(x => x.state === 'run' || x.state === 'fail')?.role ?? 'code') as Role }
+  const step = blocked.on === 'checks' ? 'the checks' : blocked.on === 'merge' ? 'the sync with the latest base' : `the ${(blocked as { role: Role }).role === 'spec' ? 'spec-writer' : (blocked as { role: Role }).role}`
+  return { ...base, phase: 'needs-human', blocked, note: `picked up after a restart, at ${step}: Retry runs it again` }
+}
 
 // An agent's closing lines: the builder ends with a two-line summary of what it changed.
 export function lastLines(text: string, n: number): string {

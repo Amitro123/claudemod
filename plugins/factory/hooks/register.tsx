@@ -51,6 +51,9 @@ import {
   splitChecks,
   tailOf,
   rootOf,
+  resumeState,
+  recordOf,
+  SAVED_RUN,
   tok,
   tokensOf,
   untrackedOf,
@@ -217,6 +220,7 @@ function serial($: EngineInterface, rid: string, job: () => Promise<void>): Prom
 async function patch($: EngineInterface, rid: string, fn: (r: Run) => Run): Promise<Run | null> {
   const t = await $.clock.now()
   let refused = false
+  let moved = false
   let out: Run | null = null
   await update($, runs, all => {
     const key = rid || pickRun(all)?.slug
@@ -233,8 +237,12 @@ async function patch($: EngineInterface, rid: string, fn: (r: Run) => Run): Prom
       }
     }
     out = next
+    moved = next.phase !== cur.phase
     return next === cur ? all : { ...all, [key]: next }
   })
+  // At each step the run's state goes to its record, so a restart doesn't lose it.
+  const kept = out as Run | null
+  if (!refused && moved && kept?.record) await $.fs.write(`${kept.record}/${SAVED_RUN}`, JSON.stringify(kept)).catch(() => {})
   return refused ? null : out
 }
 
@@ -368,7 +376,7 @@ async function preflight($: EngineInterface): Promise<{ root: string; head: stri
   return { root, head: head.stdout.trim() }
 }
 
-type StartOpts = { issue?: number; intakeAnswers?: string[]; issueAnyway?: boolean }
+type StartOpts = { issue?: number; intakeAnswers?: string[]; issueAnyway?: boolean; fresh?: boolean }
 async function start($: EngineInterface, args: string, extras: Extra[] = [], opts: StartOpts = {}): Promise<string> {
   const parsed = parseFactoryArgs(args)
   const feature = cleanFeature(parsed.feature)
@@ -379,6 +387,11 @@ async function start($: EngineInterface, args: string, extras: Extra[] = [], opt
   const { root, head } = ready
   const at = await $.clock.now()
   const slug = slugOf(feature)
+  // A run of this feature from an earlier session, its branch still there: offered, not started over.
+  if (!opts.fresh) {
+    const earlier = (await earlierRuns($, root)).find(o => o.slug === slug || o.slug.startsWith(`${slug}-`) && o.run?.feature === feature)
+    if (earlier) return `An earlier run of this feature is on branch ${earlier.branch} (${earlier.commits} commit${earlier.commits === 1 ? '' : 's'} of its own${earlier.run ? `, stopped at ${earlier.run.phase}` : ''}). ${earlier.run ? `/factory resume ${earlier.slug} goes on from there; ` : `Its state wasn't saved: review it with /factory review in ${earlier.worktree}, or remove it with git worktree remove ${earlier.worktree}; `}/factory new ${feature} starts over on a new branch.`
+  }
   let r: Run | null = null
   // A branch or folder name already taken gets a number; any other failure is reported as it is.
   for (let k = 1; k <= MAX_SLUG_TRIES && !r; k++) {
@@ -418,6 +431,50 @@ async function start($: EngineInterface, args: string, extras: Extra[] = [], opt
   }
   await serial($, rid, async () => void (await spawnRole($, rid, 'spec', specPrompt(created))))
   return `Factory run started: ${titleOf(created.feature, 120)}. Branch ${created.branch}, worktree ${created.worktree}; the spec-writer is writing ${created.specFile}.`
+}
+
+// The runs an earlier session left: a worktree of the factory's (under .factory/, on a factory/ branch)
+// that no run of this session holds. With the state it saved, when it saved one (`run`), and the
+// branch's own commits since the run's base (or since HEAD, for a run with no saved state).
+type Earlier = { slug: string; branch: string; worktree: string; commits: number; run: Run | null }
+async function earlierRuns($: EngineInterface, root: string): Promise<Earlier[]> {
+  const listed = await git($, ['worktree', 'list', '--porcelain'], root)
+  if (listed.exitCode !== 0) return []
+  const held = new Set(Object.values(await read($, runs)).filter(x => isLive(x.phase)).map(x => x.worktree))
+  const dir = `${root.replace(/[\\/]+$/, '')}/.factory/`
+  const out: Earlier[] = []
+  for (const block of listed.stdout.split(/\n\s*\n/)) {
+    const wt = /^worktree (.+)$/m.exec(block)?.[1]?.trim()
+    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1]?.trim()
+    if (!wt || !branch || !wt.startsWith(dir) || !branch.startsWith('factory/') || held.has(wt)) continue
+    const slug = wt.slice(dir.length)
+    if (!slug || slug.includes('/') || slug.startsWith('.')) continue
+    const text = await $.fs.read(`${recordOf(root, slug)}/${SAVED_RUN}`).then(t => String(t), () => '')
+    let run: Run | null = null
+    try { run = text ? (JSON.parse(text) as Run) : null } catch { run = null }
+    if (run && !isLive(run.phase)) continue
+    const count = await git($, ['rev-list', '--count', `${run?.base ?? 'HEAD'}..${branch}`], root)
+    out.push({ slug, branch, worktree: wt, commits: count.exitCode === 0 ? Number(count.stdout.trim()) || 0 : 0, run })
+  }
+  return out
+}
+
+// /factory resume [<run>]: an earlier session's run goes on in this one, from the step it was in.
+async function resumeNow($: EngineInterface, name: string): Promise<string> {
+  const top = await git($, ['rev-parse', '--show-toplevel'], await $.session.root())
+  if (top.exitCode !== 0) return 'Not a git repository.'
+  const found = await earlierRuns($, top.stdout.trim())
+  if (!found.length) return 'No run from an earlier session to pick up.'
+  const one = name ? found.find(o => o.slug === name.replace(/^@/, '')) : found.length === 1 ? found[0] : undefined
+  if (!one) return `Which one? ${found.map(o => o.slug).join(', ')}: /factory resume <run>.`
+  const run = one.run ? resumeState(one.run, one.commits) : null
+  if (!run) return `${one.slug} saved no state to go on from (a run from before the factory saved it). Its ${one.commits} commit${one.commits === 1 ? '' : 's'} are on ${one.branch}: /factory review in ${one.worktree} reviews them, or git worktree remove ${one.worktree} drops them.`
+  const rid = await addRun($, run)
+  await record($, rid, 'resumed', `Picked up after a restart: ${run.note}.`)
+  await ensureTicking($)
+  void $.ui.open({ id: PANE, title: PANE_TITLE })
+  if (run.blocked && run.blocked.on !== 'escalate') return `Picked up ${titleOf(run.feature, 80)} on ${run.branch}. ${await retryNow($, rid)}`
+  return `Picked up ${titleOf(run.feature, 80)} on ${run.branch}: ${run.note}.`
 }
 
 // The worktrees live in .factory/ of the repository: listed in its exclude file, found through
@@ -1779,6 +1836,8 @@ async function doctorText($: EngineInterface, rid: string): Promise<string> {
   const ahead = await git($, ['rev-list', '--count', '@{upstream}..HEAD'], root)
   const n = ahead.exitCode === 0 ? Number(ahead.stdout.trim()) : 0
   if (n > 0) items.push({ level: 'warn', text: `${branch} is ${n} commit${n === 1 ? '' : 's'} ahead of its upstream: they would be in the run's PR too. Push them first, or start from a branch that has none.` })
+  // Runs an earlier session left (a restart loses a session's runs): each, and how to go on with it.
+  for (const o of await earlierRuns($, root)) items.push({ level: 'warn', text: `A run from an earlier session: ${o.slug} on ${o.branch}, ${o.commits} commit${o.commits === 1 ? '' : 's'} of its own${o.run ? `, stopped at ${o.run.phase}. /factory resume ${o.slug} goes on from there.` : `, no saved state. /factory review in ${o.worktree} reviews it; git worktree remove ${o.worktree} drops it.`}` })
   if (await goalRunThere($)) items.push({ level: 'ok', text: 'goal-run is installed: you approve the plan there.' })
   else items.push({ level: 'warn', text: "goal-run isn't installed: the factory asks for the plan's approval in its own band." })
   // The checks, as detection finds them in the checkout (a run's worktree holds the same files).
@@ -2087,6 +2146,8 @@ export const register: Register = (on, options) => {
     if (arg === 'status') return { text: await statusText($, rid) }
     if (arg === 'doctor') return { text: await doctorText($, rid) }
     if (arg === 'checks-ok') return { text: await checksOkNow($, rid) }
+    if (arg === 'resume' || arg.startsWith('resume ')) return { text: await resumeNow($, arg.slice(6).trim()) }
+    if (arg.startsWith('new ')) return { text: await start($, arg.slice(4), [], { fresh: true }) }
     if (arg === 'review' || arg.startsWith('review ')) {
       const rest = arg.slice(6).trim()
       const named = /^base=(\S+)\s*/.exec(rest)
