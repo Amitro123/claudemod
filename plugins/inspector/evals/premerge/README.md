@@ -81,3 +81,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-19 | #148 `/inspector:audit`; new plugin retro (distill, agent-audit) | none (4 of 4 answered; typesafe/jev-1.13, $0.0005; the diff was cut at 40k characters, so only its first part was seen) | — |
 | 2026-11-19 | #148 again before merge: retro's tests in CI, main (#144) merged in | none (4 of 4 answered; typesafe/jev-1.13, $0.0005; cut at 40k characters) | — |
 | 2026-11-19 | #149 retro: `/retro:board`, a shared fact board for sub-agents | none (4 of 4 answered; typesafe/jev-1.13, $0.0005; cut at 40k characters) | — |
+| 2026-11-19 | #149 again: a second key for a fact already on the board is refused, `keys` | none (4 of 4 answered; typesafe/jev-1.13, $0.0005; cut at 40k characters) | — |
