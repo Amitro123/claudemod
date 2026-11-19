@@ -2,7 +2,10 @@
 
 Earlier releases are described in the repository README.
 
-## Unreleased
+## 0.27.0 (2026-11-19)
+
+Factory v2: the intake, the review route by risk, `.factory/config.json`, the gate on the latest base before the PR, `autoMerge`, cost per run, GitHub issues as the queue, and several runs at once. Also every fix listed below that was waiting for a release.
+
 
 - Added: **the intake** (the `intake` option, on by default). Before the spec, an intake agent on opus weighs the feature, read as quoted data: ACCEPT with a scope the spec-writer is held to, NEEDS-INFO with up to three questions (`/factory rework <answers>` asks it again), or REJECT with why (`/factory approve` builds it anyway, recorded as the person's call). It names the risk (low, medium, high) and the surfaces (ui, security). An answer with no `INTAKE:` line decided nothing and waits for Retry; verdicts that disagree read as NEEDS-INFO, a missing risk as high, missing surfaces as both. The pane and the band draw it as its own step.
 - Added: **the review route by risk** (with the intake on). Before each review round a script picks the reviewers from the intake's risk and surfaces and the diff: code always (haiku at low risk, sonnet otherwise, opus when the diff calls for depth); security on opus only for a security surface, high risk or a sensitive diff; `ux` (sonnet) and `ui-design` (haiku) for a UI surface or UI files in the diff. Rules only add review, and a reviewer that ran once runs every later round. A routed-out reviewer is drawn as skipped, left out of the approver's verdicts and named to it as routed out. The spec-writer, builder and approver run on opus. The route's reasons are in the run's record.

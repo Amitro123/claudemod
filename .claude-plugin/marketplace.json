@@ -39,7 +39,7 @@
     {
       "name": "factory",
       "source": "./plugins/factory",
-      "description": "A software factory: spec, your approval of its plan, build on a branch, checks, parallel reviews and an approver agent, then your Open PR"
+      "description": "A software factory: an intake weighs each feature or GitHub issue labeled factory, a spec and your approval of its plan, build on a branch, checks, reviewers routed by risk, an approver, then the PR; up to three runs at once"
     },
     {
       "name": "inspector",
