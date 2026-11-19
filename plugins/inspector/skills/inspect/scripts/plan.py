@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -126,7 +127,7 @@ class Ctx:
         self.case_file = posix(case_file) if case_file else f"{self.run}/case-file.md"
 
     def script(self, name: str) -> str:
-        return f'python3 "{self.skill_root}/scripts/{name}"'
+        return f'{python_cmd()} "{self.skill_root}/scripts/{name}"'
 
     def dispatch(self, name: str) -> str:
         return f"Read {self.plan}/{name} and follow it"
@@ -310,6 +311,22 @@ def investigator_prompt(c: Ctx) -> str:
         f"Collector summary: {c.run}/evidence.md. Case file: write it to {c.case_file}.",
         f"Also write the open leads, as the JSON array of your hand-back block, to {c.run}/leads.json.",
         f"Budget: at most 25 tool calls per case. {EVIDENCE}", ""])
+
+
+def python_cmd(windows: bool | None = None) -> str:
+    """The interpreter in the commands printed for an agent to run: `python3`, or `python` on Windows, where `python3` is
+    often the Microsoft Store stub that opens the store instead of running the script (a review of 0.8.1 on Windows).
+    `INSPECTOR_PYTHON` names another (`py -3`, a full path) and wins, unless it holds shell syntax (`;` `&` `|` `<` `>` `$`
+    a backtick, parentheses or a line break) or unbalanced quotes: it is written into commands an agent runs, so such a
+    value is ignored and the default used."""
+    named = os.environ.get("INSPECTOR_PYTHON", "").strip()
+    if named and not re.search(r"[;&|<>$`()\r\n]", named):
+        try:
+            if shlex.split(named):
+                return named
+        except ValueError:
+            pass
+    return "python" if (os.name == "nt" if windows is None else windows) else "python3"
 
 
 def verifier_prompt(c: Ctx, k: int, wheres: list[str], docs: bool = False) -> str:
