@@ -24,3 +24,8 @@ conversation's instructions name a scratchpad, pass `--out <scratchpad>/inspecto
 uses it. Not verified: that agents' Writes there never ask for approval in an interactive session.
 
 **Same `where`, and no leads.** Two leads with one `where` are refused by `merge_verdicts.py`: give each a distinct suffix ` [lead N]` (a space, `[lead `, a number, `]`) on its `where` and in its verdict. The release gate compares on the `where` without the suffix and fails when a suffixed `where` repeats. With no lead at all, run `merge_verdicts.py` without `--verdicts` (`merged.json` is `[]`) and `handoff.py` (the "no leads" placeholder) so the folder still holds both files the gate requires; the generated plan lists both commands.
+
+## Comparing plugin copies, and editing the plugin itself
+
+Compare two copies of the plugin: `python3 "<skill_root>/scripts/doctor.py" --repo <repo> --compare-plugin <other-plugin-root>`.
+While editing the plugin itself, `INSPECTOR_ALLOW_PLUGIN_CHANGE=1` turns the changed-plugin rejection (saved evidence collected by another fingerprint) into a warning.

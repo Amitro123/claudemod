@@ -1583,6 +1583,7 @@ def capped(text: str, n: int) -> str:
     return "\n".join(lines[:n] + ([f"... {len(lines) - n} more lines (read the rest by range)"] if len(lines) > n else []))
 
 
+RECON_BUDGET = 5              # dossiers of a --recon run unless --budget says otherwise
 BIG_FIX_DIFF_LINES = 400      # added+removed lines in code files above which a fix commit also gets a per-file section
 BIG_FIX_MAX_FILES = 40        # files listed in that section
 BIG_FIX_BLAME_FILES = 12      # files (largest first) that also get a blame culprit line
@@ -1840,7 +1841,10 @@ def main(argv=None) -> int:
                     help="work only the units that touch this path prefix (repeatable: --path a/ --path b/ works the union)")
     ap.add_argument("--component-root", action="append", default=[],
                     help="a top-level folder whose subfolders are components (repeatable; adds to the defaults)")
-    ap.add_argument("--budget", type=int, default=12, help="cases to triage and write dossiers for (default 12)")
+    ap.add_argument("--budget", type=int, default=None, help=f"cases to triage and write dossiers for (default 12; {RECON_BUDGET} with --recon)")
+    ap.add_argument("--recon", action="store_true",
+                    help="before changing a seam: the dossiers of the units that touch --path, and nothing else (no RUN PLAN, no case file, "
+                         f"no agents); the default budget is {RECON_BUDGET}")
     ap.add_argument("--max-blame-lines", type=int, default=400, help="per fix commit")
     ap.add_argument("--workers", type=int, help="git calls in flight (default min(8, cpu count); 1 = one at a time)")
     ap.add_argument("--cache-dir", help="where blame results are cached (default <git dir>/inspector/cache: the only thing written inside .git)")
@@ -1948,6 +1952,8 @@ def main(argv=None) -> int:
 
 
 def finish(a, r: dict, owner_sha: dict) -> int:
+    if a.budget is None:
+        a.budget = RECON_BUDGET if a.recon else 12
     r["cases"] = triage(r, a.budget)
     if (r["shallow"] or a.github) and not a.dossier and not a.no_github:
         slug = github_slug(a.repo)
@@ -1986,7 +1992,7 @@ def finish(a, r: dict, owner_sha: dict) -> int:
     # the dossiers are independent git reads: build them side by side, write them in order
     built = pmap(build, r["cases"], a.workers if a.workers is not None else min(8, os.cpu_count() or 1)) if case_dir else []
     for i, label in enumerate(r["cases"], 1):
-        args = ["python3", me, "--repo", r["repo_path"], "--ref", r["ref_sha"],
+        args = [*shlex.split(plan.python_cmd()), me, "--repo", r["repo_path"], "--ref", r["ref_sha"],
                 "--unit", label, "--history", str(a.history), "--max", str(a.max),
                 "--max-blame-lines", str(a.max_blame_lines), "--min-lines", str(a.min_lines)]
         for p in snapshot.path_list(a.path):
@@ -2025,8 +2031,10 @@ def finish(a, r: dict, owner_sha: dict) -> int:
     # Whoever reads this output must end up with a plan: a file it can read, or the plan as text. Every path that
     # leaves no plan file (nothing saved, only --json or --md given, a plan that failed to write) prints it inline.
     why = "no folder could be written" if saved_note else "no run folder: only --json or --md was given" if not out else ""
+    if a.recon:
+        why = ""                                # a recon run has no plan, saved or inline
     if jpath:
-        if out and r["cases"]:
+        if out and r["cases"] and not a.recon:
             pointer = print_run_plan(out)
             if pointer.startswith("RUN PLAN: not written"):
                 why = "the plan file could not be written"
@@ -2040,6 +2048,11 @@ def finish(a, r: dict, owner_sha: dict) -> int:
         sys.stdout.write(f"\n{saved_note}\n")
     if why and cmds:
         sys.stdout.write("\n" + inline_plan(r["repo_path"], r["ref_sha"], cmds, why))
+    if a.recon:
+        sys.stdout.write("\nRECON: no case file, no agents, no RUN PLAN. " + (
+            "Read the dossiers listed above before you change these files, then work from them. For a full investigation, run again without --recon."
+            if r["cases"] else "No fix unit touches that scope: nothing to read first."))
+        sys.stdout.write("\n")
     if jpath:
         sys.stdout.write(f"\nSaved: {jpath}\n")       # always the last line: SKILL.md reads the run folder from it
     return 0
