@@ -928,6 +928,15 @@ async function startReviews($: EngineInterface, rid: string) {
   if (r?.phase === 'review') await spawnReviewers($, rid, r)
 }
 
+// A review of the person's checkout: did the checkout change after the reviewers read it? The diff they read
+// is in the record; a different diff now means someone edited while they worked. No saved diff: unknown, false.
+async function reviewedDiffChanged($: EngineInterface, r: Run): Promise<boolean> {
+  if (!r.diffFile) return false
+  const before = await $.fs.read(r.diffFile).then(t => String(t), () => null)
+  const now = await git($, ['diff', ...spanOf(r)], r.worktree)
+  return before !== null && now.exitCode === 0 && now.stdout !== before
+}
+
 // The reviewers of this round not started yet (all of them, or those a failed start left).
 // What a run's diff spans: its branch's commits since the base, or, for a review of the person's
 // checkout, the working tree against the base (uncommitted work included).
@@ -973,7 +982,8 @@ async function onReview($: EngineInterface, rid: string, role: Reviewer, agentId
   const disputed = r.kind === 'review' ? mine.flatMap(x => x.findings.map(finding => ({ role: x.role, finding }))) : changes.flatMap(x => disputable(x.findings).map(finding => ({ role: x.role, finding })))
   if (!skepticOn || !disputed.length) return r.kind === 'review' ? finishReview($, rid) : startBuild($, rid, openFindings(changes), [])
   const onSecurity = disputed.some(x => x.role === 'security')
-  const next = await patch($, rid, cur => ({ ...cur, disputed, note: `a skeptic checks ${disputed.length} finding${disputed.length === 1 ? '' : 's'}`, models: { ...cur.models, skeptic: onSecurity ? 'opus' : 'sonnet' } }))
+  const changedSinceReview = r.kind === 'review' && (await reviewedDiffChanged($, r))
+  const next = await patch($, rid, cur => ({ ...cur, disputed, changedSinceReview, note: `a skeptic checks ${disputed.length} finding${disputed.length === 1 ? '' : 's'}`, models: { ...cur.models, skeptic: onSecurity ? 'opus' : 'sonnet' } }))
   if (next && !(await spawnRole($, rid, 'skeptic', skepticPrompt(next, disputed)))) {
     // No skeptic could start: the findings go to the builder as they are. Only from the stop that
     // failed start made: a run stopped meanwhile (spawnRole refuses a run that isn't live) stays stopped.

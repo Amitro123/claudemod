@@ -101,6 +101,9 @@ export type Run = {
   // This round's whole diff, written by the factory beside the record: the reviewers read it instead
   // of running git, which a session with no one to approve it refuses.
   diffFile?: string
+  // A review of the person's checkout that changed after the reviewers read it (someone fixed things while
+  // they worked): the skeptic is told to rule on the reviewed diff, and a finding gone since is FIXED.
+  changedSinceReview?: boolean
   // New files the setup command wrote in the worktree (a lockfile npm install made): never committed.
   setupFiles?: string[]
   // review: only the reviewers (and the skeptic), on the change already in the person's checkout,

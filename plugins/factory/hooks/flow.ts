@@ -484,6 +484,9 @@ export function skepticPrompt(run: Run, findings: { role: Reviewer; finding: Fin
       : `The spec is ${specPathOf(run)}. The change is on branch ${run.branch}, since ${run.base.slice(0, 12)} (git -C ${run.worktree} diff ${run.base.slice(0, 12)}..HEAD).`,
     whereLine(run),
     ...(run.diffFile ? [`The whole diff is in ${run.diffFile}: read it with the Read tool instead of running git.`] : []),
+    ...(run.changedSinceReview
+      ? [`The checkout changed after the reviewers read it: their diff${run.diffFile ? ` is ${run.diffFile}` : ' is gone'}, and the files may differ from it. Rule on the change they read; where the code now differs and the problem is gone, the ruling is FIXED.`]
+      : []),
     'The reviewers raised these findings. Weigh each: read the code it names and the definitions it relies on, run a read-only command if that settles it, and search the tests and the comments around it for whether the behaviour is meant (a test that asserts it, a comment that says why).',
     ...findings.map((x, i) => `F${i + 1}. ${x.role} [${x.finding.severity}] ${x.finding.where} ${x.finding.text}`),
     'End your answer with one line per finding, exactly one of:',
@@ -492,6 +495,8 @@ export function skepticPrompt(run: Run, findings: { role: Reviewer; finding: Fin
     'F<n>: DOWNGRADED <a blocker or major that is real, but only minor: why, with evidence>',
     'F<n>: DESIGN <the test, comment or doc that makes the behaviour deliberate, at file:line>',
     "F<n>: UNVERIFIED <what it rests on that can't be checked here, and what would settle it>",
+    'F<n>: FIXED <real in the diff the reviewers read, and gone in the code now: file:line now, and what changed>',
+    'REFUTED means the reviewer was wrong about the code they read. A finding that was right then and has been fixed since is FIXED, never REFUTED: a refuted finding counts against the reviewer.',
   ].join('\n')
 }
 
@@ -639,7 +644,7 @@ export function newReview(focus: string, at: number, base: string, root: string,
 // refuted or downgraded, which comes with its outcome already.
 export function ledgerOf(run: Run): LedgerEntry[] {
   const standing = run.reviews.flatMap(r => r.findings.map(f => ({ role: r.role, severity: f.severity, where: f.where, text: f.text })))
-  const ruled = (run.refuted ?? []).filter(x => x.ruling !== 'downgraded').map(x => ({ role: x.role, severity: x.finding.severity, where: x.finding.where, text: x.finding.text, outcome: (['design', 'unverified'].includes(x.ruling) ? x.ruling : 'refuted') as Outcome, why: x.why }))
+  const ruled = (run.refuted ?? []).filter(x => x.ruling !== 'downgraded').map(x => ({ role: x.role, severity: x.finding.severity, where: x.finding.where, text: x.finding.text, outcome: (['design', 'unverified', 'fixed'].includes(x.ruling) ? x.ruling : 'refuted') as Outcome, why: x.why }))
   return [...standing, ...ruled].map((x, i) => ({ id: `F${i + 1}`, ...x }))
 }
 
@@ -680,6 +685,7 @@ export function reviewDonePrompt(run: Run): string {
       ? [`Check each against the code before you act on it. Then report what became of every one, ${standing.map(x => x.id).join(', ')}, with ${CONTROL_TOOL_NAME} action "findings": outcomes [{ id, outcome: fixed | not-a-bug | wont-fix, why }]. not-a-bug is a finding that is wrong (say why: the code, a test, a design choice it missed); that is how the person learns how far the reviewers can be trusted.`]
       : []),
     ...setAside(run, 'refuted', 'The skeptic refuted these with evidence (leave them):'),
+    ...setAside(run, 'fixed', 'Already fixed in the checkout since the reviewers read it (the skeptic checked the code now):'),
     ...setAside(run, 'design', "The code's own tests or comments make these deliberate (the person's call, not a bug: ask them before changing it):"),
     ...setAside(run, 'unverified', "These rest on what the review couldn't check (what would settle it is given; settle it, a probe test say, before acting on one):"),
     ...(unverified.length ? ['What the reviewers say they did not check:', ...unverified] : []),

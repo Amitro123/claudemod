@@ -10,14 +10,24 @@ const run = (files: Record<string, string>, opts = {}) => detectProjectChecks(re
 
 describe('chk-01 detection (S1-S6, D1)', () => {
   test("a Claude Code plugin's tests: the root when it is one, and each plugin the change touched in a marketplace", async () => {
-    expect(argvs(await run({ '.claude-plugin/plugin.json': '{}', 'hooks/register.tsx': '' }))).toEqual(['claude plugin test .'])
-    const market = { '.claude-plugin/marketplace.json': '{}', 'plugins/a/.claude-plugin/plugin.json': '{}', 'plugins/a/hooks/x.ts': '', 'plugins/b/.claude-plugin/plugin.json': '{}', 'plugins/b/hooks/y.ts': '' }
+    expect(argvs(await run({ '.claude-plugin/plugin.json': '{}', 'hooks/register.tsx': '', 'hooks/hooks.json': '{"modules":["./register.tsx"]}' }))).toEqual(['claude plugin test .'])
+    const market = { '.claude-plugin/marketplace.json': '{}', 'plugins/a/.claude-plugin/plugin.json': '{}', 'plugins/a/hooks/x.ts': '', 'plugins/a/hooks/hooks.json': '{"modules":["./register.tsx"]}', 'plugins/b/.claude-plugin/plugin.json': '{}', 'plugins/b/hooks/y.ts': '', 'plugins/b/hooks/hooks.json': '{"modules":["./register.tsx"]}' }
     expect(argvs(await run(market, { touched: ['plugins/a/hooks/x.ts'] }))).toEqual(['claude plugin test plugins/a'])
     expect(argvs(await run(market))).toEqual([])
   })
 
+  test('a plugin of skills and agents only (no hooks module) is validated, not tested: plugin test fails without one', async () => {
+    const market = { '.claude-plugin/marketplace.json': '{}', 'plugins/skills/.claude-plugin/plugin.json': '{}', 'plugins/skills/skills/x/SKILL.md': '',
+      'plugins/mod/.claude-plugin/plugin.json': '{}', 'plugins/mod/hooks/register.tsx': '', 'plugins/mod/hooks/hooks.json': '{"modules":["./register.tsx"]}',
+      'plugins/empty/.claude-plugin/plugin.json': '{}', 'plugins/empty/hooks/hooks.json': '{"modules":[]}', 'plugins/bad/.claude-plugin/plugin.json': '{}', 'plugins/bad/hooks/hooks.json': 'not json' }
+    const touched = ['plugins/skills/skills/x/SKILL.md', 'plugins/mod/hooks/register.tsx', 'plugins/empty/hooks/hooks.json', 'plugins/bad/hooks/hooks.json']
+    expect(argvs(await run(market, { touched }))).toEqual(['claude plugin validate plugins/bad', 'claude plugin validate plugins/empty',
+      'claude plugin test plugins/mod', 'claude plugin validate plugins/skills'])
+    expect(allowedCommand(['claude', 'plugin', 'validate', 'plugins/skills'])).toBe(true)
+  })
+
   test("a change only to a plugin's .claude-plugin/plugin.json, or a hidden folder deep in a project, still touches the folders above it", async () => {
-    const market = { '.claude-plugin/marketplace.json': '{}', 'plugins/a/.claude-plugin/plugin.json': '{}', 'plugins/a/hooks/x.ts': '' }
+    const market = { '.claude-plugin/marketplace.json': '{}', 'plugins/a/.claude-plugin/plugin.json': '{}', 'plugins/a/hooks/x.ts': '', 'plugins/a/hooks/hooks.json': '{"modules":["./register.tsx"]}' }
     expect(argvs(await run(market, { touched: ['plugins/a/.claude-plugin/plugin.json'] }))).toEqual(['claude plugin test plugins/a'])
     // Deeper than the scan (depth 4): found only as a touched folder, and a file in its .cfg/ touches it.
     const deep = { 'a/b/c/d/go.mod': '', 'a/b/c/d/.cfg/x.json': '' }
