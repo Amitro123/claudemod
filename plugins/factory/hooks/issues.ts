@@ -34,44 +34,105 @@ export function parseQueue(text: string | null): Queue {
   }
 }
 
-// `gh issue view <n> --json number,title,body,state,author,labels,comments,url`. Not that shape: null.
-export function parseIssue(json: string): Issue | null {
+// gh --paginate output: one JSON array, or several pages back to back (`[...][...]`), as one flat
+// list. An array of arrays (the `--slurp` form) is flattened one level. Anything else: null. The pages
+// are found by a bracket- and string-aware scan, so a `][` inside a title or a body can't split them.
+export function parsePages(json: string): unknown[] | null {
+  const flat = (a: unknown[]) => (a.length && a.every(Array.isArray) ? (a as unknown[][]).flat() : a)
+  const text = json.trim()
+  if (!text) return null
   try {
-    const o = JSON.parse(json) as Record<string, unknown>
-    if (typeof o.number !== 'number' || typeof o.title !== 'string') return null
-    const login = (a: unknown) => String((a as { login?: unknown } | null)?.login ?? '')
-    return {
-      number: o.number,
-      title: o.title,
-      body: typeof o.body === 'string' ? o.body : '',
-      state: String(o.state ?? '').toUpperCase(),
-      author: login(o.author),
-      labels: Array.isArray(o.labels) ? o.labels.map(l => String((l as { name?: unknown }).name ?? l)) : [],
-      comments: Array.isArray(o.comments)
-        ? o.comments.map(c => {
-            const x = c as Record<string, unknown>
-            return { author: login(x.author), body: String(x.body ?? ''), createdAt: String(x.createdAt ?? '') }
-          })
-        : [],
-      url: String(o.url ?? ''),
+    const whole = JSON.parse(text) as unknown
+    return Array.isArray(whole) ? flat(whole) : null
+  } catch {
+    // Several pages back to back: fall through to the scan.
+  }
+  const out: unknown[] = []
+  let i = 0
+  while (i < text.length) {
+    while (i < text.length && /\s/.test(text[i]!)) i++
+    if (i >= text.length) break
+    if (text[i] !== '[') return null
+    let depth = 0
+    let inString = false
+    let end = -1
+    for (let j = i; j < text.length; j++) {
+      const ch = text[j]
+      if (inString) {
+        if (ch === '\\') j++
+        else if (ch === '"') inString = false
+      } else if (ch === '"') inString = true
+      else if (ch === '[' || ch === '{') depth++
+      else if (ch === ']' || ch === '}') {
+        depth--
+        if (depth === 0) {
+          end = j
+          break
+        }
+      }
     }
+    if (end < 0) return null
+    try {
+      const page = JSON.parse(text.slice(i, end + 1)) as unknown
+      if (!Array.isArray(page)) return null
+      out.push(...page)
+    } catch {
+      return null
+    }
+    i = end + 1
+  }
+  return out
+}
+
+const loginOf = (u: unknown) => {
+  const l = (u as { login?: unknown } | null | undefined)?.login
+  return typeof l === 'string' ? l : ''
+}
+const labelNames = (labels: unknown) =>
+  Array.isArray(labels) ? labels.map(l => (l && typeof l === 'object' ? String((l as { name?: unknown }).name ?? '') : String(l))) : []
+
+// `gh api repos/{owner}/{repo}/issues/<n>` and its `/comments` (paged). A pull request: 'pull-request'.
+// Not that shape: null. The comments come from the comments JSON only (the issue's own `comments` is a
+// count in REST); comments JSON that isn't pages makes the whole issue null, never an issue without them.
+export function parseRestIssue(issueJson: string, commentsJson: string): Issue | 'pull-request' | null {
+  let o: Record<string, unknown>
+  try {
+    o = JSON.parse(issueJson) as Record<string, unknown>
   } catch {
     return null
   }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return null
+  if (typeof o.number !== 'number' || typeof o.title !== 'string') return null
+  if (o.pull_request !== undefined && o.pull_request !== null) return 'pull-request'
+  const pages = parsePages(commentsJson)
+  if (!pages) return null
+  return {
+    number: o.number,
+    title: o.title,
+    body: typeof o.body === 'string' ? o.body : '',
+    state: String(o.state ?? '').toUpperCase(),
+    author: loginOf(o.user),
+    labels: labelNames(o.labels),
+    comments: pages.map(c => {
+      const x = (c ?? {}) as Record<string, unknown>
+      return { author: loginOf(x.user), body: String(x.body ?? ''), createdAt: String(x.created_at ?? '') }
+    }),
+    url: String(o.html_url ?? ''),
+  }
 }
 
-// `gh issue list --label factory --state open --json number,title`: the numbers, oldest first.
-export function parseIssueList(json: string): { number: number; title: string }[] {
-  try {
-    const list = JSON.parse(json) as unknown
-    if (!Array.isArray(list)) return []
-    return list
-      .filter((x): x is { number: number; title: unknown } => typeof (x as { number?: unknown })?.number === 'number')
-      .map(x => ({ number: x.number, title: String(x.title ?? '') }))
-      .sort((a, b) => a.number - b.number)
-  } catch {
-    return []
-  }
+// `gh api --paginate repos/{owner}/{repo}/issues?labels=factory&state=open`: open issues labeled
+// `factory`, pull requests left out, oldest first. Not parseable: [].
+export function parseRestIssueList(json: string): { number: number; title: string }[] {
+  const pages = parsePages(json)
+  if (!pages) return []
+  return pages
+    .filter((x): x is Record<string, unknown> & { number: number } => {
+      const o = x as Record<string, unknown> | null
+      return !!o && typeof o === 'object' && typeof o.number === 'number' && (o.pull_request === undefined || o.pull_request === null) && String(o.state ?? '').toLowerCase() === 'open' && labelNames(o.labels).includes(LABEL)
+    })
+    .map(x => ({ number: x.number, title: String(x.title ?? '') }))
+    .sort((a, b) => a.number - b.number)
 }
 
 // Whether a run may start on this issue: open, and labeled by someone allowed to.
@@ -82,9 +143,10 @@ export function refusal(issue: Issue): string {
 }
 
 // The comments the agents see: only the author's and the operator's (the person running the factory),
-// never the factory's own. Anyone else's could steer the build.
+// never the factory's own. Anyone else's could steer the build. A comment with no author (a deleted
+// account) is never trusted, even on an issue whose author is gone too.
 export const trustedComments = (issue: Issue, operator: string) =>
-  issue.comments.filter(c => !c.body.startsWith(MARKER) && (c.author === issue.author || (!!operator && c.author === operator)))
+  issue.comments.filter(c => !!c.author && !c.body.startsWith(MARKER) && (c.author === issue.author || (!!operator && c.author === operator)))
 
 // The issue as the agents read it: a file of quoted data.
 export function issueFile(issue: Issue, operator: string): string {

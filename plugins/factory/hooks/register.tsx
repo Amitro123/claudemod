@@ -82,7 +82,7 @@ import {
   resumePrompt,
 } from './flow'
 import { intakeNote, intakePrompt, parseIntake, reviewPlan, ROUTED_MODELS, touchesUi } from './intake'
-import { acceptComment, answeredSince, askComment, escalateComment, issueFeature, issueFile, LABEL, NEEDS_HUMAN_LABEL, NEEDS_INFO_LABEL, parseIssue, parseIssueList, parseQueue, queueLines, queueText, refusal, rejectComment } from './issues'
+import { acceptComment, answeredSince, askComment, escalateComment, issueFeature, issueFile, LABEL, NEEDS_HUMAN_LABEL, NEEDS_INFO_LABEL, parseQueue, parseRestIssue, parseRestIssueList, queueLines, queueText, refusal, rejectComment } from './issues'
 import type { Issue, Queue, QueueState } from './issues'
 import { addUsage, costOf, DEFAULT_CONFIG, parseConfig, protectedHits, usd } from './config'
 import type { FactoryConfig } from './config'
@@ -1297,14 +1297,23 @@ async function setQueue($: EngineInterface, root: string, issue: number, state: 
   q[String(issue)] = { state, at: await isoNow($), ...(note ? { note: note.slice(0, 300) } : {}), ...(pr || was?.pr ? { pr: pr || was!.pr } : {}) }
   await $.fs.write(queuePath(root), `${JSON.stringify(q, null, 2)}\n`).catch(() => {})
 }
+// GitHub's REST API, never GraphQL (which Claude Code cloud sessions refuse). gh fills {owner}/{repo}
+// from the checkout's remote; text goes with -f (raw), so a body starting with @ is never read as a file.
+const repoApi = (path: string) => `repos/{owner}/{repo}/${path}`
+const issuesQuery = () => repoApi(`issues?labels=${encodeURIComponent(LABEL)}&state=open&per_page=100`)
 // What the factory says on an issue. A failure (no gh, no access) doesn't stop the run: it is toasted.
 async function ghComment($: EngineInterface, root: string, issue: number, body: string) {
-  const out = await gh($, ['issue', 'comment', String(issue), '--body', body], root)
+  const out = await gh($, ['api', '-X', 'POST', repoApi(`issues/${issue}/comments`), '-f', `body=${body}`], root)
   if (out.exitCode !== 0) $.ui.toast(`Factory: couldn't comment on #${issue}: ${tailOf(out.stderr, 1)}`)
 }
+// Results ignored: a label that already exists (422) or isn't on the issue (404) is fine.
 async function ghLabel($: EngineInterface, root: string, issue: number, label: string, add: boolean) {
-  if (add) await gh($, ['label', 'create', label, '--force', '--color', label === NEEDS_INFO_LABEL ? 'FBCA04' : 'D93F0B'], root)
-  await gh($, ['issue', 'edit', String(issue), add ? '--add-label' : '--remove-label', label], root)
+  if (add) {
+    await gh($, ['api', '-X', 'POST', repoApi('labels'), '-f', `name=${label}`, '-f', `color=${label === NEEDS_INFO_LABEL ? 'FBCA04' : 'D93F0B'}`], root)
+    await gh($, ['api', '-X', 'POST', repoApi(`issues/${issue}/labels`), '-f', `labels[]=${label}`], root)
+  } else {
+    await gh($, ['api', '-X', 'DELETE', repoApi(`issues/${issue}/labels/${encodeURIComponent(label)}`)], root)
+  }
 }
 // The operator: whoever gh is logged in as. Their comments on an issue count beside its author's.
 async function operatorOf($: EngineInterface, root: string) {
@@ -1312,9 +1321,15 @@ async function operatorOf($: EngineInterface, root: string) {
   return out.exitCode === 0 ? out.stdout.trim() : ''
 }
 async function fetchIssue($: EngineInterface, root: string, n: number): Promise<Issue | string> {
-  const out = await gh($, ['issue', 'view', String(n), '--json', 'number,title,body,state,author,labels,comments,url'], root)
-  if (out.exitCode !== 0) return `Couldn't read issue #${n} with gh: ${tailOf(out.stderr, 2) || 'gh failed'}`
-  return parseIssue(out.stdout) ?? `gh answered for #${n} in a shape the factory can't read.`
+  const failed = (stderr: string) => `Couldn't read issue #${n} with gh: ${tailOf(stderr, 2) || 'gh failed'}`
+  const out = await gh($, ['api', repoApi(`issues/${n}`)], root)
+  if (out.exitCode !== 0) return failed(out.stderr)
+  // Fail closed: no issue from partial comments (a missed answer, a wrong resume).
+  const comments = await gh($, ['api', '--paginate', repoApi(`issues/${n}/comments?per_page=100`)], root)
+  if (comments.exitCode !== 0) return failed(comments.stderr)
+  const issue = parseRestIssue(out.stdout, comments.stdout)
+  if (issue === 'pull-request') return `#${n} is a pull request, not an issue: the factory builds open issues only.`
+  return issue ?? `gh answered for #${n} in a shape the factory can't read.`
 }
 
 // A run on one issue: the issue written to .factory/issues/<n>.md as quoted data, the run's feature
@@ -1346,9 +1361,9 @@ async function queueNow($: EngineInterface): Promise<string> {
   const top = await git($, ['rev-parse', '--show-toplevel'], await $.session.root())
   if (top.exitCode !== 0) return 'Not a git repository.'
   const root = top.stdout.trim()
-  const listed = await gh($, ['issue', 'list', '--label', LABEL, '--state', 'open', '--limit', '100', '--json', 'number,title'], root)
+  const listed = await gh($, ['api', '--paginate', issuesQuery()], root)
   if (listed.exitCode !== 0) return `Couldn't list the issues with gh: ${tailOf(listed.stderr, 2) || 'gh failed'}`
-  return queueText(queueLines(parseIssueList(listed.stdout), await queueOf($, root), new Set()))
+  return queueText(queueLines(parseRestIssueList(listed.stdout), await queueOf($, root), new Set()))
 }
 
 // /factory run: the open issues labeled `factory`, oldest first; the first to start or resume starts,
@@ -1357,9 +1372,9 @@ async function runQueue($: EngineInterface, quiet = false): Promise<string> {
   const ready = await preflight($)
   if ('error' in ready) return quiet ? '' : ready.error
   const { root } = ready
-  const listed = await gh($, ['issue', 'list', '--label', LABEL, '--state', 'open', '--limit', '100', '--json', 'number,title'], root)
+  const listed = await gh($, ['api', '--paginate', issuesQuery()], root)
   if (listed.exitCode !== 0) return `Couldn't list the issues with gh: ${tailOf(listed.stderr, 2) || 'gh failed'}`
-  const open = parseIssueList(listed.stdout)
+  const open = parseRestIssueList(listed.stdout)
   const queue = await queueOf($, root)
   const operator = open.some(i => queue[String(i.number)]?.state === 'needs-info') ? await operatorOf($, root) : ''
   const answered = new Set<number>()
