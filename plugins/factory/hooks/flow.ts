@@ -552,16 +552,31 @@ export function planPrompt(run: Run): string {
 export const CONTROL_TOOL_NAME = 'mcp__factory__control'
 export const prBase = (run: Pick<Run, 'baseRef'>) => run.baseRef?.replace(/^(origin|upstream)\//, '') ?? ''
 
-// How the PR is opened, as commands: what the person runs when the feature says not to push. GitHub's
-// REST API, not gh pr (GraphQL, which Claude Code cloud sessions refuse); REST needs a base, so with
-// none the command names the default-branch lookup.
-export const prCommands = (run: Run) => [
-  `git -C ${run.worktree} push -u origin ${run.branch}`,
-  `gh api -X POST repos/{owner}/{repo}/pulls -f head=${run.branch} -f base=${prBase(run) || '<the default branch: gh api repos/{owner}/{repo} --jq .default_branch>'} -f title=${JSON.stringify(titleOf(run.feature, 70))} -F body=@<the body below, saved to a file> --jq .html_url`,
-]
-export const prMergeCommand = 'gh api -X PUT repos/{owner}/{repo}/pulls/<number>/merge -f merge_method=merge'
+// Where the PR goes: the repository (owner/repo, or gh's own {owner}/{repo} when no GitHub remote was read) and
+// the head to name. A run built on upstream/<b> opens its PR on upstream, with the fork owner's head.
+export type PrRepo = { target: string; head: string }
+export const prRepoOf = (run: Pick<Run, 'baseRef' | 'branch'>, origin: string | null, upstream: string | null): PrRepo =>
+  run.baseRef?.startsWith('upstream/') && upstream && origin
+    ? { target: upstream, head: `${origin.split('/')[0]}:${run.branch}` }
+    : { target: origin ?? '{owner}/{repo}', head: run.branch }
 
-export function prPrompt(run: Run, reason: string): string {
+// A value from outside text (a title, a branch) in a command the person or Claude runs: single-quoted, so
+// $(...), backticks and quotes are text, never shell.
+export const shq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
+
+// How the PR is opened, as commands: what the person runs when the feature says not to push. GitHub's
+// REST API, not gh pr (GraphQL, which Claude Code cloud sessions refuse). Every line runs as pasted: the
+// default branch is looked up into $BASE when the run has no base, and the body is read from pr-body.md.
+export const PR_BODY_FILE = 'pr-body.md'
+export const prCommands = (run: Run, repo: PrRepo = prRepoOf(run, null, null)) => [
+  `git -C ${shq(run.worktree)} push -u origin ${shq(run.branch)}`,
+  ...(prBase(run) ? [] : [`BASE=$(gh api repos/${repo.target} --jq .default_branch)`]),
+  `gh api -X POST repos/${repo.target}/pulls -f head=${shq(repo.head)} -f base=${prBase(run) ? shq(prBase(run)) : '"$BASE"'} -f title=${shq(titleOf(run.feature, 70))} -F body=@${PR_BODY_FILE} --jq .html_url`,
+]
+export const prMergeCommand = (repo: PrRepo = { target: '{owner}/{repo}', head: '' }) => `gh api -X PUT repos/${repo.target}/pulls/<number>/merge -f merge_method=merge`
+
+export function prPrompt(run: Run, reason: string, repo: PrRepo = prRepoOf(run, null, null)): string {
+  const cmds = prCommands(run, repo)
   const minor = run.reviews.flatMap(r => r.findings.filter(f => f.severity === 'minor').map(f => `- ${r.role}: ${f.where} ${f.text}`))
   const unverified = run.reviews.flatMap(r => (r.notChecked ?? []).map(t => `- ${r.role}: ${t}`))
   const noPush = forbidsPush(run.feature)
@@ -569,15 +584,15 @@ export function prPrompt(run: Run, reason: string): string {
     `The factory run "${run.feature}" is approved${reason ? ` (${reason})` : ''}.`,
     ...(noPush
       ? [
-          "The feature says not to push, so don't push and don't open the PR. Show the person these commands to run themselves, and the PR body below:",
-          ...prCommands(run).map(c => `  ${c}`),
+          `The feature says not to push, so don't push and don't open the PR. Show the person these commands to run themselves (with the PR body below saved as ${PR_BODY_FILE}), and the body:`,
+          ...cmds.map(c => `  ${c}`),
           `If the person opens it and gives you the link, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the link as url.`,
         ]
       : [
-          `Push branch ${run.branch} (git -C ${run.worktree} push -u origin ${run.branch}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}. Open it through GitHub's REST API (${prCommands(run)[1]}) or the session's own GitHub tools, not gh pr create, which uses GitHub's GraphQL API that Claude Code cloud sessions refuse.`,
+          `Push branch ${run.branch} (git -C ${run.worktree} push -u origin ${run.branch}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}. Open it through GitHub's REST API (${cmds.at(-1)}, with the body saved as ${PR_BODY_FILE}) or the session's own GitHub tools, not gh pr create, which uses GitHub's GraphQL API that Claude Code cloud sessions refuse.`,
           ...(run.issue ? [`The PR body says "Closes #${run.issue}".`] : []),
-          ...(run.autoMerge ? [`The approver approved and the checks passed again on the latest ${prBase(run) || 'base'}, and the autoMerge option is on: once the PR is open, merge it with ${prMergeCommand} (or the session's own GitHub tools). If branch protection, a required check or a review rule refuses, leave it open and tell the person why; don't force it.`] : []),
-          `Once it is open, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the PR's link as url: until then the factory shows the PR as requested, not opened. If you can't open it, tell the person why, with these commands: ${prCommands(run).join(' && ')}.`,
+          ...(run.autoMerge ? [`The approver approved and the checks passed again on the latest ${prBase(run) || 'base'}, and the autoMerge option is on: once the PR is open, merge it with ${prMergeCommand(repo)} (or the session's own GitHub tools). If branch protection, a required check or a review rule refuses, leave it open and tell the person why; don't force it.`] : []),
+          `Once it is open, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the PR's link as url: until then the factory shows the PR as requested, not opened. If you can't open it, tell the person why, with these commands (the body saved as ${PR_BODY_FILE}): ${cmds.join(' && ')}.`,
         ]),
     `Title it after the feature. In the body: what it does (from ${run.specFile}), the checks (${run.checks.map(c => `${c.cmd} ${c.isSkipped ? '– skipped' : c.isMissing ? '– not installed' : c.ok ? '✓' : '✗'}`).join(', ') || 'none ran'}), and ${run.round} review round${run.round === 1 ? '' : 's'}: ${run.reviews.filter(r => r.state !== 'skip').map(r => `${r.role} ${r.state === 'pass' ? 'PASS' : 'CHANGES'}`).join(', ')}.`,
     ...(run.builderTests ? [`The builder's own test run: ${run.builderTests.text}.`] : []),

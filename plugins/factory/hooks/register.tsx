@@ -32,6 +32,7 @@ import {
   parseVerdict,
   planPrompt,
   prPrompt,
+  prRepoOf,
   reviewPrompt,
   extrasFrom,
   isExtra,
@@ -387,8 +388,11 @@ async function start($: EngineInterface, args: string, extras: Extra[] = [], opt
   // The branch the checkout is on: the PR goes into it. A detached HEAD names none.
   const onBranch = await git($, ['rev-parse', '--abbrev-ref', 'HEAD'], root)
   const baseRef = onBranch.exitCode === 0 && onBranch.stdout.trim() !== 'HEAD' ? onBranch.stdout.trim() : ''
+  // The GitHub repositories the PR can go to, read once: the PR prompt is built from them without a wait.
+  const remotes = { origin: await remoteSlug($, root, 'origin'), upstream: await remoteSlug($, root, 'upstream') }
   const created: Run = {
     ...r,
+    remotes,
     gate: (await goalRunThere($)) ? 'goal-run' : 'factory',
     ...(followupId ? { followupId } : {}),
     ...(baseRef ? { baseRef } : {}),
@@ -1267,7 +1271,7 @@ async function openPr($: EngineInterface, rid: string, reason: string, byApprove
   })
   if (!r || !moved) return
   await recordStats($, rid)
-  void $.prompt.submit({ text: prPrompt(r, reason) }).catch(() => {
+  void $.prompt.submit({ text: prPrompt(r, reason, prRepoOf(r, r.remotes?.origin ?? null, r.remotes?.upstream ?? null)) }).catch(() => {
     $.ui.toast(`Approved. Open a PR from ${r.branch} yourself; the prompt could not be sent.`)
   })
   if (r.issue) {
@@ -1297,22 +1301,35 @@ async function setQueue($: EngineInterface, root: string, issue: number, state: 
   q[String(issue)] = { state, at: await isoNow($), ...(note ? { note: note.slice(0, 300) } : {}), ...(pr || was?.pr ? { pr: pr || was!.pr } : {}) }
   await $.fs.write(queuePath(root), `${JSON.stringify(q, null, 2)}\n`).catch(() => {})
 }
-// GitHub's REST API, never GraphQL (which Claude Code cloud sessions refuse). gh fills {owner}/{repo}
-// from the checkout's remote; text goes with -f (raw), so a body starting with @ is never read as a file.
-const repoApi = (path: string) => `repos/{owner}/{repo}/${path}`
-const issuesQuery = () => repoApi(`issues?labels=${encodeURIComponent(LABEL)}&state=open&per_page=100`)
+// GitHub's REST API, never GraphQL (which Claude Code cloud sessions refuse). The repository is origin's, read
+// from its URL: gh's own {owner}/{repo} may pick an upstream remote in a fork checkout, and then the queue would
+// read upstream's issues. A remote that isn't GitHub's leaves it to gh. Text goes with -f (raw), so a body
+// starting with @ is never read as a file.
+const ghSlug = (url: string) => {
+  const m = url.trim().match(/github\.com[:/]+([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i)
+  return m ? `${m[1]}/${m[2]}` : null
+}
+async function remoteSlug($: EngineInterface, root: string, remote: string): Promise<string | null> {
+  const out = await git($, ['remote', 'get-url', remote], root).catch(() => null)
+  return out && out.exitCode === 0 ? ghSlug(out.stdout) : null
+}
+async function apiOf($: EngineInterface, root: string) {
+  const slug = (await remoteSlug($, root, 'origin')) ?? '{owner}/{repo}'
+  return (path: string) => `repos/${slug}/${path}`
+}
+const issuesQuery = (api: (p: string) => string) => api(`issues?labels=${encodeURIComponent(LABEL)}&state=open&per_page=100`)
 // What the factory says on an issue. A failure (no gh, no access) doesn't stop the run: it is toasted.
 async function ghComment($: EngineInterface, root: string, issue: number, body: string) {
-  const out = await gh($, ['api', '-X', 'POST', repoApi(`issues/${issue}/comments`), '-f', `body=${body}`], root)
+  const out = await gh($, ['api', '-X', 'POST', (await apiOf($, root))(`issues/${issue}/comments`), '-f', `body=${body}`], root)
   if (out.exitCode !== 0) $.ui.toast(`Factory: couldn't comment on #${issue}: ${tailOf(out.stderr, 1)}`)
 }
 // Results ignored: a label that already exists (422) or isn't on the issue (404) is fine.
 async function ghLabel($: EngineInterface, root: string, issue: number, label: string, add: boolean) {
   if (add) {
-    await gh($, ['api', '-X', 'POST', repoApi('labels'), '-f', `name=${label}`, '-f', `color=${label === NEEDS_INFO_LABEL ? 'FBCA04' : 'D93F0B'}`], root)
-    await gh($, ['api', '-X', 'POST', repoApi(`issues/${issue}/labels`), '-f', `labels[]=${label}`], root)
+    await gh($, ['api', '-X', 'POST', (await apiOf($, root))('labels'), '-f', `name=${label}`, '-f', `color=${label === NEEDS_INFO_LABEL ? 'FBCA04' : 'D93F0B'}`], root)
+    await gh($, ['api', '-X', 'POST', (await apiOf($, root))(`issues/${issue}/labels`), '-f', `labels[]=${label}`], root)
   } else {
-    await gh($, ['api', '-X', 'DELETE', repoApi(`issues/${issue}/labels/${encodeURIComponent(label)}`)], root)
+    await gh($, ['api', '-X', 'DELETE', (await apiOf($, root))(`issues/${issue}/labels/${encodeURIComponent(label)}`)], root)
   }
 }
 // The operator: whoever gh is logged in as. Their comments on an issue count beside its author's.
@@ -1322,10 +1339,10 @@ async function operatorOf($: EngineInterface, root: string) {
 }
 async function fetchIssue($: EngineInterface, root: string, n: number): Promise<Issue | string> {
   const failed = (stderr: string) => `Couldn't read issue #${n} with gh: ${tailOf(stderr, 2) || 'gh failed'}`
-  const out = await gh($, ['api', repoApi(`issues/${n}`)], root)
+  const out = await gh($, ['api', (await apiOf($, root))(`issues/${n}`)], root)
   if (out.exitCode !== 0) return failed(out.stderr)
   // Fail closed: no issue from partial comments (a missed answer, a wrong resume).
-  const comments = await gh($, ['api', '--paginate', repoApi(`issues/${n}/comments?per_page=100`)], root)
+  const comments = await gh($, ['api', '--paginate', (await apiOf($, root))(`issues/${n}/comments?per_page=100`)], root)
   if (comments.exitCode !== 0) return failed(comments.stderr)
   const issue = parseRestIssue(out.stdout, comments.stdout)
   if (issue === 'pull-request') return `#${n} is a pull request, not an issue: the factory builds open issues only.`
@@ -1361,7 +1378,7 @@ async function queueNow($: EngineInterface): Promise<string> {
   const top = await git($, ['rev-parse', '--show-toplevel'], await $.session.root())
   if (top.exitCode !== 0) return 'Not a git repository.'
   const root = top.stdout.trim()
-  const listed = await gh($, ['api', '--paginate', issuesQuery()], root)
+  const listed = await gh($, ['api', '--paginate', issuesQuery(await apiOf($, root))], root)
   if (listed.exitCode !== 0) return `Couldn't list the issues with gh: ${tailOf(listed.stderr, 2) || 'gh failed'}`
   return queueText(queueLines(parseRestIssueList(listed.stdout), await queueOf($, root), new Set()))
 }
@@ -1372,7 +1389,7 @@ async function runQueue($: EngineInterface, quiet = false): Promise<string> {
   const ready = await preflight($)
   if ('error' in ready) return quiet ? '' : ready.error
   const { root } = ready
-  const listed = await gh($, ['api', '--paginate', issuesQuery()], root)
+  const listed = await gh($, ['api', '--paginate', issuesQuery(await apiOf($, root))], root)
   if (listed.exitCode !== 0) return `Couldn't list the issues with gh: ${tailOf(listed.stderr, 2) || 'gh failed'}`
   const open = parseRestIssueList(listed.stdout)
   const queue = await queueOf($, root)

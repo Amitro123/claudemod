@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
-import { extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prPrompt, skepticPrompt } from '../hooks/flow'
+import { extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, shq, skepticPrompt } from '../hooks/flow'
 import type { Run } from '../types'
 import { parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
 import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
@@ -153,6 +153,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (cmd.startsWith('git rev-parse --verify')) return { value: { exitCode: 1, stdout: '', stderr: '' } } as never
     // The branch's changed files for the review route (`changedFiles`, name-status -z).
     if (cmd.startsWith('git diff --name-status -z')) return ok(changedFiles)
+    if (cmd.startsWith('git ') && outputs[cmd]) return { value: outputs[cmd] } as never
     if (cmd.startsWith('git ')) return ok()
     // `issues`: GitHub's REST API through gh, by number (REST-shaped fixtures; an issue's `thread` is
     // served by its comments endpoint, its own `comments` is the count, as in REST); `outputs` overrides
@@ -2201,7 +2202,7 @@ describe('what the run review of 2026-10-29 found (L1, L2, L3, L9, L10)', () => 
     await command($, 'approve')
     const sent = w.sent.at(-1)!
     expect(sent).toMatch(/The feature says not to push, so don't push and don't open the PR/)
-    expect(sent).toMatch(/git -C \/repo\/\.factory\/[\w-]+ push -u origin factory\//)
+    expect(sent).toMatch(/git -C '\/repo\/\.factory\/[\w-]+' push -u origin 'factory\//)
     expect(sent).not.toMatch(/^Push branch/m)
     expect(await paneText($)).toMatch(/PR: commands handed to you/)
   })
@@ -2975,7 +2976,7 @@ describe('the gate before the PR, protected paths and cost (intake on)', () => {
     expect(w.sent.at(-1)).toContain('gh api -X PUT repos/{owner}/{repo}/pulls/<number>/merge -f merge_method=merge')
     expect(w.sent.at(-1)).not.toMatch(/gh pr merge/)
     // The PR is opened over REST, into the run's base, never with gh pr create.
-    expect(w.sent.at(-1)).toContain('gh api -X POST repos/{owner}/{repo}/pulls -f head=factory/rate-limiter -f base=main -f title=')
+    expect(w.sent.at(-1)).toContain("gh api -X POST repos/{owner}/{repo}/pulls -f head='factory/rate-limiter' -f base='main' -f title=")
     expect(w.sent.at(-1)).toMatch(/not gh pr create/)
     expect(w.sent.at(-1)).not.toMatch(/gh pr create --/)
     // The kit's model has no price: counted, and said so, not shown as free.
@@ -3007,17 +3008,35 @@ describe('the gate before the PR, protected paths and cost (intake on)', () => {
 
   test('prCommands: the PR over REST, with the base or the default-branch lookup; the no-push prompt hands them out', () => {
     const run = { worktree: '/w', branch: 'factory/x', baseRef: 'origin/dev', feature: 'Add a limiter. Do not push.', reviews: [], checks: [], round: 1, specFile: 's.md' } as unknown as Run
-    expect(prCommands(run)[1]).toBe('gh api -X POST repos/{owner}/{repo}/pulls -f head=factory/x -f base=dev -f title="Add a limiter." -F body=@<the body below, saved to a file> --jq .html_url')
-    const noBase = prCommands({ ...run, baseRef: undefined } as Run)[1]!
-    expect(noBase).toContain('-f base=<the default branch: gh api repos/{owner}/{repo} --jq .default_branch>')
-    expect(prCommands(run).join('\n')).not.toMatch(/gh pr /)
+    expect(prCommands(run).at(-1)).toBe("gh api -X POST repos/{owner}/{repo}/pulls -f head='factory/x' -f base='dev' -f title='Add a limiter.' -F body=@pr-body.md --jq .html_url")
+    const noBase = prCommands({ ...run, baseRef: undefined } as Run)
+    expect(noBase[1]).toBe('BASE=$(gh api repos/{owner}/{repo} --jq .default_branch)')
+    expect(noBase.at(-1)).toContain('-f base="$BASE"')
+    expect(prCommands(run).join('\n')).not.toMatch(/gh pr |</)
     const handed = prPrompt(run, 'fine')
     expect(handed).toMatch(/don't push and don't open the PR/)
-    expect(handed).toContain(`  ${prCommands(run)[1]}`)
+    expect(handed).toContain(`  ${prCommands(run).at(-1)}`)
+    expect(handed).toMatch(/saved as pr-body\.md/)
     expect(handed).not.toMatch(/gh pr (create|merge)/)
     const pushed = prPrompt({ ...run, feature: 'Add a limiter.', baseRef: undefined } as Run, 'fine')
-    expect(pushed).toContain('gh api -X POST repos/{owner}/{repo}/pulls -f head=factory/x -f base=<the default branch: gh api repos/{owner}/{repo} --jq .default_branch>')
+    expect(pushed).toContain(`gh api -X POST repos/{owner}/{repo}/pulls -f head='factory/x' -f base="$BASE"`)
     expect(pushed).toMatch(/not gh pr create/)
+  })
+
+  test('a title from an issue is shell text, never a command: $(...), backticks and quotes are quoted', () => {
+    const run = { worktree: '/w', branch: 'factory/x', baseRef: 'main', feature: "Fix $(touch /tmp/pwn) `id` it's", reviews: [], checks: [], round: 1, specFile: 's.md' } as unknown as Run
+    const cmd = prCommands(run).at(-1)!
+    expect(cmd).toContain("-f title='Fix $(touch /tmp/pwn) `id` it'\\''s'")
+    expect(shq("a'b")).toBe("'a'\\''b'")
+  })
+
+  test('the PR goes to origin, or to upstream with the fork owner as head when the run is built on upstream', () => {
+    const run = { worktree: '/w', branch: 'factory/x', baseRef: 'origin/main', feature: 'F', reviews: [], checks: [], round: 1, specFile: 's.md' } as unknown as Run
+    expect(prRepoOf(run, 'me/app', 'org/app')).toEqual({ target: 'me/app', head: 'factory/x' })
+    expect(prRepoOf({ ...run, baseRef: 'upstream/main' } as Run, 'me/app', 'org/app')).toEqual({ target: 'org/app', head: 'me:factory/x' })
+    expect(prRepoOf(run, null, null)).toEqual({ target: '{owner}/{repo}', head: 'factory/x' })
+    expect(prCommands(run, prRepoOf(run, 'me/app', null)).at(-1)).toContain('repos/me/app/pulls')
+    expect(prMergeCommand({ target: 'me/app', head: '' })).toBe('gh api -X PUT repos/me/app/pulls/<number>/merge -f merge_method=merge')
   })
 })
 
@@ -3166,6 +3185,14 @@ describe('GitHub issues are the queue (intake on)', () => {
     expect(said).not.toMatch(/#2 /)
     expect(w.ran).toContain('gh api --paginate repos/{owner}/{repo}/issues?labels=factory&state=open&per_page=100')
     expect(w.ran.filter(c => c.startsWith('gh issue'))).toEqual([])
+  })
+
+  test("the queue reads origin's repository, not whatever gh picks: a fork checkout's upstream is never read", ON as never, async ($: Engine, on: On) => {
+    const w = engine(on, { issues: {}, outputs: { 'git remote get-url origin': { exitCode: 0, stdout: 'git@github.com:me/app.git\n', stderr: '' } } })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await command($, 'queue')
+    expect(w.ran).toContain('gh api --paginate repos/me/app/issues?labels=factory&state=open&per_page=100')
+    expect(w.ran.some(c => c.includes('{owner}/{repo}'))).toBe(false)
   })
 
   test('/factory run drains the queue: NEEDS-INFO asks on the issue and parks it, the next starts; the answer resumes it', { options: { intake: 'on', skeptic: 'off', concurrency: '1' } } as never, async ($: Engine, on: On) => {

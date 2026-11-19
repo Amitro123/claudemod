@@ -104,6 +104,8 @@ export type Run = {
   // A review of the person's checkout that changed after the reviewers read it (someone fixed things while
   // they worked): the skeptic is told to rule on the reviewed diff, and a finding gone since is FIXED.
   changedSinceReview?: boolean
+  // origin's and upstream's GitHub owner/repo, read when the run started (null: no GitHub remote of that name).
+  remotes?: { origin: string | null; upstream: string | null }
   // Each agent's budget of tool calls (from the config, by role) and the calls the guard saw it make.
   agentBudgets?: Record<string, number>
   agentCalls?: Record<string, number>
