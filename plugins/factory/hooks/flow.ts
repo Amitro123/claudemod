@@ -272,6 +272,15 @@ export function detectSetup(files: string[]): string[] | null {
 
 // The last lines of a failing command's output: enough for the builder, short for the pane.
 export const tailOf = (text: string, lines = 30) => text.trim().split('\n').slice(-lines).join('\n')
+// A check's failure output with what changes from run to run taken out (durations, clock times, the
+// worktree's own path), so the same failure on the base and on the branch compares equal and a
+// different one doesn't. Test counts stay: one more failing test is a different failure.
+export const failureShape = (text: string, dirs: string[] = []) =>
+  dirs.reduce((t, d) => (d ? t.split(d).join('<dir>') : t), text)
+    .replace(/\b\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?\b/g, '<time>')
+    .replace(/\b\d+(\.\d+)?\s*(ms|s|sec|secs|seconds|m|min)\b/gi, '<dur>')
+    .replace(/[ \t]+/g, ' ')
+    .trim()
 
 // ---------- what each step is asked ----------
 
@@ -458,7 +467,7 @@ export const couldNotStart = (err: unknown) => !/time(d)?\s*out(?!ms)/i.test(Str
 
 // The checks that actually ran: one whose program isn't installed here was skipped, not run.
 export const ranChecks = (run: Pick<Run, 'checks'>) => run.checks.filter(c => !c.isMissing)
-const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' : c.why ? `not run (${c.why})` : c.isMissing ? 'not installed, not run' : c.ok ? 'passed' : c.failsOnBase ? 'FAILED, and fails the same on the base commit, so not caused by this change' : 'FAILED')
+const checkWord = (c: Check) => (c.isSkipped ? 'skipped by the person, not run' : c.why ? `not run (${c.why})` : c.isMissing ? 'not installed, not run' : c.ok ? 'passed' : c.failsOnBase ? 'FAILED, with the same failure output on the base commit (an old failure, not this change)' : 'FAILED')
 
 export function reviewPrompt(run: Run, role: Reviewer, stat: string): string {
   return [
@@ -609,12 +618,13 @@ export function prPrompt(run: Run, reason: string, repo: PrRepo = prRepoOf(run, 
           `If the person opens it and gives you the link, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the link as url.`,
         ]
       : [
-          `Push branch ${run.branch} (git -C ${run.worktree} push -u origin ${run.branch}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}. Open it through GitHub's REST API (${cmds.at(-1)}, with the body saved as ${PR_BODY_FILE}) or the session's own GitHub tools, not gh pr create, which uses GitHub's GraphQL API that Claude Code cloud sessions refuse.`,
+          `Push branch ${run.branch} (git -C ${run.worktree} push -u origin ${run.branch}) and open a pull request from it${prBase(run) ? ` into ${prBase(run)} (the branch it is built on; not the repository's default branch)` : ''}. Open it through GitHub's REST API (${cmds.slice(1).join(' && ')}, with the body saved as ${PR_BODY_FILE}) or the session's own GitHub tools, not gh pr create, which uses GitHub's GraphQL API that Claude Code cloud sessions refuse.`,
           ...(run.issue ? [`The PR body says "Closes #${run.issue}".`] : []),
-          ...(run.autoMerge ? [`The approver approved and the checks passed again on the latest ${prBase(run) || 'base'}, and the autoMerge option is on: once the PR is open, merge it with ${prMergeCommand(repo)} (or the session's own GitHub tools). If branch protection, a required check or a review rule refuses, leave it open and tell the person why; don't force it.`] : []),
+          ...(run.autoMerge && !run.checks.some(c => !c.ok && !c.isMissing) ? [`The approver approved and the checks passed again on the latest ${prBase(run) || 'base'}, and the autoMerge option is on: once the PR is open, merge it with ${prMergeCommand(repo)} (or the session's own GitHub tools). If branch protection, a required check or a review rule refuses, leave it open and tell the person why; don't force it.`] : []),
           `Once it is open, call ${CONTROL_TOOL_NAME} with action "pr-opened" and the PR's link as url: until then the factory shows the PR as requested, not opened. If you can't open it, tell the person why, with these commands (the body saved as ${PR_BODY_FILE}): ${cmds.join(' && ')}.`,
         ]),
     `Title it after the feature. In the body: what it does (from ${run.specFile}), the checks (${run.checks.map(c => `${c.cmd} ${c.isSkipped ? '– skipped' : c.isMissing ? '– not installed' : c.ok ? '✓' : '✗'}`).join(', ') || 'none ran'}), and ${run.round} review round${run.round === 1 ? '' : 's'}: ${run.reviews.filter(r => r.state !== 'skip').map(r => `${r.role} ${r.state === 'pass' ? 'PASS' : 'CHANGES'}`).join(', ')}.`,
+    'Leave any Claude Code session link (claude.ai/code/session_...) out of the PR body and the commits: a public repository publishes it.',
     ...(run.builderTests ? [`The builder's own test run: ${run.builderTests.text}.`] : []),
     ...(run.intake ? [`Say the intake's judgment: risk ${run.intake.risk}${run.intake.surfaces.length ? `, surfaces ${run.intake.surfaces.join(', ')}` : ''}${run.intake.scope ? `; scope: ${run.intake.scope}` : ''}.`] : []),
     ...(minor.length ? ['List these minor findings under "Not fixed":', ...minor] : []),
@@ -644,16 +654,24 @@ export function resumeState(saved: unknown, commits: number): Run | null {
   if (!r || typeof r !== 'object' || typeof r.slug !== 'string' || typeof r.branch !== 'string' || typeof r.phase !== 'string' || !Array.isArray(r.reviews)) return null
   if (!isLive(r.phase)) return null
   const base: Run = { ...r, agents: {}, builderId: undefined, checking: null, isAskingChecks: false, reviews: r.reviews.map(x => (x.state === 'run' ? { ...x, state: 'fail', agentId: null } : x)) }
-  if (r.phase === 'ready' || r.phase === 'needs-human') return { ...base, note: `${r.note} (picked up after a restart)` }
+  // Past the reviews (the approver, the PR, an escalation), the saved verdicts aren't taken on trust: the
+  // file sits beside the worktree, so the run goes back to the checks and a fresh review round.
+  const pastReview = r.phase === 'review' || r.phase === 'approve' || r.phase === 'merging' || r.phase === 'ready'
+    || (r.phase === 'needs-human' && (r.blocked?.on === 'escalate' || r.blocked?.on === 'merge' || (r.blocked?.on === 'start' && r.blocked.role !== 'intake' && r.blocked.role !== 'spec' && r.blocked.role !== 'builder')))
+  if (pastReview) return { ...base, phase: 'needs-human', blocked: { on: 'checks' }, note: 'picked up after a restart: Retry runs the checks and a fresh review round' }
+  if (r.phase === 'needs-human') return { ...base, note: `${r.note} (picked up after a restart)` }
+  // The spec is written and waits for its plan's approval: asked again, not rewritten.
+  if (r.phase === 'plan') return { ...base, gate: 'factory', note: 'picked up after a restart: the plan waits for your approval (/factory approve), or /factory rework <changes>' }
   const blocked: Blocked =
     r.phase === 'intake' ? { on: 'start', role: 'intake' }
-    : r.phase === 'spec' || r.phase === 'plan' ? { on: 'start', role: 'spec' }
-    : r.phase === 'build' ? (commits > 0 ? { on: 'checks' } : { on: 'start', role: 'builder' })
+    : r.phase === 'spec' ? { on: 'start', role: 'spec' }
+    // A build with commits goes through what follows a build (its leak and session-link checks), not straight to the checks.
+    : r.phase === 'build' ? (commits > 0 ? { on: 'base' } : { on: 'start', role: 'builder' })
     : r.phase === 'checks' ? { on: 'checks' }
     : r.phase === 'approve' ? { on: 'start', role: 'approver' }
     : r.phase === 'merging' ? { on: 'merge' }
     : { on: 'start', role: (r.reviews.find(x => x.state === 'run' || x.state === 'fail')?.role ?? 'code') as Role }
-  const step = blocked.on === 'checks' ? 'the checks' : blocked.on === 'merge' ? 'the sync with the latest base' : `the ${(blocked as { role: Role }).role === 'spec' ? 'spec-writer' : (blocked as { role: Role }).role}`
+  const step = blocked.on === 'base' ? 'what follows the build' : blocked.on === 'checks' ? 'the checks' : blocked.on === 'merge' ? 'the sync with the latest base' : `the ${(blocked as { role: Role }).role === 'spec' ? 'spec-writer' : (blocked as { role: Role }).role}`
   return { ...base, phase: 'needs-human', blocked, note: `picked up after a restart, at ${step}: Retry runs it again` }
 }
 

@@ -490,6 +490,17 @@ def test_the_first_writer_confirming_the_new_value_settles_it_and_a_refresh_is_n
     assert "conflict" not in B.get(f, "a.b", "main")[0], "the same value is a confirm, not a disagreement"
 
 
+def test_a_second_write_by_the_same_writer_keeps_the_disagreement_with_the_first(tmp_path):
+    f = tmp_path / "b.jsonl"
+    B.add(f, "azure.resource_group", "rg-one", "check-1", "source A")
+    B.add(f, "azure.resource_group", "rg-two", "check-2", "source B")
+    B.add(f, "azure.resource_group", "rg-three", "check-2", "source B again")
+    got = B.get(f, "azure.resource_group", "main")[0]
+    assert got["value"] == "rg-three" and got["conflict"]["value"] == "rg-one", "B refreshing its value doesn't settle A's"
+    B.add(f, "azure.resource_group", "rg-three", "check-1", "looked again")
+    assert "conflict" not in B.get(f, "azure.resource_group", "main")[0]
+
+
 def test_resolve_with_a_secret_or_empty_reason_is_refused(tmp_path):
     f = tmp_path / "b.jsonl"
     B.add(f, "a.b", "1", "w1", "e")

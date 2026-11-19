@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed: a writer replacing its own value on the board erased its disagreement with another writer (A writes X, B writes Y, B writes Y2). The disagreement now follows the writer's own refreshes back to the value they replaced, until a resolution or the other writer's confirm settles it.
 - Fixed (#163): transcript discovery fell back to every project when the requested one had none, and always added every Cursor project, so `--latest` could read another project's session. A project that is named stays inside it: no match is an empty list; a Cursor folder counts only when its name is the project's; `--everywhere` (trace.py, agents.py) lists all on purpose.
 - Fixed (#164): a resumed sub-agent was counted once per dispatch with its whole transcript each time. Dispatches of one agent id now split its calls by launch time, so each call is counted once, against the brief and budget it was made under; rows read `<id>#1`, `<id>#2`.
 - Fixed (#165): the digest mask and the skill lint missed private-key blocks and the Azure DevOps PAT shape the board refuses. One rule set (`PRIVATE_KEY_RE`, `ADO_PAT_RE` in transcript.py) masks the whole key block and the PAT in both digest formats, and the lint refuses either in any file of the skill without printing it.

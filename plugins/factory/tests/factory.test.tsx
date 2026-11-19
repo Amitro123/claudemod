@@ -44,7 +44,7 @@ type Spawned = { id: string; subagentType: string; prompt: string; description: 
 // The engine beneath: git and the checks, the agents the factory starts, its prompts, the commands there are.
 // `fails`: how many non-git commands fail first (setup and checks alike). `worktree`: the stderr of
 // each failing `git worktree add`, in turn. `dirty`: the builder left uncommitted work.
-function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false, holdGoalCheck = false, remoteBase = false, mergeFails = false, configJson = '', issues = null as null | Record<number, object>, editsDuringReview = false, baseFails = [] as string[] } = {}) {
+function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['package.json', 'node_modules'], pkg = '{"scripts":{"test":"vitest"}}', denyType = false, worktree = [] as string[], dirty = false, commitFails = false, answers = [] as string[], delivers = false, skills = '', keepsGoal = false, planResult = PLAN_APPROVED_FOR_FACTORY, checksOk = 'Run them' as string | null, missing = [] as string[], noRepo = false, stagedNew = [] as string[], committedNew = [] as string[], historyFails = false, historyOut = null as string | null, holdAsk = false, baseGone = false, branch = '', changedFiles = '', outputs = {} as Record<string, { exitCode: number; stdout: string; stderr: string }>, setupMakes = [] as string[], mergeBase = '', reviewChange = false, newFiles = [] as string[], holdSkeptic = false, holdGoalCheck = false, remoteBase = false, mergeFails = false, configJson = '', issues = null as null | Record<number, object>, editsDuringReview = false, baseFails = [] as string[], baseOutput = 'FAIL src/mw.test.ts\n  expected 429' } = {}) {
   let reviewDiffs = 0
   // Files the install writes in the worktree (`setupMakes`, a lockfile npm install made): untracked from then on.
   const made: string[] = []
@@ -185,7 +185,7 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     if (outputs[cmd]) return { value: outputs[cmd] } as never
     // `baseFails`: the commands that fail in the base commit's worktree too; everything else passes there.
     if (String((e as { init?: { cwd?: string } }).init?.cwd ?? '').includes('/.factory/.base-')) {
-      return baseFails.includes(cmd) ? ({ value: { exitCode: 1, stdout: 'FAIL on base', stderr: '' } } as never) : ok('ok')
+      return baseFails.includes(cmd) ? ({ value: { exitCode: 1, stdout: baseOutput, stderr: '' } } as never) : ok('ok')
     }
     if ((cmd === 'npm install' || cmd === 'npm ci') && setupMakes.length) made.push(...setupMakes.filter(f => !made.includes(f)))
     if (missing.includes(cmd)) throw new Error(`spawn ${e.argv[0]} ENOENT`)
@@ -538,9 +538,16 @@ describe('the checks come before any reviewer', () => {
     expect(w.ran.filter(c => c === 'git worktree remove --force /repo/.factory/.base-rate-limiter').length).toBeGreaterThan(0)
     expect(w.spawned.filter(s => s.subagentType === 'factory:builder')).toHaveLength(1)
     expect(w.spawned.slice(2).map(s => s.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
-    expect(last(w).prompt).toMatch(/npm test FAILED, and fails the same on the base commit/)
+    expect(last(w).prompt).toMatch(/npm test FAILED, with the same failure output on the base commit/)
     expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/failed on the base too \(not sent to the builder\): npm test/)
-    expect(Object.entries(w.written).find(([k, v]) => k.includes('.record/') && k.endsWith('-checks.md') && v.includes('Failing on the base'))?.[1]).toMatch(/Failing on the base \(abc123\) too, so not caused by this change: npm test/)
+    expect(Object.entries(w.written).find(([k, v]) => k.includes('.record/') && k.endsWith('-checks.md') && v.includes('Failing the same way on the base'))?.[1]).toMatch(/Failing the same way on the base \(abc123\), so not caused by this change: npm test/)
+  })
+
+  test('a check that fails on the base with another failure is still still this change: the builder goes', async ($, on) => {
+    const w = engine(on, { fails: 1, baseFails: ['npm test'], baseOutput: 'FAIL src/old.test.ts\n  expected 1' })
+    await toReviews($)
+    expect(last(w)).toMatchObject({ subagentType: 'factory:builder' })
+    expect(last(w).prompt).toContain('expected 429')
   })
 
   test('a check that fails only with the change goes back to the builder, and the base runs it once', async ($, on) => {
@@ -557,7 +564,7 @@ describe('the checks come before any reviewer', () => {
     await toReviews($)
     expect(w.spawned.filter(s => s.subagentType === 'factory:builder')).toHaveLength(1)
     expect(w.spawned.some(s => s.subagentType.endsWith('reviewer'))).toBe(false)
-    expect(await bandText($)).toMatch(/Failing on the base \(abc123\) too/)
+    expect(await bandText($)).toMatch(/Failing the same way on the base \(abc123\)/)
   })
 
   test('no checks at all is a skip', async ($, on) => {
@@ -587,22 +594,52 @@ describe('a run survives a restart of the session (#153)', () => {
     const saved = JSON.parse(w.written['/repo/.factory/rate-limiter.record/run.json']!)
     expect(saved).toMatchObject({ slug: 'rate-limiter', branch: 'factory/rate-limiter', phase: 'review' })
     const back = resumeState(saved, 2)!
-    expect(back).toMatchObject({ phase: 'needs-human', agents: {}, blocked: { on: 'start' } })
+    expect(back).toMatchObject({ phase: 'needs-human', agents: {}, blocked: { on: 'checks' } })
+    expect(resumeState({ ...saved, phase: 'approve' }, 2)!.blocked).toEqual({ on: 'checks' })
+    expect(resumeState({ ...saved, phase: 'spec' }, 0)!.blocked).toEqual({ on: 'start', role: 'spec' })
+    expect(resumeState({ ...saved, phase: 'plan' }, 0)).toMatchObject({ phase: 'plan', gate: 'factory' })
     expect(back.reviews.every(r => r.state !== 'run' && r.agentId === null)).toBe(true)
-    expect(resumeState({ ...saved, phase: 'build' }, 2)!.blocked).toEqual({ on: 'checks' })
+    expect(resumeState({ ...saved, phase: 'build' }, 2)!.blocked).toEqual({ on: 'base' })
     expect(resumeState({ ...saved, phase: 'build' }, 0)!.blocked).toEqual({ on: 'start', role: 'builder' })
     expect(resumeState({ ...saved, phase: 'done' }, 2)).toBeNull()
     expect(resumeState('not a run', 2)).toBeNull()
   })
 
+  test('/factory resume picks a lost run up: a review in progress goes back to the checks and a fresh review round', async ($, on) => {
+    const outputs: Record<string, { exitCode: number; stdout: string; stderr: string }> = {}
+    const w = engine(on, { outputs })
+    await toReviews($)
+    outputs['git worktree list --porcelain'] = { exitCode: 0, stdout: WT, stderr: '' }
+    outputs['git rev-list --count abc123..factory/rate-limiter'] = { exitCode: 0, stdout: '1\n', stderr: '' }
+    const saved = w.written['/repo/.factory/rate-limiter.record/run.json']!
+    // The restart: the session's runs are gone (stopped here), its saved state is what the record holds.
+    await command($, 'stop')
+    w.written['/repo/.factory/rate-limiter.record/run.json'] = saved
+    const reviewers = w.spawned.filter(s => s.subagentType.endsWith('reviewer')).length
+    const tests = w.ran.filter(c => c === 'npm test').length
+    const said = await command($, 'resume')
+    expect(said).toMatch(/Picked up Rate limiter on factory\/rate-limiter\. Retrying: the checks/)
+    expect(w.ran.filter(c => c === 'npm test').length).toBe(tests + 1)
+    expect(w.spawned.filter(s => s.subagentType.endsWith('reviewer')).length).toBe(reviewers + 2)
+    expect(Object.entries(w.written).some(([k, v]) => k.endsWith('-resumed.md') && /picked up after a restart/.test(v))).toBe(true)
+    expect(await command($, 'resume')).toMatch(/No run from an earlier session/)
+  })
+
+  test("a saved state that doesn't match git's worktree and branch is not resumed", async ($, on) => {
+    const w = engine(on, { outputs: { 'git worktree list --porcelain': { exitCode: 0, stdout: WT, stderr: '' } } })
+    w.written['/repo/.factory/rate-limiter.record/run.json'] = JSON.stringify({ slug: 'rate-limiter', feature: 'Rate limiter', branch: 'factory/other', worktree: '/elsewhere', base: 'abc123', phase: 'approve', reviews: [] })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    expect(await command($, 'resume')).toMatch(/saved no state to go on from/)
+  })
+
   test('after a restart, the same feature is offered its earlier branch, the doctor lists it, and /factory new starts over', async ($, on) => {
     const w = engine(on, { outputs: { 'git worktree list --porcelain': { exitCode: 0, stdout: WT, stderr: '' }, 'git rev-list --count abc123..factory/rate-limiter': { exitCode: 0, stdout: '2\n', stderr: '' } } })
-    w.written['/repo/.factory/rate-limiter.record/run.json'] = JSON.stringify({ slug: 'rate-limiter', feature: 'Rate limiter', branch: 'factory/rate-limiter', base: 'abc123', phase: 'approve', reviews: [] })
+    w.written['/repo/.factory/rate-limiter.record/run.json'] = JSON.stringify({ slug: 'rate-limiter', feature: 'Rate limiter', branch: 'factory/rate-limiter', worktree: '/repo/.factory/rate-limiter', base: 'abc123', phase: 'approve', reviews: [] })
     const said = await startRun($)
-    expect(said).toMatch(/An earlier run of this feature is on branch factory\/rate-limiter \(2 commits of its own, stopped at approve\)\. \/factory resume rate-limiter goes on from there/)
+    expect(said).toMatch(/An earlier run of this feature is on branch factory\/rate-limiter \(2 commits of its own, stopped at approve\)\. \/factory resume rate-limiter goes on from there; \/factory new: Rate limiter starts over/)
     expect(w.ran.filter(c => c.startsWith('git worktree add -b'))).toEqual([])
     expect(await command($, 'doctor')).toMatch(/A run from an earlier session: rate-limiter on factory\/rate-limiter, 2 commits of its own, stopped at approve/)
-    expect(await command($, 'new Rate limiter')).toMatch(/Factory run started/)
+    expect(await command($, 'new: Rate limiter')).toMatch(/Factory run started/)
   })
 })
 
@@ -2567,15 +2604,28 @@ describe('a session link in a commit message never reaches the pushed branch', (
     expect(buildPrompt(run, [], [], { again: true })).toMatch(/leave out any Claude-Session line/)
   })
 
-  test('after the build, a commit carrying one is rewritten before the checks, and the record says so', async ($, on) => {
+  test('after the build, a commit carrying one is rewritten (its own commits only); a link still there stops the run', async ($, on) => {
     const w = engine(on, { outputs: {
-      'git log --format=%H%x1f%B%x1e abc123..HEAD': { exitCode: 0, stdout: 'd1d1d1d\x1ffeat\n\nClaude-Session: https://claude.ai/code/session_01X\n\x1e', stderr: '' },
+      'git log --format=%H%x1f%B%x1e HEAD --not abc123 --remotes': { exitCode: 0, stdout: 'd1d1d1d\x1ffeat\n\nClaude-Session: https://claude.ai/code/session_01X\n\x1e', stderr: '' },
     } })
     await startRun($)
     await answer($, 'a1', SPEC_ANSWER)
     await command($, 'plan-approved')
     await answer($, 'a2', 'built')
-    expect(w.ran).toContain(`git filter-branch -f --msg-filter ${SESSION_LINK_FILTER} abc123..HEAD`)
+    expect(w.ran).toContain(`git filter-branch -f --msg-filter ${SESSION_LINK_FILTER} -- HEAD --not abc123 --remotes`)
+    // The fake's log still shows the link after the rewrite: the run stops, nothing goes to the checks.
+    expect(await bandText($)).toMatch(/carry a Claude-Session link, and the factory couldn't take it out/)
+    expect(w.ran.includes('npm test')).toBe(false)
+  })
+
+  test("a branch whose commit messages can't be read stops instead of going on unchecked", async ($, on) => {
+    const w = engine(on, { outputs: { 'git log --format=%H%x1f%B%x1e HEAD --not abc123 --remotes': { exitCode: 128, stdout: '', stderr: 'fatal: bad object' } } })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, 'plan-approved')
+    await answer($, 'a2', 'built')
+    expect(await bandText($)).toMatch(/could not read the branch's commit messages for session links/)
+    expect(w.ran.includes('npm test')).toBe(false)
   })
 })
 

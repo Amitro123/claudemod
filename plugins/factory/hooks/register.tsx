@@ -52,6 +52,7 @@ import {
   tailOf,
   rootOf,
   resumeState,
+  failureShape,
   recordOf,
   SAVED_RUN,
   tok,
@@ -114,6 +115,7 @@ async function getRun($: EngineInterface, rid: string): Promise<Run | null> {
 }
 // A new run joins the others; of the ended ones only the latest are kept. Its rid.
 async function addRun($: EngineInterface, r: Run): Promise<string> {
+  if (r.record) await $.fs.write(`${r.record}/${SAVED_RUN}`, JSON.stringify(r)).catch(() => {})
   await update($, runs, all => {
     const ended = Object.values(all).filter(x => !isLive(x.phase))
     const drop = new Set(ended.slice(0, Math.max(0, ended.length - KEEP_ENDED)).map(x => x.slug))
@@ -390,7 +392,7 @@ async function start($: EngineInterface, args: string, extras: Extra[] = [], opt
   // A run of this feature from an earlier session, its branch still there: offered, not started over.
   if (!opts.fresh) {
     const earlier = (await earlierRuns($, root)).find(o => o.slug === slug || o.slug.startsWith(`${slug}-`) && o.run?.feature === feature)
-    if (earlier) return `An earlier run of this feature is on branch ${earlier.branch} (${earlier.commits} commit${earlier.commits === 1 ? '' : 's'} of its own${earlier.run ? `, stopped at ${earlier.run.phase}` : ''}). ${earlier.run ? `/factory resume ${earlier.slug} goes on from there; ` : `Its state wasn't saved: review it with /factory review in ${earlier.worktree}, or remove it with git worktree remove ${earlier.worktree}; `}/factory new ${feature} starts over on a new branch.`
+    if (earlier) return `An earlier run of this feature is on branch ${earlier.branch} (${earlier.commits} commit${earlier.commits === 1 ? '' : 's'} of its own${earlier.run ? `, stopped at ${earlier.run.phase}` : ''}). ${earlier.run ? `/factory resume ${earlier.slug} goes on from there; ` : `Its state wasn't saved: review it with /factory review in ${earlier.worktree}, or remove it with git worktree remove ${earlier.worktree}; `}/factory new: ${feature} starts over on a new branch.`
   }
   let r: Run | null = null
   // A branch or folder name already taken gets a number; any other failure is reported as it is.
@@ -453,6 +455,8 @@ async function earlierRuns($: EngineInterface, root: string): Promise<Earlier[]>
     let run: Run | null = null
     try { run = text ? (JSON.parse(text) as Run) : null } catch { run = null }
     if (run && !isLive(run.phase)) continue
+    // The saved state counts only for the worktree and branch git has: anything else is not this run's.
+    if (run && (run.worktree !== wt || run.branch !== branch || run.slug !== slug)) run = null
     const count = await git($, ['rev-list', '--count', `${run?.base ?? 'HEAD'}..${branch}`], root)
     out.push({ slug, branch, worktree: wt, commits: count.exitCode === 0 ? Number(count.stdout.trim()) || 0 : 0, run })
   }
@@ -695,11 +699,22 @@ async function onBuilt($: EngineInterface, rid: string) {
   }
   // A session link in a commit message (the harness's attribution) would be published with the branch. It
   // hasn't been pushed yet, so the factory takes the line out of the branch's own commits, and stops if it can't.
-  const msgs = await git($, ['log', '--format=%H%x1f%B%x1e', `${base}..HEAD`], r.worktree)
-  const linked = msgs.exitCode === 0 ? sessionLinkCommits(msgs.stdout) : []
+  // Only the branch's own commits: a base merged in by a sync is on the remote and never rewritten.
+  const own = ['HEAD', '--not', base, '--remotes']
+  const msgs = await git($, ['log', '--format=%H%x1f%B%x1e', ...own], r.worktree)
+  if (msgs.exitCode !== 0) {
+    await block($, rid, { on: 'builder' }, `The factory could not read the branch's commit messages for session links: ${tailOf(msgs.stderr, 1)}. Retry once git can read them.`)
+    return
+  }
+  const linked = sessionLinkCommits(msgs.stdout)
   if (linked.length) {
-    const fixed = await git($, ['filter-branch', '-f', '--msg-filter', SESSION_LINK_FILTER, `${base}..HEAD`], r.worktree)
-    const again = fixed.exitCode === 0 ? await git($, ['log', '--format=%H%x1f%B%x1e', `${base}..HEAD`], r.worktree) : null
+    const fixed = await git($, ['filter-branch', '-f', '--msg-filter', SESSION_LINK_FILTER, '--', ...own], r.worktree)
+    // filter-branch keeps the old commits under refs/original: dropped, so nothing still holds the link.
+    if (fixed.exitCode === 0) {
+      const kept = await git($, ['for-each-ref', '--format=%(refname)', 'refs/original/'], r.worktree)
+      for (const ref of kept.stdout.split('\n').map(l => l.trim()).filter(Boolean)) await git($, ['update-ref', '-d', ref], r.worktree)
+    }
+    const again = fixed.exitCode === 0 ? await git($, ['log', '--format=%H%x1f%B%x1e', ...own], r.worktree) : null
     if (fixed.exitCode !== 0 || !again || again.exitCode !== 0 || sessionLinkCommits(again.stdout).length) {
       await block($, rid, { on: 'builder' }, `Commits ${linked.map(c => c.slice(0, 7)).join(', ')} carry a Claude-Session link, and the factory couldn't take it out (${tailOf(`${fixed.stdout}\n${fixed.stderr}`, 1)}). Remove the line from their messages, then retry.`)
       return
@@ -973,7 +988,7 @@ async function runChecks($: EngineInterface, rid: string) {
   const own = failed.filter(c => !onBase.includes(c.cmd))
   if (onBase.length) {
     const marked = results.map(c => (onBase.includes(c.cmd) ? { ...c, failsOnBase: true } : c))
-    const line = `Failing on the base (${after.base}) too, so not caused by this change: ${onBase.join(', ')}.`
+    const line = `Failing the same way on the base (${after.base}), so not caused by this change: ${onBase.join(', ')}.`
     await record($, rid, 'checks', line)
     const noted = await patch($, rid, cur => ({ ...bump(cur, st => ({ ...st, baseFailed: [...new Set([...(st.baseFailed ?? []), ...onBase])] })), checks: marked, checksNote: [cur.checksNote, line].filter(Boolean).join(' ') }))
     if (!noted || noted.phase !== 'checks') return
@@ -991,8 +1006,10 @@ async function runChecks($: EngineInterface, rid: string) {
 // again. A base that can't be checked out or set up answers none, so the builder goes as before.
 // null: the run moved on meanwhile.
 async function failingOnBase($: EngineInterface, rid: string, r: Run, failed: Check[], argvOf: Map<string, string[]>): Promise<string[] | null> {
-  const key = (cmd: string) => `${r.base} ${cmd}`
-  const todo = failed.filter(c => argvOf.has(c.cmd) && !(key(c.cmd) in (r.baseChecks ?? {})))
+  // Keyed by the failure's shape too: a branch that fails differently in a later round is run on the base again.
+  const shapeOf = (c: Check) => failureShape(c.tail, [r.worktree])
+  const key = (c: Check) => `${r.base} ${c.cmd} ${shapeOf(c)}`
+  const todo = failed.filter(c => argvOf.has(c.cmd) && !(key(c) in (r.baseChecks ?? {})))
   const seen: Record<string, boolean> = {}
   if (todo.length) {
     const root = rootOf(r)
@@ -1008,8 +1025,9 @@ async function failingOnBase($: EngineInterface, rid: string, r: Run, failed: Ch
         for (const c of ready ? todo : []) {
           if (!(await stillIn($, rid, 'checks'))) return null
           const out = await run$($, argvOf.get(c.cmd)!, dir)
-          // A command that couldn't start or ran out of time says nothing about the base.
-          if (!out.notStarted && !out.timedOut) seen[key(c.cmd)] = out.exitCode !== 0
+          // A command that couldn't start or ran out of time says nothing about the base. It counts as an old
+          // failure only when it fails there the same way: another failing test is this change's.
+          if (!out.notStarted && !out.timedOut) seen[key(c)] = out.exitCode !== 0 && failureShape(tailOf(`${out.stdout}\n${out.stderr}`), [dir]) === shapeOf(c)
         }
       } finally {
         await git($, ['worktree', 'remove', '--force', dir], root)
@@ -1018,7 +1036,7 @@ async function failingOnBase($: EngineInterface, rid: string, r: Run, failed: Ch
   }
   const cur = await patch($, rid, x => ({ ...x, baseChecks: { ...(x.baseChecks ?? {}), ...seen } }))
   if (!cur || cur.phase !== 'checks') return null
-  return failed.filter(c => cur.baseChecks?.[key(c.cmd)] === true).map(c => c.cmd)
+  return failed.filter(c => cur.baseChecks?.[key(c)] === true).map(c => c.cmd)
 }
 
 // Every reviewer looks at every round: a fix for one reviewer is new code for the others too.
@@ -1370,8 +1388,12 @@ async function syncWithBase($: EngineInterface, rid: string, r: Run): Promise<bo
     results.push({ cmd: argv.join(' '), ok: out.exitCode === 0, tail: out.exitCode === 0 ? '' : tailOf(`${out.stdout}\n${out.stderr}`), ...(out.notStarted ? { isMissing: true } : {}), ...(out.timedOut ? { isTimedOut: true } : {}) })
   }
   await record($, rid, `checks on the latest ${remote}`, results.map(c => `${c.isMissing ? '– (not installed)' : c.isTimedOut ? '⏱' : c.ok ? '✓' : '✗'} ${c.cmd}${c.tail ? `\n${c.tail}` : ''}`).join('\n') || 'No checks to run.')
-  const bad = results.filter(c => !c.ok && !c.isMissing)
-  const after = await patch($, rid, cur => ({ ...cur, checking: null, ...(bad.length ? {} : { synced: tip }) }))
+  // A check that already failed the same way on the base (#155) and still does isn't the sync's failure:
+  // it stays marked, so the approver is told and autoMerge holds off.
+  const same = (c: Check) => r.checks.some(x => x.failsOnBase && x.cmd === c.cmd && failureShape(x.tail, [r.worktree]) === failureShape(c.tail, [r.worktree]))
+  const marked = results.map(c => (!c.ok && !c.isMissing && same(c) ? { ...c, failsOnBase: true } : c))
+  const bad = marked.filter(c => !c.ok && !c.isMissing && !c.failsOnBase)
+  const after = await patch($, rid, cur => ({ ...cur, checking: null, ...(bad.length ? {} : { synced: tip, checks: marked }) }))
   if (after?.phase !== 'merging') return false
   if (bad.length) {
     await block($, rid, { on: 'merge' }, `Synced with the latest ${remote}, the checks fail: ${bad.map(c => c.cmd).join(', ')}. /factory rework sends it to the builder; Retry runs them again.`, cur => ({ ...cur, checks: results }))
@@ -2146,8 +2168,9 @@ export const register: Register = (on, options) => {
     if (arg === 'status') return { text: await statusText($, rid) }
     if (arg === 'doctor') return { text: await doctorText($, rid) }
     if (arg === 'checks-ok') return { text: await checksOkNow($, rid) }
-    if (arg === 'resume' || arg.startsWith('resume ')) return { text: await resumeNow($, arg.slice(6).trim()) }
-    if (arg.startsWith('new ')) return { text: await start($, arg.slice(4), [], { fresh: true }) }
+    if (/^resume(\s+@?[\w-]+)?$/.test(arg)) return { text: await resumeNow($, arg.slice(6).trim()) }
+    // `new:` with a colon: a feature that starts with the word "new" stays a feature.
+    if (/^new:\s*\S/.test(arg)) return { text: await start($, arg.replace(/^new:\s*/, ''), [], { fresh: true }) }
     if (arg === 'review' || arg.startsWith('review ')) {
       const rest = arg.slice(6).trim()
       const named = /^base=(\S+)\s*/.exec(rest)

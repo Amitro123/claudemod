@@ -172,10 +172,17 @@ def conflicts(recs: list[dict]) -> dict[str, dict]:
     by_id = {r["id"]: r for r in recs if r.get("type") == "fact" and isinstance(r.get("id"), int)}
     out = {}
     for key, cur in current(recs).items():
-        prev = by_id.get(cur.get("supersedes"))
-        if not prev or prev.get("by") == cur.get("by") or prev.get("value") == cur.get("value") or cur.get("resolution"):
+        # Past the current writer's own refreshes to the value they replaced: a second write by B doesn't
+        # erase B's disagreement with A. A resolution anywhere on B's run settles it.
+        chain, prev, seen = [cur], by_id.get(cur.get("supersedes")), {cur["id"]}
+        while prev and prev.get("by") == cur.get("by") and not prev.get("resolution") and prev["id"] not in seen:
+            chain.append(prev)
+            seen.add(prev["id"])
+            prev = by_id.get(prev.get("supersedes"))
+        if not prev or prev.get("by") == cur.get("by") or prev.get("value") == cur.get("value") or any(c.get("resolution") for c in chain):
             continue
-        settled = any(r.get("type") == "confirm" and r.get("fact") == cur["id"] and (r.get("resolution") or r.get("by") == prev.get("by"))
+        ids = {c["id"] for c in chain}
+        settled = any(r.get("type") == "confirm" and r.get("fact") in ids and (r.get("resolution") or r.get("by") == prev.get("by"))
                       for r in recs)
         if not settled:
             out[key] = {"key": key, "now": {k: cur.get(k) for k in ("value", "by", "evidence", "level", "ts")},
