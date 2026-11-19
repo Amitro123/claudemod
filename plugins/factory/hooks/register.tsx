@@ -82,7 +82,7 @@ import {
   progressNote,
   resumePrompt,
 } from './flow'
-import { intakeNote, intakePrompt, parseIntake, reviewPlan, ROUTED_MODELS, touchesUi } from './intake'
+import { intakeNote, intakePrompt, linesByFile, parseIntake, reviewPlan, ROUTED_MODELS, touchesUi } from './intake'
 import { acceptComment, answeredSince, askComment, escalateComment, issueFeature, issueFile, LABEL, NEEDS_HUMAN_LABEL, NEEDS_INFO_LABEL, parseQueue, parseRestIssue, parseRestIssueList, queueLines, queueText, refusal, rejectComment } from './issues'
 import type { Issue, Queue, QueueState } from './issues'
 import { addUsage, costOf, DEFAULT_CONFIG, parseConfig, protectedHits, usd } from './config'
@@ -905,7 +905,7 @@ async function routeOf($: EngineInterface, r: Run) {
   const diff = await git($, ['diff', '-U0', ...spanOf(r)], r.worktree)
   const readable = names.exitCode === 0 && diff.exitCode === 0 && diff.stdout.length < 5_000_000
   const changed = names.exitCode === 0 ? changedOf(names.stdout) : []
-  return { ...routeReview(changed, readable ? diffLines(diff.stdout) : [], readable), uiTouched: touchesUi(changed) }
+  return { ...routeReview(changed, readable ? diffLines(diff.stdout) : [], readable), uiTouched: touchesUi(changed, readable ? linesByFile(diff.stdout) : undefined) }
 }
 
 async function startReviews($: EngineInterface, rid: string) {

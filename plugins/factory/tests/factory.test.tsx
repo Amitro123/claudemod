@@ -5,7 +5,7 @@ import type { On } from 'claude-code'
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
 import { extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, shq, skepticPrompt } from '../hooks/flow'
 import type { Run } from '../types'
-import { parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
+import { linesByFile, parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
 import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
 import { issueFile, parsePages, parseRestIssue, parseRestIssueList, queueLines, refusal, trustedComments, type Issue } from '../hooks/issues'
 import { parseBuilderTests as builderTestsOf, nextActionsOf, forbidsPush, parseBuilderTests, parseNotChecked, parseUnderstood, summaryOf } from '../hooks/flow'
@@ -2837,6 +2837,19 @@ describe('the intake decides before the spec (intake on)', () => {
     expect(reviewPlan({ risk: 'low', surfaces: ['ui'] }, { deep: false }, false, mine)).toMatchObject({ codeModel: 'sonnet', extras: [{ name: 'ui-design', model: 'sonnet' }, { name: 'a11y', model: 'haiku' }] })
     expect(touchesUi([{ path: 'src/components/Button.tsx', status: 'M' }])).toBe(true)
     expect(touchesUi([{ path: 'src/limit.ts', status: 'M' }])).toBe(false)
+  })
+
+  test('a .tsx counts as UI by its changed lines: logic in a hooks module adds no UI reviewers, its JSX does', () => {
+    const hooks = [{ path: 'plugins/factory/hooks/register.tsx', status: 'M' as const }]
+    const logic = linesByFile('diff --git a/plugins/factory/hooks/register.tsx b/plugins/factory/hooks/register.tsx\n--- a/plugins/factory/hooks/register.tsx\n+++ b/plugins/factory/hooks/register.tsx\n@@ -1,1 +1,2 @@\n-const a = 1\n+const repo: Promise<Run | null> = fetchIssue($, n)\n+if (x < 3 && y > 2) return\n')
+    expect(touchesUi(hooks, logic)).toBe(false)
+    const jsx = linesByFile('diff --git a/plugins/factory/hooks/register.tsx b/plugins/factory/hooks/register.tsx\n--- a/plugins/factory/hooks/register.tsx\n+++ b/plugins/factory/hooks/register.tsx\n@@ -1,1 +1,2 @@\n+      <Box flexDirection="column">\n+        <Text color={t.dim}>{line}</Text>\n')
+    expect(touchesUi(hooks, jsx)).toBe(true)
+    expect(touchesUi(hooks)).toBe(true)
+    expect(touchesUi([{ path: 'web/src/pages/Home.tsx', status: 'M' as const }], logic)).toBe(true)
+    expect(touchesUi([{ path: 'app/site.css', status: 'M' as const }], {})).toBe(true)
+    const removed = linesByFile('diff --git a/src/Old.tsx b/src/Old.tsx\n--- a/src/Old.tsx\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-export const Old = () => <div className="x" />\n')
+    expect(touchesUi([{ path: 'src/Old.tsx', status: 'D' as const }], removed)).toBe(true)
   })
 
   test('the config: defaults, warnings, protected paths and cost', () => {
