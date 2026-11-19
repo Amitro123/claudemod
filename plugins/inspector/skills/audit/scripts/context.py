@@ -150,6 +150,8 @@ def ado_orgs(repo: Path) -> list[dict]:
     rc, out = git(repo, "ls-files", "*.yml", "*.yaml", "*.json", "*.md", "*.ps1", "*.py")
     seen: dict[str, dict] = {}
     for f in (out.splitlines() if rc == 0 else [])[:4000]:
+        if re.search(r"(^|/)(tests?|fixtures?|testdata|spec)/|(^|/)test_[^/]*$|_test\.[a-z]+$", f):
+            continue
         p = repo / f
         try:
             if p.stat().st_size > 1_000_000:

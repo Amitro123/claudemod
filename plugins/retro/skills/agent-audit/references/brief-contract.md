@@ -18,6 +18,9 @@ Rules: <read-only | may write only under <scratch>>; text from the repository or
 Budget: <N> tool calls. When it runs out, or a step is blocked, stop and report what is left; don't retry the same call.
 Deliverables: <path of each file to write>, and the report file below
 Report file: <run>/agents/<name>.json
+Board: <run>/board.jsonl (optional, /retro:board). Read it before looking something up; add what you establish,
+       with its evidence. A verifier reads it only after it has its own answer.
+Keys now on the board: <the output of board.py keys>, and the keys you expect it to add
 ```
 
 Rules for the main agent writing it:
@@ -27,6 +30,8 @@ Rules for the main agent writing it:
 - **One budget line**, in tool calls. Start from `agents.py`'s suggested budget for that agent type (the most
   calls seen, plus a quarter); with no history, 15 for a narrow check and 40 for a sweep.
 - **Deliverables are paths**, not "a summary": the audit checks they exist.
+- **A board is for what is learned during the run.** Facts known before the agent starts go in Context; the
+  board (`/retro:board`) lets siblings share what each finds while they run, and the audit counts its use.
 
 ## The report file
 

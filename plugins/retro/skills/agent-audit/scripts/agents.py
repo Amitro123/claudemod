@@ -34,7 +34,9 @@ BUDGET_RE = re.compile(r"\bbudget\b\s*[:=]?\s*(?:of\s+|is\s+|about\s+|at most\s+
 READ_ONLY_RE = re.compile(r"read[- ]only|change nothing|do not (?:modify|change|edit|write to the repo)|don't (?:modify|change|edit)|"
                           r"report findings only|no changes to (?:the )?(?:repo|repository|files)", re.I)
 PATH_RE = re.compile(r"(?<![\w<>{}/.-])((?:[A-Za-z]:[\\/]|/|\.{1,2}/|~/)?[\w.\-]+(?:[\\/][\w.\-]+)*\.(?:json|md|txt|csv|ya?ml|html|jsonl|log))\b")
-DELIVER_LINE_RE = re.compile(r"\b(write|writes|save|saves|deliverables?|output file|report to|put it in|create)\b", re.I)
+DELIVER_LINE_RE = re.compile(r"^\s*(?:deliverables?|report file|output file|outputs?)\s*:", re.I)
+WRITE_PATH_RE = re.compile(r"\b(?:write|save|create)\s+(?:it\s+|them\s+)?(?:to\s+|into\s+|in\s+|as\s+|the\s+file\s+|a\s+file\s+)?"
+                           r"((?:[A-Za-z]:[\\/]|/|\.{1,2}/|~/)?[\w.\-]+(?:[\\/][\w.\-]+)*\.(?:json|md|txt|csv|ya?ml|html|jsonl|log))\b", re.I)
 SELF_COUNT_RES = [re.compile(r"tool[ -]?calls?(?:\s+used)?\s*[:=]\s*(\d+)", re.I),
                   re.compile(r"\b(\d+)\s+(?:of\s+\d+\s+)?(?:budget(?:ed)?\s+)?tool[ -]?calls?", re.I),
                   re.compile(r"used\s+(\d+)\s+(?:of\s+\d+\s+)?(?:tool[ -]?)?calls?", re.I)]
@@ -52,6 +54,43 @@ DISCOVERY_TOOLS = {"Bash", "Shell", "PowerShell", "Grep", "Glob", "run_terminal_
 SMALL_MODELS = re.compile(r"haiku|mini|flash|small|lite", re.I)
 LARGE_MODELS = re.compile(r"opus|sonnet|gpt-5|pro\b|large", re.I)
 CAUSES = ("brief", "execution", "host", "model")
+BOARD_GET_RE = re.compile(r"board\.py\b.*\sget\b")
+BOARD_ADD_RE = re.compile(r"board\.py\b.*\s(?:add|seed)\b")
+VERIFIER_RE = re.compile(r"verif|skeptic|re-?check", re.I)
+
+
+def load_board(path: str | None) -> list[dict]:
+    if not path or not Path(path).exists():
+        return []
+    out = []
+    for ln in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            r = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(r, dict) and r.get("type") == "fact":
+            out.append(r)
+    return out
+
+
+SHELL_TOOLS = {"Bash", "Shell", "PowerShell", "run_terminal_cmd"}
+
+
+def evidence_command(ev: str) -> str:
+    return " ".join(ev.split("->", 1)[0].split()).strip("` ")
+
+
+def same_command(evidence: str, command: str) -> bool:
+    """The call ran the evidence's command: its words, in order, from the start of one of the call's commands.
+    `ls` is not `git ls-remote`, and a bare `git log` is not `git log origin/main --first-parent --since`."""
+    ev = evidence.split()
+    if len(ev) < 2:
+        return False
+    for part in re.split(r"\s*(?:&&|\|\||;|\|)\s*", re.sub(r"^cd \S+\s*(?:&&|;)\s*", "", command.strip())):
+        words = part.split()
+        if words[:len(ev)] == ev:
+            return True
+    return False
 
 
 def norm_call(c) -> str:
@@ -70,10 +109,10 @@ def brief_terms(prompt: str) -> dict:
         budget = {"n": int(m.group(1)), "unit": "turns" if unit.startswith("turn") else "tool calls"}
     deliverables = []
     for ln in prompt.splitlines():
-        if DELIVER_LINE_RE.search(ln):
-            for p in PATH_RE.findall(ln):
-                if p not in deliverables and not re.search(r"[<>{}*]", p):
-                    deliverables.append(p)
+        found = PATH_RE.findall(ln) if DELIVER_LINE_RE.match(ln) else [m.group(1) for m in WRITE_PATH_RE.finditer(ln)]
+        for p in found:
+            if p not in deliverables and not re.search(r"[<>{}*]", p):
+                deliverables.append(p)
     asks = [m.group(1).strip() for ln in prompt.splitlines() if (m := ASK_RE.match(ln))]
     return {"budget": budget, "read_only": bool(READ_ONLY_RE.search(prompt)), "deliverables": deliverables, "asks": asks}
 
@@ -102,10 +141,10 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
     calls = a.work_calls
     has_transcript = bool(a.calls)
     failed = [c for c in calls if c.ok is False]
-    seen = defaultdict(int)
+    seen: dict[tuple, list] = {}
     for c in calls:
-        seen[(c.tool, " ".join(c.brief(400).split()))] += 1
-    loops = [{"call": f"{t}: {b}", "times": n} for (t, b), n in seen.items() if n >= 3]
+        seen.setdefault((c.tool, json.dumps(c.input, sort_keys=True, ensure_ascii=False)), []).append(c)
+    loops = [{"call": f"{cs[0].tool}: {cs[0].brief()}", "times": len(cs)} for cs in seen.values() if len(cs) >= 3]
     writes = [str(c.input.get("file_path") or c.input.get("notebook_path") or "") for c in calls if c.tool in T.WRITE_TOOLS]
     mutating = [c.brief() for c in calls if c.tool in ("Bash", "Shell", "PowerShell") and MUTATING_RE.search(str(c.input.get("command", "")))]
     deliver = []
@@ -151,9 +190,8 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
     causes = {k: [] for k in CAUSES}
     checks = {"budget": bool(b), "numbered_asks": len(terms["asks"]) >= 1, "deliverable_paths": bool(terms["deliverables"]),
               "context": bool(CONTEXT_RE.search(a.prompt)), "rules": bool(RULES_RE.search(a.prompt))}
-    for k, ok in checks.items():
-        if not ok:
-            causes["brief"].append(f"brief has no {k.replace('_', ' ')}")
+    if not checks["budget"]:
+        causes["brief"].append("brief has no budget (tool calls): nothing to hold the agent to, and no cap to measure against")
     rediscovered = sorted({norm_call(c) for c in calls if c.tool in DISCOVERY_TOOLS and norm_call(c) in ctx.get("main_before", set())})
     if rediscovered:
         causes["brief"].append(f"re-ran {len(rediscovered)} command(s) the main agent had already run (their results were not passed): "
@@ -164,7 +202,8 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
     for i, c in enumerate(calls):
         if c.ok is False and not HOST_RE.search(c.result[:500]):
             nxt = calls[i + 1] if i + 1 < len(calls) else None
-            if nxt is None or (nxt.tool == c.tool and nxt.ok is False):
+            explained = nxt is None and " ".join(str(c.input.get("command", c.brief())).split()[:3]).lower() in (a.report or "").lower()
+            if (nxt is None and not explained) or (nxt is not None and nxt.ok is False and nxt.tool == c.tool and nxt.input == c.input):
                 unrecovered.append(f"{c.tool}: {c.brief(80)}")
     clear_brief = checks["numbered_asks"] and checks["deliverable_paths"]
     if loops:
@@ -179,6 +218,32 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
         causes["execution"].append("broke the brief's read-only rule")
     if not (a.report or "").strip() or a.finished is False:
         causes["execution"].append("ended without a report" if not (a.report or "").strip() else "did not finish")
+    cmds = [(i, str(c.input.get("command", ""))) for i, c in enumerate(calls) if c.tool in DISCOVERY_TOOLS]
+    board_reads = [i for i, cmd in cmds if BOARD_GET_RE.search(cmd)]
+    board_writes = [i for i, cmd in cmds if BOARD_ADD_RE.search(cmd)]
+    brief_names_board = bool(re.search(r"^\s*board\s*:", a.prompt, re.I | re.M))
+    facts = ctx.get("board_facts") or []
+    first_fact = min((f.get("ts", "") for f in facts), default=None)
+    started_with_board = bool(first_fact and a.launched and (T.seconds_between(first_fact, a.launched) or 0) >= 0)
+    if started_with_board:
+        checks["board"] = brief_names_board
+        if not brief_names_board:
+            causes["brief"].append("brief has no Board line, while the run used a board")
+    known = []
+    for f in ctx.get("board_facts", []):
+        gap = T.seconds_between(f.get("ts"), a.launched) if a.launched else None
+        if gap is not None and gap >= 0:
+            known.append(f)
+    shell = [str(c.input.get("command", "")) for c in calls if c.tool in SHELL_TOOLS]
+    shell = [x for x in shell if not BOARD_GET_RE.search(x) and not BOARD_ADD_RE.search(x)]
+    rerun = sorted({f["key"] for f in known if any(same_command(evidence_command(f.get("evidence", "")), x) for x in shell)})
+    is_verifier = bool(VERIFIER_RE.search(f"{a.subagent_type} {a.description}"))
+    if brief_names_board and has_transcript and not board_reads and not is_verifier:
+        causes["execution"].append("its brief named the board and it never read it")
+    first_work = next((i for i, c in enumerate(calls) if not (c.tool in DISCOVERY_TOOLS and (BOARD_GET_RE.search(str(c.input.get("command", ""))) or BOARD_ADD_RE.search(str(c.input.get("command", "")))))), None)
+    if is_verifier and board_reads and (first_work is None or board_reads[0] < first_work):
+        causes["execution"].append(
+            "a verifier read the board before its own check: its verdicts may copy what it was meant to test")
     struggled = bool(loops or unrecovered or missing or (b and measured is not None and measured > b["n"]))
     fail_rate = (len(failed) / measured) if measured else 0.0
     model = a.model or ctx.get("default_model") or ""
@@ -188,7 +253,7 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
         causes["model"].append(f"{model} finished in {measured} calls with no failure: a smaller model may be enough (cost)")
     return {
         "agent": a.agent_id or a.call_id, "type": a.subagent_type, "model": a.model, "description": a.description,
-        "source": "transcript" if has_transcript else "brief and report only",
+        "source": ("transcript" if has_transcript else "brief and report only") + (", started by a plugin" if a.started_by == "plugin" else ""),
         "calls": measured, "failed": len(failed), "failed_calls": [f"{c.tool}: {c.brief()} -> {first_line(c.result)}" for c in failed][:10],
         "loops": loops, "minutes": round(s / 60, 1) if (s := T.seconds_between(a.start, a.end)) else None,
         "budget": b, "read_only": terms["read_only"], "deliverables": deliver, "writes": writes, "mutating": mutating,
@@ -196,7 +261,10 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
         "asks": terms["asks"], "brief": a.prompt, "report": a.report,
         "steps": [f"{c.tool}: {c.brief(120)}" + ("" if c.ok is not False else "  [failed]") for c in calls][:60],
         "flags": flags, "causes": causes, "brief_checks": checks, "skill": ctx.get("skill"),
-        "failure_rate": round(fail_rate, 2), "discovery": sorted({norm_call(c) for c in calls if c.tool in DISCOVERY_TOOLS}),
+        "failure_rate": round(fail_rate, 2), "discovery": sorted({norm_call(c) for c in calls if c.tool in SHELL_TOOLS
+                                                                   and not BOARD_GET_RE.search(str(c.input.get("command", "")))
+                                                                   and not BOARD_ADD_RE.search(str(c.input.get("command", "")))}),
+        "board": {"reads": len(board_reads), "writes": len(board_writes), "reran_known": sorted(set(rerun))} if (board_reads or board_writes or ctx.get("board_in_use")) else None,
     }
 
 
@@ -304,6 +372,9 @@ def render(rows: list[dict], bud: list[dict], session: str | None, notes: list[s
     for r in rows:
         out += ["", f"## {r['agent']}: {r['description']}", "", f"source: {r['source']}"
                 + (f"; {r['minutes']} min" if r["minutes"] else "") + (f"; brief written under skill {r['skill']}" if r.get("skill") else ""), ""]
+        if r.get("board"):
+            bd = r["board"]
+            out.append(f"- board: {bd['reads']} reads, {bd['writes']} writes" + (f"; re-derived {', '.join(bd['reran_known'])}" if bd["reran_known"] else ""))
         for k in CAUSES:
             for x in (r.get("causes") or {}).get(k, []):
                 out.append(f"- **{k}**: {x}")
@@ -329,6 +400,7 @@ def main(argv=None) -> int:
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--cwd", default=".")
     ap.add_argument("--reports")
+    ap.add_argument("--board", help="the run's board.jsonl (/retro:board): facts already known when each agent started")
     ap.add_argument("--skill", help="only agents started while this skill was loaded (with --all: an eval of that skill across sessions)")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--out")
@@ -345,14 +417,23 @@ def main(argv=None) -> int:
             print("No session transcript found. Pass its path, or --reports DIR with end-of-run report files.", file=sys.stderr)
             return 2
     rows, notes = [], []
+    all_board_facts = load_board(a.board)
     for s in sessions:
         sess = T.load(s)
         notes += sess.notes
+        board_facts = all_board_facts
+        if all_board_facts and len(sessions) > 1:
+            first = min(f.get("ts", "") for f in all_board_facts)
+            inside = sess.start and sess.end and (T.seconds_between(sess.start, first) or 0) >= 0 and (T.seconds_between(first, sess.end) or 0) >= 0
+            board_facts = all_board_facts if inside else []
         for x in sess.agents:
             before = [c for c in sess.calls if c.ts and x.launched and c.ts < x.launched and c.tool not in T.AGENT_TOOLS]
             skills = [str(c.input.get("skill")) for c in before if c.tool == "Skill" and c.input.get("skill")]
             ctx = {"main_before": {norm_call(c) for c in before if c.tool in DISCOVERY_TOOLS},
-                   "skill": skills[-1] if skills else None}
+                   "skill": (f"{x.subagent_type.split(':')[0]} (plugin)" if x.started_by == "plugin" and ":" in x.subagent_type
+                             else skills[-1] if skills else None), "board_facts": board_facts,
+                   "board_in_use": bool(board_facts) or any(BOARD_GET_RE.search(str(c.input.get("command", ""))) or BOARD_ADD_RE.search(str(c.input.get("command", "")))
+                                                           for y in sess.agents for c in y.calls)}  # this session's agents only
             rows.append(audit_run(x, cwd, ctx))
     shared_discovery(rows)
     if a.skill:

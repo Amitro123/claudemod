@@ -163,7 +163,9 @@ def test_a_403_is_the_host_and_a_missing_budget_is_the_brief(tmp_path):
     r = audit(tmp_path)["ccc"]
     assert r["causes"]["host"] and "403" in r["causes"]["host"][0]
     assert not r["causes"]["execution"] and not r["causes"]["model"]
-    assert "brief has no budget" in r["causes"]["brief"] and "brief has no context" in r["causes"]["brief"]
+    assert any("no budget" in x for x in r["causes"]["brief"])
+    assert not any("context" in x for x in r["causes"]["brief"]), "a missing label is shape, not a problem"
+    assert r["brief_checks"]["context"] is False
 
 
 def test_the_skill_that_wrote_the_brief_is_recorded_and_rolled_up(tmp_path):
@@ -287,3 +289,63 @@ def test_shipped_skills_stay_short():
     for name in ("distill", "agent-audit"):
         words = len((ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8").split())
         assert words <= 1800, (name, words)
+
+
+def plugin_session(tmp: Path) -> Path:
+    """The shape of a factory review: two agents a plugin started, no Agent call in the main transcript."""
+    main = Writer()
+    main.user("Run a factory review.")
+    path = tmp / "proj" / "s.jsonl"
+    main.save(path)
+    sub = path.with_suffix("") / "subagents"
+    brief = ("Review the change for: a shared fact board (board.py) that agents write and read; write a JSON line per fact.\n"
+             "The diff is in .factory/x.record/diff.patch. Answer VERDICT: PASS or CHANGES.")
+    for aid, kind in (("r1", "factory:code-reviewer"), ("r2", "factory:security-reviewer")):
+        w = Writer()
+        w.user(brief, side=True, aid=aid)
+        for off in (1, 400, 800):
+            w.call(f"{aid}r{off}", "Read", {"file_path": "/w/.factory/x.record/diff.patch", "offset": off, "limit": 400}, "...", side=True, aid=aid)
+        w.call(f"{aid}g", "Grep", {"pattern": "def add", "path": "/w/plugins"}, "board.py:1", side=True, aid=aid)
+        w.call(f"{aid}t", "Bash", {"command": "claude plugin test plugins/retro"}, "Exit code 1\nno hooks module", ok=False, side=True, aid=aid)
+        w.call(f"{aid}p", "Bash", {"command": "python -m pytest -q plugins/retro"}, "48 passed", side=True, aid=aid)
+        w.call(f"{aid}z", "Bash", {"command": "claude plugin test plugins/inspector"}, "Exit code 1", ok=False, side=True, aid=aid)
+        w.text("VERDICT: PASS. claude plugin test fails for want of a hooks module, unrelated.", side=True, aid=aid)
+        w.save(sub / f"agent-{aid}.jsonl")
+        (sub / f"agent-{aid}.meta.json").write_text(json.dumps({"agentType": kind, "model": "opus", "finished": True,
+                                                                 "pluginSteered": True, "description": f"factory · {kind}"}))
+    return path
+
+
+def test_agents_a_plugin_started_are_found_and_attributed_to_it(tmp_path):
+    sess = T.load(plugin_session(tmp_path))
+    assert [(a.agent_id, a.started_by, a.model) for a in sess.agents] == [("r1", "plugin", "opus"), ("r2", "plugin", "opus")]
+    assert sess.agents[0].prompt.startswith("Review the change") and sess.agents[0].report.startswith("VERDICT: PASS")
+    out = tmp_path / "a.json"
+    A.main([str(plugin_session(tmp_path / "2")), "--cwd", str(tmp_path), "--json", "--out", str(out)])
+    d = json.loads(out.read_text())
+    assert d["by_skill"][0]["group"] == "factory (plugin)" and d["by_skill"][0]["agents"] == 2
+
+
+def test_the_false_positives_from_the_factory_run_stay_quiet(tmp_path):
+    path = plugin_session(tmp_path)
+    sess = T.load(path)
+    rows = [A.audit_run(x, tmp_path, {"board_in_use": True, "skill": "factory (plugin)"}) for x in sess.agents]
+    A.shared_discovery(rows)
+    for r in rows:
+        text = " ".join(x for v in r["causes"].values() for x in v)
+        assert "never read" not in text, "the word board in a feature description is not a Board line"
+        assert not r["loops"], "reading one file in three ranges is not a loop"
+        assert "diff.patch" not in text and "/w/plugins" not in text, "reading the same diff or searching is not rediscovering"
+        assert "python -m pytest -q plugins/retro" in text, "the same shell command in two agents still counts: duplicated work"
+        assert r["deliverables"] == [], "a path in the description of the change is not a deliverable"
+        assert "not recovered" not in text, "a failed check that the agent went past is not a loop of failures"
+        assert any("no budget" in x for x in r["causes"]["brief"])
+
+
+def test_a_last_failure_the_report_does_not_mention_is_unrecovered(tmp_path):
+    a = T.AgentRun(call_id="c", agent_id="x", description="", subagent_type="t", model="sonnet", prompt="Budget: 5 tool calls",
+                   report="done", calls=[T.Call("1", "Bash", {"command": "npm run build"}, result="Exit code 2", ok=False)])
+    r = A.audit_run(a, tmp_path, {})
+    assert any("not recovered" in x for x in r["causes"]["execution"])
+    a.report = "done; npm run build fails on a missing env file"
+    assert not any("not recovered" in x for x in A.audit_run(a, tmp_path, {})["causes"]["execution"])

@@ -40,6 +40,7 @@ def make_repo(tmp: Path) -> Path:
     sh(repo, "git", "checkout", "-qb", "feat/local-only", env=env)
     (repo / "tests" / "fixtures").mkdir(parents=True)
     (repo / "tests" / "fixtures" / "log.txt").write_text("##[error]boom\n")
+    (repo / "tests" / "test_urls.py").write_text('URL = "https://dev.azure.com/FixtureOrg/P/_apis/x"\n')
     (repo / "app.py").write_text(f'TOKEN = "{TOKEN}"\nMARK = "##[error]"\n# tenant id {TENANT}\nowner = "ops@contoso-corp.com"\nex = "a@example.com"\n')
     sh(repo, "git", "add", ".", env=env)
     sh(repo, "git", "commit", "-qm", "add app", env=env)
@@ -58,7 +59,8 @@ def test_context_names_local_only_branches_and_strips_nothing_secret(tmp_path):
     assert br["main"]["on_remote"] is True
     assert d["remote_heads"]["names"] == ["main"] and "ls-remote" in d["remote_heads"]["source"]
     assert [f["path"] for f in d["ignored_folders"]] == [".local/"]
-    assert d["azure_devops"][0]["org"] == "ContosoOrg" and d["azure_devops"][0]["projects"] == ["Proj"]
+    assert [o["org"] for o in d["azure_devops"]] == ["ContosoOrg"], "a URL in a test file is not the project's org"
+    assert d["azure_devops"][0]["projects"] == ["Proj"]
     assert len(d["base_commits"]) == 1 and d["base_commits"][0]["subject"] == "init"
 
 
