@@ -173,3 +173,80 @@ def test_call_brief_cut_at_160_chars_still_hides_a_cut_credential():
     assert len(brief) <= 160
     for cut in (brief, brief[:-3]):
         assert "PwZ" not in T.mask(cut)
+
+
+# ---- review fixes (PR #193): escaped quotes, backslash in argv text, separators, quadratic time ----
+# Broken invariant: "a curl credential is hidden whatever quotes surround it". The quoted branch of CURL_USER_RE
+# expected a bare quote, but Call.brief() falls back to json.dumps(input), where the same quote is `\"`.
+ESCAPED = [
+    ("dq-u", 'curl -u "alice:' + PW + '" https://x'),
+    ("dq-user-long", 'curl --user "svc:' + PW + '" https://x'),
+    ("dq-empty-user", 'curl -u ":' + PW + '" https://x'),
+    ("dq-user-equals", 'curl --user="svc:' + PW + '" https://x'),
+    ("sq-u", "curl -u 'alice:" + PW + "' https://x"),
+]
+
+
+@pytest.mark.parametrize("cmd", [c for _, c in ESCAPED], ids=[i for i, _ in ESCAPED])
+def test_escaped_quote_credential_is_hidden_everywhere(cmd):
+    d = {"cmd": cmd}
+    brief = T.Call(id="1", tool="Bash", input=d).brief()   # no "command" key: brief() is json.dumps(input)
+    assert "\\\"" in brief or "'" in cmd                   # the form under test really has escaped quotes
+    assert PW not in T.mask(brief)
+    assert PW not in T.mask(json.dumps(d))
+    assert PW not in json.dumps(T.mask_data(d))
+    assert "https://x" in T.mask(brief)                    # the rest of the command stays
+    assert json.loads(T.mask(json.dumps(d)))["cmd"].endswith("https://x")   # masked JSON text still parses
+
+
+ARGV_TEXT = [
+    ("backslash-password", json.dumps(["curl", "-u", "alice:p\\w" + PW]), "w" + PW),          # JSON text `p\w...`
+    ("backslash-ends-password", json.dumps(["curl", "-u", "alice:" + PW + "\\"]), PW),         # `...\\"` closes the string
+    ("backslash-in-user", json.dumps(["curl", "--user", "DOM\\alice:" + PW]), PW),
+    ("nested-escaped-quotes", json.dumps(json.dumps(["curl", "-u", "alice:" + PW])), PW),     # `[\"curl\", \"-u\", ...]`
+]
+
+
+@pytest.mark.parametrize("text,gone", [(t, g) for _, t, g in ARGV_TEXT], ids=[i for i, *_ in ARGV_TEXT])
+def test_argument_list_text_hides_credential_with_backslash(text, gone):
+    assert gone not in T.mask(text)
+
+
+def test_argv_text_scales_linearly_in_colons():
+    import time
+    times = {}
+    for n in (2000, 4000, 8000):
+        text = '"-u", "' + ":" * n + "\n"
+        t0 = time.perf_counter()
+        T.mask(text)
+        times[n] = time.perf_counter() - t0
+    assert times[8000] < 0.25, times       # was 0.77 s: quadratic in the number of colons
+
+
+SEPARATORS = [
+    # (id, text, must stay, must be gone)
+    ("semicolon", "curl -u alice:" + PW + ";echo ok", ";echo ok", PW),                # a shell separator ends the value
+    ("pipe", "curl -u alice:" + PW + "|grep x", "|grep x", PW),
+    ("ampersand", "curl -u alice:" + PW + "&&echo ok", "&&echo ok", PW),
+    ("close-paren", "(curl -u alice:" + PW + ")", ")", PW),
+    # DELIBERATE: a comma is a legal password character and the usual separator of prose and JSON; the value runs
+    # through it. `,more` is lost, which is the safe side (the credential is whole-hidden, never half-hidden).
+    ("comma-consumed", "curl -u alice:" + PW + ",more", None, PW),
+    ("comma-no-leak", "curl -u alice:ab,c" + PW, None, PW),
+]
+
+
+@pytest.mark.parametrize("text,keep,gone", [(t, k, g) for _, t, k, g in SEPARATORS], ids=[i for i, *_ in SEPARATORS])
+def test_unquoted_credential_stops_at_shell_separators(text, keep, gone):
+    out = T.mask(text)
+    assert gone not in out
+    if keep is not None:
+        assert keep in out
+
+
+def test_argv_list_pairing_over_masks_a_colon_string_on_purpose():
+    # DELIBERATE (safe side): mask_data cannot tell a credential from any other colon string after a -u element.
+    # Over-masking keeps the JSON valid; a tighter rule would leak `["curl", "-u", ":" + PW]`-style forms.
+    out = T.mask_data(["note", "-u", "Time: 10:30", "after"])
+    assert out == ["note", "-u", "[token]", "after"]
+    assert T.mask_data(["curl", "-u", "alice:" + PW]) == ["curl", "-u", "[token]"]

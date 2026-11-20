@@ -464,12 +464,17 @@ BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
 # curl credential cut off before its closing quote (digest text is cut) runs to the end of its line. An unquoted
 # credential stops at a quote that closes a string (a quote followed by whitespace, a comma, a bracket, a colon or
 # the end), but runs through a quote inside it (`pa"ss`). The argument-list form ["curl", "-u", "alice:pw"] is
-# paired by ARGV_USER_RE in text and by mask_data in decoded JSON.
+# paired by ARGV_USER_RE in text and by mask_data in decoded JSON. A quote may carry a backslash (`\"`, the form
+# json.dumps gives, which Call.brief() falls back to). An unquoted credential also stops at a shell separator
+# (`;` `|` `&` `)`), so `curl -u a:pw;echo ok` keeps `echo ok`; a comma is NOT a stop: it is a legal password
+# character, and `,more` lost after a credential is the safe side.
 AUTH_HEADER_RE = re.compile(r"""(?i)\b(authorization\\?["']?[ \t]*:[ \t]*\\?["']?)(?:[A-Za-z][\w.-]*[ \t]+)?[^\s"'\\]+""")
 CURL_USER_RE = re.compile(r"""(?<![^\s"'])(-u[ \t]*|--user(?:[ \t]+|=))"""
-                          r"""(?:"[^"\n]*:[^"\n]*(?:"|(?=\n)|\Z)|'[^'\n]*:[^'\n]*(?:'|(?=\n)|\Z)"""
-                          r"""|[^\s:"']*:(?:[^\s"']|["'](?=[^\s"',;:)\]}]))*)""")
-ARGV_USER_RE = re.compile(r"""(\\?["'](?:-u|--user)\\?["']\s*,\s*\\?["'])[^"'\\\n]*:[^"'\\\n]*(?=\\?["'])""")
+                          r"""(?:\\?"[^"\n]*:[^"\n]*(?:"|(?=\n)|\Z)|\\?'[^'\n]*:[^'\n]*(?:'|(?=\n)|\Z)"""
+                          r"""|[^\s:"';|&)]*:(?:[^\s"';|&)]|["'](?=[^\s"',;:)\]}]))*)""")
+# The argument-list text form: a backslash inside a string is part of it unless it escapes the closing quote. The
+# user side excludes ':' so the first colon is the only candidate (no quadratic backtracking on colon-heavy lines).
+ARGV_USER_RE = re.compile(r"""(\\?["'](?:-u|--user)\\?["']\s*,\s*\\?["'])(?:[^"'\\\n:]|\\\\|\\(?!["']))*:(?:[^"'\\\n]|\\\\|\\(?!["']))*(?=\\?["'])""")
 SESSION_URL_RE = re.compile(r"https://claude\.ai/code/session_[A-Za-z0-9]+")
 # The board's refusals, shared: a whole private-key block (to its END line, or to the end of the text), and the
 # 52-character lowercase base32 shape of an Azure DevOps PAT.
