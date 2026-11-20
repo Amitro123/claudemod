@@ -534,8 +534,10 @@ describe('the checks come before any reviewer', () => {
   test('a check that fails on the base too is not sent to the builder: the reviewers are told', async ($, on) => {
     const w = engine(on, { fails: 1, baseFails: ['npm test'] })
     await toReviews($)
-    expect(w.ran).toContain('git worktree add --detach /repo/.factory/.base-rate-limiter abc123')
-    expect(w.ran.filter(c => c === 'git worktree remove --force /repo/.factory/.base-rate-limiter').length).toBeGreaterThan(0)
+    const added = w.ran.find(c => c.startsWith('git worktree add --detach /repo/.factory/.base-rate-limiter-'))!
+    expect(added).toMatch(/^git worktree add --detach \/repo\/\.factory\/\.base-rate-limiter-[0-9a-z]+ abc123$/)
+    const dir = added.split(' ')[4]
+    expect(w.ran).toContain(`git worktree remove --force ${dir}`)
     expect(w.spawned.filter(s => s.subagentType === 'factory:builder')).toHaveLength(1)
     expect(w.spawned.slice(2).map(s => s.subagentType)).toEqual(['factory:security-reviewer', 'factory:code-reviewer'])
     expect(last(w).prompt).toMatch(/npm test FAILED, with the same failure output on the base commit/)
@@ -543,7 +545,23 @@ describe('the checks come before any reviewer', () => {
     expect(Object.entries(w.written).find(([k, v]) => k.includes('.record/') && k.endsWith('-checks.md') && v.includes('Failing the same way on the base'))?.[1]).toMatch(/Failing the same way on the base \(abc123\), so not caused by this change: npm test/)
   })
 
-  test('a check that fails on the base with another failure is still still this change: the builder goes', async ($, on) => {
+  test('a base worktree an interrupted check left is removed when a session starts, and the doctor lists it', async ($, on) => {
+    const left = '/repo/.factory/.base-rate-limiter-abc'
+    const w = engine(on, { outputs: { 'git worktree list --porcelain': { exitCode: 0, stdout: `worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\nworktree ${left}\nHEAD abc123\ndetached\n`, stderr: '' } } })
+    expect(await command($, 'doctor')).toMatch(/1 worktree an interrupted base check left: \/repo\/\.factory\/\.base-rate-limiter-abc/)
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await settled()
+    expect(w.ran).toContain(`git worktree remove --force ${left}`)
+    expect(w.ran).toContain('git worktree prune')
+  })
+
+  test("every reviewer is told to check a parser of another program's output under the settings that change it", async ($, on) => {
+    const w = engine(on)
+    await toReviews($)
+    for (const s of w.spawned.filter(x => x.subagentType.endsWith('reviewer'))) expect(s.prompt).toMatch(/reads another program's output[^\n]*diff\.noprefix[^\n]*A parser that only works on the default output is a finding\./)
+  })
+
+  test('a check that fails on the base with another failure is still this change: the builder goes', async ($, on) => {
     const w = engine(on, { fails: 1, baseFails: ['npm test'], baseOutput: 'FAIL src/old.test.ts\n  expected 1' })
     await toReviews($)
     expect(last(w)).toMatchObject({ subagentType: 'factory:builder' })

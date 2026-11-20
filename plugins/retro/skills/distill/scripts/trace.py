@@ -161,9 +161,10 @@ def main(argv=None) -> int:
             return 2
         path = str(found[0])
     d = digest(T.load(path, a.format), a.steps)
-    text = json.dumps(d, ensure_ascii=False, indent=2) if a.json else render(d)
-    if not a.no_mask:
-        text = T.mask(text)
+    if a.json:  # masked value by value, so the JSON stays JSON
+        text = json.dumps(d if a.no_mask else T.mask_data(d), ensure_ascii=False, indent=2)
+    else:
+        text = render(d) if a.no_mask else T.mask(render(d))
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
         Path(a.out).write_text(text, encoding="utf-8")

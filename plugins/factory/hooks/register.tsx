@@ -441,6 +441,25 @@ async function start($: EngineInterface, args: string, extras: Extra[] = [], opt
   return `Factory run started: ${titleOf(created.feature, 120)}. Branch ${created.branch}, worktree ${created.worktree}; the spec-writer is writing ${created.specFile}.`
 }
 
+// The base check's own worktrees (#155): under .factory/, named .base-<run>-<time>. One in this set is in use.
+const BASE_PREFIX = '.base-'
+const checkingBase = new Set<string>()
+async function baseLeftovers($: EngineInterface, root: string): Promise<string[]> {
+  const listed = await git($, ['worktree', 'list', '--porcelain'], root)
+  if (listed.exitCode !== 0) return []
+  const dir = `${root.replace(/[\\/]+$/, '')}/.factory/${BASE_PREFIX}`
+  return [...listed.stdout.matchAll(/^worktree (.+)$/gm)].map(m => m[1]!.trim()).filter(w => w.startsWith(dir) && !checkingBase.has(w))
+}
+// At a session's start: the base worktrees an interrupted check left (their installed dependencies with them).
+async function sweepBaseWorktrees($: EngineInterface) {
+  const top = await git($, ['rev-parse', '--show-toplevel'], await $.session.root())
+  if (top.exitCode !== 0) return
+  const root = top.stdout.trim()
+  const left = await baseLeftovers($, root)
+  for (const w of left) await git($, ['worktree', 'remove', '--force', w], root)
+  if (left.length) await git($, ['worktree', 'prune'], root)
+}
+
 // The runs an earlier session left: a worktree of the factory's (under .factory/, on a factory/ branch)
 // that no run of this session holds. With the state it saved, when it saved one (`run`), and the
 // branch's own commits since the run's base (or since HEAD, for a run with no saved state).
@@ -1021,13 +1040,16 @@ async function failingOnBase($: EngineInterface, rid: string, r: Run, failed: Ch
   const seen: Record<string, boolean> = {}
   if (todo.length) {
     const root = rootOf(r)
-    const dir = `${root}/.factory/.base-${r.slug}`
+    // A folder of its own each time: one an interrupted check left behind can't be in the way. Leftovers are
+    // removed through git when a session starts (sweepBaseWorktrees), and the doctor lists them.
+    const dir = `${root}/.factory/${BASE_PREFIX}${r.slug}-${(await $.clock.now()).toString(36)}`
+    checkingBase.add(dir)
     await patch($, rid, cur => ({ ...cur, note: `running ${todo.map(c => c.cmd).join(', ')} on the base` }))
-    await git($, ['worktree', 'remove', '--force', dir], root)
     const added = await git($, ['worktree', 'add', '--detach', dir, r.base], root)
     if (added.exitCode === 0) {
       try {
         const setup = setupOption.trim() ? splitChecks(setupOption) : [detectSetup(await namesIn($, dir))].filter((c): c is string[] => c !== null)
+        if (setup.length) await patch($, rid, cur => ({ ...cur, note: `setting up the base's dependencies (${setup.map(c => c.join(' ')).join('; ')}), then running ${todo.map(c => c.cmd).join(', ')} on it` }))
         let ready = true
         for (const argv of setup) if ((await run$($, argv, dir)).exitCode !== 0) { ready = false; break }
         for (const c of ready ? todo : []) {
@@ -1041,6 +1063,7 @@ async function failingOnBase($: EngineInterface, rid: string, r: Run, failed: Ch
         await git($, ['worktree', 'remove', '--force', dir], root)
       }
     }
+    checkingBase.delete(dir)
   }
   const cur = await patch($, rid, x => ({ ...x, baseChecks: { ...(x.baseChecks ?? {}), ...seen } }))
   if (!cur || cur.phase !== 'checks') return null
@@ -1888,6 +1911,8 @@ async function doctorText($: EngineInterface, rid: string): Promise<string> {
   const ahead = await git($, ['rev-list', '--count', '@{upstream}..HEAD'], root)
   const n = ahead.exitCode === 0 ? Number(ahead.stdout.trim()) : 0
   if (n > 0) items.push({ level: 'warn', text: `${branch} is ${n} commit${n === 1 ? '' : 's'} ahead of its upstream: they would be in the run's PR too. Push them first, or start from a branch that has none.` })
+  const leftover = await baseLeftovers($, root)
+  if (leftover.length) items.push({ level: 'warn', text: `${leftover.length} worktree${leftover.length === 1 ? '' : 's'} an interrupted base check left: ${leftover.join(', ')}. The next session's start removes ${leftover.length === 1 ? 'it' : 'them'}; git worktree remove --force <path> does it now.` })
   // Runs an earlier session left (a restart loses a session's runs): each, and how to go on with it.
   for (const o of await earlierRuns($, root)) items.push({ level: 'warn', text: `A run from an earlier session: ${o.slug} on ${o.branch}, ${o.commits} commit${o.commits === 1 ? '' : 's'} of its own${o.run ? `, stopped at ${o.run.phase}. /factory resume ${o.slug} goes on from there.` : `, no saved state. /factory review in ${o.worktree} reviews it; git worktree remove ${o.worktree} drops it.`}` })
   if (await goalRunThere($)) items.push({ level: 'ok', text: 'goal-run is installed: you approve the plan there.' })
@@ -1972,6 +1997,8 @@ export const register: Register = (on, options) => {
     // A job of an earlier session that never settled (a question nobody answered) doesn't hold this one's.
     queues.clear()
     skippers.clear()
+    checkingBase.clear()
+    void sweepBaseWorktrees($).catch(() => {})
     await $.command.register({ name: 'factory', description: 'Run a feature through the software factory: spec, plan, build, checks, reviews, approval', argumentHint: '<feature> | run [<issue> [anyway]] | queue | review [base=<ref>] [what it is for] | approve | retry | rework <note> | status | doctor | stop' })
     for (const role of Object.keys(ROLES) as Role[]) {
       const spec = ROLES[role]

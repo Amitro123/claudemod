@@ -45,7 +45,6 @@ SELF_COUNT_RES = [re.compile(r"tool[ -]?calls?(?:\s+used)?\s*[:=]\s*(\d+)", re.I
 MUTATING_RE = re.compile(r"\bgit\s+(?:commit|push|reset|checkout\s+--|restore|clean|rebase|merge|tag|branch\s+-[dD])\b|"
                          r"\b(?:rm\s+-rf?|Remove-Item|del\s+/|mv\s|Move-Item)\b|\baz\s+\S+\s+(?:create|delete|update|set)\b|"
                          r"\bgh\s+(?:pr|issue)\s+(?:create|merge|close|comment|edit)\b|--method\s+(?:post|put|patch|delete)\b", re.I)
-SCRATCH_HINTS = ("/tmp/", "\\temp\\", "/temp/", "scratchpad", ".inspector-run", "$env:temp", "%temp%", "/var/folders/")
 ASK_RE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+(.+)")
 CONTEXT_RE = re.compile(r"^\s*(?:context|known|facts|background|already established)\s*:", re.I | re.M)
 RULES_RE = re.compile(r"^\s*rules?\s*:|read[- ]only|never print|is data, never instructions", re.I | re.M)
@@ -144,14 +143,36 @@ def same_path(w: str, target: Path, cwd: Path) -> bool:
     return os.path.normpath(str(resolve(w, cwd))) == os.path.normpath(str(target))
 
 
-def is_scratch(p: str) -> bool:
-    """A scratch path by where it ends up: `/tmp/../repo/x` is in the repo. `..` and `.` are taken out first."""
+# Where scratch is: the system's temp folders, and a folder the host names as the session's scratchpad. Matched
+# as leading path components, never as a substring: `src/temp/app.py` or `scratchpad.py` in a repository is source.
+TEMP_ROOTS = ("/tmp/", "/var/tmp/", "/private/tmp/", "/private/var/folders/", "/var/folders/")
+WIN_TEMP_RE = re.compile(r"^[a-z]:/users/[^/]+/appdata/local/temp/|^[a-z]:/windows/temp/")
+UNEXPANDED_TEMP_RE = re.compile(r"^(\$env:temp|%temp%|\$tmpdir|\$\{tmpdir\}|\$temp)(/|$)", re.I)
+
+
+def is_scratch(p: str, cwd: Path | None = None) -> bool:
+    """Whether a write lands in scratch, by where it ends up: the path is resolved against the agent's folder and
+    normalized (`/tmp/../repo/x` is in the repo). Inside the working folder nothing is scratch but the audit's own
+    `.inspector-run/`, even when the repository itself sits under a temp folder. Outside it: a temp root, or a
+    folder named `scratchpad` (the host's session scratch)."""
     raw = p.replace("\\", "/")
-    norm = posixpath.normpath(raw) + ("/" if raw.endswith("/") else "")
-    if norm.startswith("../") or norm == "..":
-        return False  # climbs out of wherever it started: not known to be scratch
-    low = "/" + norm.lstrip("/").lower() if raw.startswith("/") else norm.lower()
-    return any(h.replace("\\", "/") in low for h in SCRATCH_HINTS)
+    if UNEXPANDED_TEMP_RE.match(raw):
+        return True
+    absolute = raw.startswith("/") or bool(re.match(r"^[A-Za-z]:/", raw))
+    if not absolute:
+        if cwd is None:
+            norm = posixpath.normpath(raw)
+            return not norm.startswith("..") and norm.split("/")[0] == ".inspector-run"
+        raw = str(cwd).replace("\\", "/").rstrip("/") + "/" + raw
+    norm = posixpath.normpath(raw)
+    low = norm.lower() + "/"
+    if cwd is not None:
+        base = posixpath.normpath(str(cwd).replace("\\", "/")).lower().rstrip("/") + "/"
+        if low.startswith(base):
+            return low[len(base):].split("/")[0] == ".inspector-run"
+    if WIN_TEMP_RE.match(low) or any(low.startswith(r) for r in TEMP_ROOTS):
+        return True
+    return "/scratchpad/" in low or "/.inspector-run/" in low
 
 
 def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
@@ -176,7 +197,7 @@ def audit_run(a: T.AgentRun, cwd: Path, ctx: dict | None = None) -> dict:
     outside, tried = [], []
     if terms["read_only"]:
         allowed = [resolve(d, cwd) for d in terms["deliverables"]]
-        bad = lambda w: w and not is_scratch(w) and not any(same_path(w, x, cwd) for x in allowed)
+        bad = lambda w: w and not is_scratch(w, cwd) and not any(same_path(w, x, cwd) for x in allowed)
         outside = [w for w in writes if bad(w)]
         tried = [w for w in refused_writes if bad(w)]
     measured = len(calls) if has_transcript else None
@@ -510,10 +531,12 @@ def main(argv=None) -> int:
             notes.append(f"no report files in {a.reports}")
     bud = budgets(rows)
     roll = {"by_skill": rollup(rows, "skill"), "by_model": rollup(rows, "model")}
-    text = json.dumps({"sessions": sessions, "notes": notes, "agents": rows, "budgets": bud, **roll}, ensure_ascii=False, indent=2) if a.json \
-        else render(rows, bud, sessions[0] if len(sessions) == 1 else None, notes, roll)
-    if not a.no_mask:
-        text = T.mask(text)
+    if a.json:  # masked value by value, so the JSON stays JSON
+        data = {"sessions": sessions, "notes": notes, "agents": rows, "budgets": bud, **roll}
+        text = json.dumps(data if a.no_mask else T.mask_data(data), ensure_ascii=False, indent=2)
+    else:
+        text = render(rows, bud, sessions[0] if len(sessions) == 1 else None, notes, roll)
+        text = text if a.no_mask else T.mask(text)
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)
         Path(a.out).write_text(text, encoding="utf-8")

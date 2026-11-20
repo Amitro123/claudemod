@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed: `/retro:agent-audit` treated any path containing `scratchpad`, `/tmp/` or `/temp/` as scratch, so a read-only agent's write to `src/scratchpad.py` or `src/temp/app.py` raised no violation. A write is now resolved against the agent's folder. Inside that folder only `.inspector-run/` is scratch, even when the repository itself is under a temp folder. Outside it, a system temp root (`/tmp`, `/var/folders`, Windows `AppData\Local\Temp`, an unexpanded `$env:TEMP`) or a `scratchpad` folder counts. Path components are compared, not substrings.
+- Fixed: `--json` output of `trace.py` and `agents.py` was masked as text after it was serialized. A string ending in a backslash, next to a cut-off private key, then produced invalid JSON (exit 0). JSON is now masked value by value before it is serialized. Text output is masked as before.
 - Fixed: masking a private key cut off before its END line took the rest of the line with it, which broke a JSON transcript line. It now stops at the end of the string the key is in.
 - Fixed: `/retro:agent-audit` counted a write to `/tmp/../<repo>/file` as a scratch write, because it matched `/tmp/` in the text. The path is normalized first.
 - Fixed: `lint_skill.py --recommendations` passed an empty `evidence:` or a `->` with no target. And distill no longer asks to lint a skill folder when no lesson went to *skill*.
