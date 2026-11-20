@@ -79,7 +79,7 @@ def test_a_stub_lead_stays_partial_through_verification_and_handoff(tmp_path, ca
     (tmp_path / "v.json").write_text(json.dumps([{"where": "b.py:9", "verdict": "REAL", "evidence": "read b.py:9"}]))
     for argv in (["merge_verdicts.py", "--leads", "leads.json", "--verdicts", "v.json", "--out", "merged.json"],
                  ["handoff.py", "--cards", "merged.json", "--out", "open-bugs.md"]):
-        p = subprocess.run([sys.executable, str(scripts / argv[0]), *argv[1:]], cwd=tmp_path, capture_output=True, text=True)
+        p = subprocess.run([sys.executable, str(scripts / argv[0]), *argv[1:]], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
         assert p.returncode == 0, p.stderr
     merged = json.loads((tmp_path / "merged.json").read_text(encoding="utf-8"))[0]
     assert merged["verdict"] == "REAL" and merged["level"] == "suspect" and merged["original_level"] == "read"
@@ -106,7 +106,7 @@ def test_agent_files_with_a_utf8_bom_merge_verify_and_hand_off(tmp_path, capsys)
     scripts = Path(merge_cards.__file__).parent
     for argv in (["merge_verdicts.py", "--leads", "leads.json", "--verdicts", "v.json", "--out", "merged.json"],
                  ["handoff.py", "--cards", "merged.json", "--out", "open-bugs.md"]):
-        p = subprocess.run([sys.executable, str(scripts / argv[0]), *argv[1:]], cwd=tmp_path, capture_output=True, text=True)
+        p = subprocess.run([sys.executable, str(scripts / argv[0]), *argv[1:]], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
         assert p.returncode == 0, p.stderr
     assert sorted(x["verdict"] for x in json.loads((tmp_path / "merged.json").read_text(encoding="utf-8"))) == ["REAL", "REAL-LOW"]
 
@@ -119,7 +119,7 @@ def test_kept_leads_sharing_a_where_get_lead_suffixes_that_merge_verdicts_accept
     assert leads[0]["possible_duplicate_of"] == ["a.py:5 [lead 2]"] and leads[1]["possible_duplicate_of"] == ["a.py:5 [lead 1]"]
     (tmp_path / "v.json").write_text(json.dumps([{"where": x["where"], "verdict": "REAL"} for x in leads]))
     p = subprocess.run([sys.executable, str(Path(merge_cards.__file__).parent / "merge_verdicts.py"), "--leads", "leads.json",
-                        "--verdicts", "v.json", "--out", "merged.json"], cwd=tmp_path, capture_output=True, text=True)
+                        "--verdicts", "v.json", "--out", "merged.json"], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
     assert p.returncode == 0, p.stderr
     assert [x["verdict"] for x in json.loads((tmp_path / "merged.json").read_text())] == ["REAL"] * 3
 

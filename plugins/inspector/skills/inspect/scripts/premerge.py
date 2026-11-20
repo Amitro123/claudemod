@@ -63,7 +63,7 @@ PREAMBLE = ("Below is the diff of one change to a git repository, with its title
 def git_diff(repo: str, base: str, head: str) -> str:
     """The change a branch makes: from where it left base to head (base...head), stat and patch."""
     r = subprocess.run(["git", "-C", repo, "diff", "--no-color", "--stat=200", "--patch", f"{base}...{head}",
-                        "--", ".", *EXCLUDE], capture_output=True, text=True, errors="replace")
+                        "--", ".", *EXCLUDE], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise RuntimeError(f"git diff {base}...{head}: {r.stderr.strip()[:200]}")
     return r.stdout

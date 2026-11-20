@@ -17,7 +17,7 @@ pytestmark = pytest.mark.slow
 
 def g(cwd, *a):
     return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a],
-                          cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+                          cwd=cwd, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
 
 @pytest.fixture

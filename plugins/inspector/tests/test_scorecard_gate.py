@@ -33,7 +33,7 @@ def run_gate(tmp_path, row=None, history=None, thresholds=None, extra_args=None)
         args += ["--thresholds", str(t)]
     if extra_args:
         args += extra_args
-    proc = subprocess.run(args, capture_output=True, text=True)
+    proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8")
     return proc.returncode, proc.stdout, proc.stderr
 
 

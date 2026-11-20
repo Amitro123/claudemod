@@ -18,7 +18,7 @@ _clock = [1_700_000_000]
 def run(repo: Path, *args: str) -> str:
     _clock[0] += 3600
     env = {**os.environ, **ENV, "GIT_AUTHOR_DATE": f"{_clock[0]} +0000", "GIT_COMMITTER_DATE": f"{_clock[0]} +0000"}
-    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, env=env).stdout
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, encoding="utf-8", env=env).stdout
 
 
 def commit(repo: Path, files: dict[str, str | None], msg: str) -> None:

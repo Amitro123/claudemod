@@ -152,7 +152,7 @@ def test_empty_leads_need_no_verdict_file_and_write_an_empty_array(tmp_path) -> 
     script = Path(__file__).parent.parent / "skills" / "inspect" / "scripts" / "merge_verdicts.py"
     (tmp_path / "leads.json").write_text("[]", encoding="utf-8")
     p = subprocess.run([sys.executable, str(script), "--leads", str(tmp_path / "leads.json"), "--out", str(tmp_path / "merged.json")],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8")
     assert p.returncode == 0, p.stderr
     assert json.loads((tmp_path / "merged.json").read_text(encoding="utf-8")) == []
 
@@ -163,7 +163,7 @@ def test_leads_without_any_verdict_file_are_still_refused(tmp_path) -> None:
     script = Path(__file__).parent.parent / "skills" / "inspect" / "scripts" / "merge_verdicts.py"
     (tmp_path / "leads.json").write_text(json.dumps([{"where": "a.py:1", "what": "x y z w", "level": "read"}]), encoding="utf-8")
     p = subprocess.run([sys.executable, str(script), "--leads", str(tmp_path / "leads.json"), "--out", str(tmp_path / "merged.json")],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8")
     assert p.returncode == 2 and not (tmp_path / "merged.json").exists()
 
 

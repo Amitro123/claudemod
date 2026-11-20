@@ -116,7 +116,7 @@ def test_the_saved_probe_runs_in_a_disposable_copy_and_shows_what_its_card_expec
     probe = json.loads((box / "cards" / "1.json").read_text(encoding="utf-8"))["complete"]["siblings"][0]["probe_file"]
     argv = shlex.split(probe["command"])
     assert argv[0] == "python3" and (box / argv[1]).is_file()
-    p = subprocess.run([sys.executable, *argv[1:]], cwd=box, capture_output=True, text=True,
+    p = subprocess.run([sys.executable, *argv[1:]], cwd=box, capture_output=True, text=True, encoding="utf-8",
                        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
     assert p.returncode == 1 and "-> None, want 'large'" in p.stdout
     assert sorted(p.relative_to(FIXTURE).as_posix() for p in FIXTURE.rglob("*")) == before, "the fixture is never written"

@@ -67,8 +67,8 @@ def test_cards_on_stdin_and_evidence_collected_again(tmp_path: Path, capsys, mon
     g("init", "-q", "-b", "main"); g("config", "user.email", "t@e"); g("config", "user.name", "t")
     (r / "a.py").write_text("x = 1\ny = 2\nz = 3\n"); g("add", "-A"); g("commit", "-qm", "Add a")
     (r / "a.py").write_text("x = 1\ny = 20\nz = 3\n"); g("commit", "-qam", "fix: y was wrong")
-    head = subprocess.run(["git", "-C", str(r), "rev-parse", "--short=7", "HEAD"], capture_output=True, text=True).stdout.strip()
-    first = subprocess.run(["git", "-C", str(r), "rev-parse", "--short=8", "HEAD~1"], capture_output=True, text=True).stdout.strip()
+    head = subprocess.run(["git", "-C", str(r), "rev-parse", "--short=7", "HEAD"], capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    first = subprocess.run(["git", "-C", str(r), "rev-parse", "--short=8", "HEAD~1"], capture_output=True, text=True, encoding="utf-8").stdout.strip()
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(card(head, head, first)) + "\n" + json.dumps([card(head, head, "unknown")])))
     assert crosscheck.main(["--repo", str(r), "--cards", "-"]) == 0
     out = capsys.readouterr().out

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed (Windows): `premerge.py` read the branch diff, `snapshot.py` its git answers and the audit's merge-mode probe without naming an encoding, so on a default Windows (cp1252) a non-ASCII line or path came back garbled; the diff sent to the model was the garbled one. Every subprocess call that decodes text now says UTF-8, and `tests/test_text_encoding.py` fails on any call in the inspector or retro scripts or tests that doesn't. Found by the new `pytest-windows` CI job, once it ran without `PYTHONUTF8`.
+
 - Fixed: the audit's history scan skipped every file `.gitattributes` marks `-diff` or `binary`, because `git log -p` prints "Binary files differ" for them. A credential added to such a file in a branch was never found, with no warning. The scan now passes `--text`. A file that really is binary (a NUL byte in what a commit added) is still skipped, as the tree scan skips it. Images, archives and the other skipped extensions are left out by git itself (a case-insensitive pathspec), so `--text` doesn't print them. The matrix (`tests/test_scan_matrix.py`) gains a `-diff` file, a `binary` file and a real binary: on the scanner before this fix it fails under all 12 settings. Found by `/inspector:inspect` (`docs/inspector/2026-11-20-case.md`).
 
 ## 0.9.0 (2026-11-20)

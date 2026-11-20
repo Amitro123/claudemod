@@ -258,7 +258,7 @@ def test_cli_refusal_names_the_existing_key(tmp_path):
     f = tmp_path / "b.jsonl"
     B.add(f, "git.default_branch", "main", "main", "git symbolic-ref")
     p = subprocess.run([sys.executable, str(BOARD / "board.py"), "--board", str(f), "add", "repo.default_branch", "main",
-                        "--by", "x", "--evidence", "e"], capture_output=True, text=True)
+                        "--by", "x", "--evidence", "e"], capture_output=True, text=True, encoding="utf-8")
     assert p.returncode == 2 and "git.default_branch = main" in p.stderr
 
 
@@ -351,7 +351,7 @@ def test_seed_from_audit_context(tmp_path, capsys):
 
 def test_cli_uses_agent_board_env_and_exit_codes(tmp_path):
     env = {"AGENT_BOARD": str(tmp_path / "b.jsonl"), "PATH": "/usr/bin:/bin"}
-    run = lambda *a: subprocess.run([sys.executable, str(BOARD / "board.py"), *a], capture_output=True, text=True, env=env)
+    run = lambda *a: subprocess.run([sys.executable, str(BOARD / "board.py"), *a], capture_output=True, text=True, encoding="utf-8", env=env)
     assert run("add", "a.b", "1", "--by", "x", "--evidence", "e").returncode == 0
     bad = run("add", "a.c", TOKEN, "--by", "x", "--evidence", "e")
     assert bad.returncode == 2 and TOKEN not in bad.stdout + bad.stderr
@@ -541,7 +541,7 @@ def test_a_max_age_too_large_for_a_date_is_refused_not_a_traceback(tmp_path, big
     f = tmp_path / "b.jsonl"
     B.add(f, "a.b", "1", "w", "e")
     p = subprocess.run([sys.executable, str(BOARD / "board.py"), "--board", str(f), "get", "--by", "x", "--max-age", big],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8")
     assert p.returncode == 2 and p.stderr.startswith("refused:") and "Traceback" not in p.stderr
 
 

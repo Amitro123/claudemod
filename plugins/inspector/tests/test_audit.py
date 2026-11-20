@@ -20,7 +20,7 @@ TENANT = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
 
 
 def sh(cwd: Path, *args: str, env=None) -> str:
-    return subprocess.run(list(args), cwd=cwd, check=True, capture_output=True, text=True, env=env).stdout
+    return subprocess.run(list(args), cwd=cwd, check=True, capture_output=True, text=True, encoding="utf-8", env=env).stdout
 
 
 def make_repo(tmp: Path) -> Path:
