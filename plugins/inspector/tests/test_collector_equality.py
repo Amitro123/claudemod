@@ -74,6 +74,12 @@ def results(small_repo: Path, tmp_path_factory) -> dict:
             for name, args in RUNS.items()}
 
 
+def same_md(a: str, b: str) -> bool:
+    """The golden was written on Linux: its hints name `python3`, where Windows names `python` (python_cmd, by design)."""
+    norm = lambda t: re.sub(r"`python3? ", "`PYTHON ", t)  # noqa: E731
+    return norm(a) == norm(b)
+
+
 def test_results_equal_the_golden_snapshot(results: dict) -> None:
     if os.environ.get("UPDATE_GOLDEN") == "1":
         GOLDEN.parent.mkdir(exist_ok=True)
@@ -82,7 +88,7 @@ def test_results_equal_the_golden_snapshot(results: dict) -> None:
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     for name in RUNS:
         assert results[name]["json"] == golden[name]["json"], f"{name}: evidence.json differs"
-        assert results[name]["md"] == golden[name]["md"], f"{name}: evidence.md differs"
+        assert same_md(results[name]["md"], golden[name]["md"]), f"{name}: evidence.md differs"
         assert results[name]["cases"] == golden[name]["cases"], f"{name}: case dossiers differ"
 
 

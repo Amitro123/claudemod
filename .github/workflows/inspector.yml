@@ -19,3 +19,22 @@ jobs:
       - run: pip install pytest
       - run: python -m pytest plugins/inspector/tests -q
       - run: python -m pytest plugins/retro/tests -q
+
+  # The same suites on Windows (docs/open-items.md item 5): paths with a drive and backslashes, `python` rather
+  # than `python3`, file names Windows forbids. Slower than Linux: every test spawns git.
+  pytest-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: '1'   # open() and the console in UTF-8, as on Linux
+    steps:
+      - run: git config --global core.autocrlf false   # check files out as committed, LF, as the golden tests expect
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest
+      - run: python -m pytest plugins/inspector/tests -q
+      - run: python -m pytest plugins/retro/tests -q

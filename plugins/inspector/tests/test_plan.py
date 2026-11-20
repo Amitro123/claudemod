@@ -529,14 +529,15 @@ def test_status_without_a_plan_exits_two(tmp_path) -> None:
 
 
 def plan_commands(run: Path) -> list[list[str]]:
-    """The numbered `python3 "..."` commands of plan.md, as argument lists (python3 -> this interpreter)."""
+    """The numbered `python3 "..."` commands of plan.md (`python` on Windows), as argument lists, the interpreter
+    replaced by this one. Arguments are double-quoted paths or plain words: split by hand, so a Windows path's
+    backslashes stay as they are (shlex in POSIX mode would eat them)."""
     import re
-    import shlex
     out = []
     for line in (run / "plan" / "plan.md").read_text(encoding="utf-8").splitlines():
-        m = re.match(r"^\d+\. (python3 .*)$", line)
+        m = re.match(r"^\d+\. (?:python3?) (.*)$", line)
         if m:
-            out.append([sys.executable, *shlex.split(m.group(1), posix=True)[1:]])
+            out.append([sys.executable, *[a[1:-1] if a.startswith('"') else a for a in re.findall(r'"[^"]*"|\S+', m.group(1))]])
     return out
 
 
