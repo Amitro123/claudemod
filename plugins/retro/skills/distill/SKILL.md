@@ -66,12 +66,13 @@ the answer, the failures and what fixed each, the decisions the run argued over,
      and briefs in the shape of `../agent-audit/references/brief-contract.md`.
    Lessons routed elsewhere stay out of the skill. Long command recipes go to `references/`. A script the run wrote by hand and will need again goes to
    `scripts/`, only if the user agrees.
-6. **Lint.** `python <skill_root>/scripts/lint_skill.py <scratch>/distill/<name>`, and
-   `python <skill_root>/scripts/lint_skill.py --recommendations <scratch>/distill/recommendations.md`. Fix every
-   error; fix each warning or say why not.
-7. **Show the user** the recommendations, most severe first, then the draft's path, the step numbers it removes
-   from the next run and why, each gotcha and the budget. Then ask which recommendations to apply and where to
-   install the skill, and change or copy only on yes:
+6. **Lint.** Always `python <skill_root>/scripts/lint_skill.py --recommendations <scratch>/distill/recommendations.md`;
+   and, only when step 5 drafted a skill, `python <skill_root>/scripts/lint_skill.py <scratch>/distill/<name>`.
+   No lesson went to *skill*: there is no draft, and none is made to satisfy the lint. Fix every error; fix
+   each warning or say why not.
+7. **Show the user** the recommendations, most severe first, and ask which to apply. With a skill draft, also
+   its path, the step numbers it removes from the next run and why, each gotcha and the budget, and ask where
+   to install it. Change or copy only on yes:
    Claude Code `.claude/skills/<name>/` (project) or `~/.claude/skills/<name>/`, or a plugin's `skills/`;
    Cursor `.cursor/skills/<name>/` (project) or `~/.cursor/skills/<name>/`.
 
@@ -99,8 +100,8 @@ the diff, apply on yes, lint again. The log is how you know whether the skill is
 
 ## Output
 
-The recommendations (`references/recommendations.md`'s shape, most severe first), the skill draft folder if any
-lesson went to *skill*, the lint results, what the changes do to the next run (step numbers), and the question
-of which to apply and where. With `--update`: the diff instead of the folder.
+The recommendations (`references/recommendations.md`'s shape, most severe first) and which to apply. Only when a
+lesson went to *skill*: the draft folder, its lint result, what it changes about the next run (step numbers),
+and where to install it. A run with no *skill* lesson ends there, with no draft. With `--update`: the diff instead of the folder.
 
 Budget: about 20 tool calls.

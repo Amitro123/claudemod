@@ -98,6 +98,11 @@ BETTER_RE = re.compile(r"(?i)\b(fewer|less|faster|slower|improv\w*|reduc\w*|cut|
 COMPARED_RE = re.compile(r"(?i)\b(against|compared|vs\.?|versus|before|baseline|run-log|than)\b|->|→")
 
 
+def _payload(text: str) -> str:
+    """What a field holds once brackets, Markdown decoration and punctuation are taken off: empty means nothing."""
+    return re.sub(r"[\s()\[\]`*_<>.,;:]+", "", text)
+
+
 def lint_recommendations(path: Path) -> tuple[list[str], list[str]]:
     """The routing file: every block has its fields, a known destination, evidence and a target."""
     if not path.is_file():
@@ -124,13 +129,16 @@ def lint_recommendations(path: Path) -> tuple[list[str], list[str]]:
         if dest and dest not in DESTINATIONS:
             errors.append(f"{rid}: destination {dest!r} is not one of {', '.join(DESTINATIONS)}")
         obs = fields.get("Observed", "")
-        if obs and not re.search(r"(?i)evidence\s*:", obs):
+        # The marker isn't enough: something has to follow it (`evidence: )` is empty).
+        ev = re.search(r"(?i)evidence\s*:(.*)", obs)
+        if obs and (not ev or not _payload(ev.group(1))):
             errors.append(f"{rid}: Observed names no evidence (evidence: a step, a call, a file:line)")
         change = fields.get("Change", "")
         if change:
             if dest == "no-change" and change.lower().strip("` .") != "none":
                 errors.append(f"{rid}: no-change has `Change: none`")
-            if dest and dest != "no-change" and not re.search(r"->|→", change):
+            arrow = re.split(r"->|→", change, maxsplit=1)
+            if dest and dest != "no-change" and (len(arrow) < 2 or not _payload(arrow[1]) or not _payload(arrow[0])):
                 errors.append(f"{rid}: Change names no target (`<what> -> <file or component>`)")
         measured = fields.get("Measured", "")
         if BETTER_RE.search(measured) and not COMPARED_RE.search(measured):

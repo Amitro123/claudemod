@@ -84,3 +84,23 @@ def test_distill_routes_before_it_drafts_and_names_the_template():
         assert f"**{d}**" in text
     assert (root / "references" / "recommendations.md").is_file()
     assert L.lint(root) == ([], [])
+
+
+def test_an_empty_evidence_or_target_is_no_evidence_or_target(tmp_path):
+    empty = GOOD.replace("(evidence: digest steps 14-15, `npm test` exit 1)", "(evidence: )").replace("-> .github/workflows/ci.yml", "->")
+    errors, _ = lint(tmp_path, empty)
+    assert "R1: Observed names no evidence (evidence: a step, a call, a file:line)" in errors
+    assert "R1: Change names no target (`<what> -> <file or component>`)" in errors
+    blank = GOOD.replace("(evidence: digest steps 14-15, `npm test` exit 1)", "(evidence:   ``  )").replace("-> .github/workflows/ci.yml", "->   **")
+    assert len([e for e in lint(tmp_path, blank)[0] if e.startswith("R1:")]) == 2
+    nothing = GOOD.replace("- Change: add `npm test` to the CI job -> .github/workflows/ci.yml", "- Change: -> .github/workflows/ci.yml")
+    assert "R1: Change names no target (`<what> -> <file or component>`)" in lint(tmp_path, nothing)[0], "a target with no change"
+    assert lint(tmp_path, GOOD) == ([], []), "no-change still takes `Change: none`"
+
+
+def test_a_run_with_no_skill_lesson_lints_only_its_recommendations():
+    text = (Path(__file__).resolve().parents[1] / "skills" / "distill" / "SKILL.md").read_text(encoding="utf-8")
+    step = text[text.index("6. **Lint.**"):text.index("7. **Show the user**")]
+    assert "Always" in step and "only when step 5 drafted a skill" in step
+    assert "none is made to satisfy the lint" in step
+    assert "A run with no *skill* lesson ends there, with no draft." in text
