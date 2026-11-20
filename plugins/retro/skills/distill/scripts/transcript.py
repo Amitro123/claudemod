@@ -452,9 +452,14 @@ def seconds_between(a: str | None, b: str | None) -> float | None:
 
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})\b")
 GUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
-TOKEN_RE = re.compile(r"\b(ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|"
+TOKEN_RE = re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|"
                       r"xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)")
 BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
+# An Authorization header whatever its scheme (Bearer, Basic, token, or none); the value stops at whitespace or a
+# quote so a JSON string stays valid. And curl -u / --user credentials: only a value holding a colon, so
+# `sudo -u bob` and `git push -u origin` stay. Same shapes as brain-hud's host_layout._SECRETS (a test compares them).
+AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization:\s*)(?:(?:bearer|basic|token)\s+)?[^\s\"']+")
+CURL_USER_RE = re.compile(r"""(?<!\S)(-u|--user)(\s+|=)(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s:"']+:[^\s"']+)""")
 SESSION_URL_RE = re.compile(r"https://claude\.ai/code/session_[A-Za-z0-9]+")
 # The board's refusals, shared: a whole private-key block (to its END line, or to the end of the text), and the
 # 52-character lowercase base32 shape of an Azure DevOps PAT.
@@ -478,11 +483,13 @@ def mask_data(obj):
 
 
 def mask(text: str) -> str:
-    """Hide values a skill must never carry: private-key blocks, tokens and PAT shapes, emails (domain kept), GUIDs,
+    """Hide values a skill must never carry: private-key blocks, tokens and PAT shapes, Authorization headers, curl -u/--user credentials, emails (domain kept), GUIDs,
     session links, user names in paths. Heuristics: a secret in no known shape is not caught."""
     text = PRIVATE_KEY_RE.sub("[private-key]", text)
     text = TOKEN_RE.sub("[token]", text)
     text = ADO_PAT_RE.sub("[token]", text)
+    text = AUTH_HEADER_RE.sub(r"\1[token]", text)
+    text = CURL_USER_RE.sub(r"\1\2[token]", text)
     text = BEARER_RE.sub(r"\1[token]", text)
     text = EMAIL_RE.sub(lambda m: "[address]@" + m.group(1).lower(), text)
     text = GUID_RE.sub("[guid]", text)
