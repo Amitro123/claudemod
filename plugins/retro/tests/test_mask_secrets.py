@@ -35,6 +35,8 @@ FORMS = [
     ("auth-basic", "Authorization: Basic " + B64, B64),
     ("auth-token", "Authorization: token " + BODY, BODY),
     ("curl-u", "curl -u alice:" + PW + " https://x", PW),
+    ("auth-basic-quoted-key", 'headers={"Authorization": "Basic ' + B64 + '"}', B64),
+    ("auth-token-quoted-key", "headers={'Authorization': 'token " + "ab12" * 10 + "'}", "ab12" * 10),
 ]
 
 
@@ -50,21 +52,21 @@ def digest_dict(text: str) -> dict:
 @pytest.mark.parametrize("text,secret", [(t, s) for _, t, s in FORMS], ids=[i for i, _, _ in FORMS])
 def test_mask_hides_each_form_in_both_digest_formats(text, secret):
     d = digest_dict(text)
-    assert secret not in T.mask(json.dumps(d))          # Markdown-style text path
+    assert secret not in T.mask(json.dumps(d))          # text path over serialized data
     assert secret not in json.dumps(T.mask_data(d))     # JSON digest path
 
 
-def test_trace_cli_markdown_and_json_hide_the_forms(tmp_path):
+@pytest.mark.parametrize("text,secret", [(t, s) for _, t, s in FORMS], ids=[i for i, _, _ in FORMS])
+def test_trace_cli_markdown_and_json_hide_each_form(tmp_path, text, secret):
+    # one file per form: the text is the last paragraph, so it is the digest's `final` and reaches the output
     f = tmp_path / "run.md"
-    lines = [t for _, t, _ in FORMS]
-    f.write_text("Do it.\n\n" + "\n\n".join(f"`{t}`" for t in lines) + "\n", encoding="utf-8")
-    secrets = [s for _, _, s in FORMS]
+    f.write_text("Do it.\n\n" + text + "\n", encoding="utf-8")
     md = subprocess.run([sys.executable, str(DISTILL / "trace.py"), str(f)], capture_output=True, text=True, encoding="utf-8")
-    assert md.returncode == 0 and not any(s in md.stdout for s in secrets)
+    assert md.returncode == 0 and secret not in md.stdout
     js = subprocess.run([sys.executable, str(DISTILL / "trace.py"), "--json", str(f)], capture_output=True, text=True, encoding="utf-8")
     assert js.returncode == 0
     json.loads(js.stdout)
-    assert not any(s in js.stdout for s in secrets)
+    assert secret not in js.stdout
 
 
 @pytest.mark.parametrize("text", [
@@ -87,6 +89,11 @@ BOUNDARY = [
     ("header-no-scheme", "Authorization: " + BODY, None, BODY),                          # raw value after the colon
     ("token-in-url", "git clone https://x:ghs_" + BODY + "@github.com/o/r", None, BODY),  # embedded in a URL
     ("powershell-header", 'Invoke-WebRequest -H "Authorization: Bearer ' + BODY + '" https://x', None, BODY),
+    ("curl-u-cut-inside-quote", 'curl -H x -u "alice:' + PW[:6], None, PW[:6]),             # Call.brief() cuts at 160 chars
+    ("curl-u-single-quote-cut", "curl -u 'alice:" + PW[:6], None, PW[:6]),                  # same cut, single quote
+    ("curl-u-quote-in-password", 'curl -u alice:pa"' + PW + " https://x", None, PW),        # quote char inside password
+    ("curl-u-attached", "curl -ualice:" + PW + " https://x", None, PW),                     # short form without a space
+    ("header-split-lines", "Authorization:\nnext line", "next line", None),                 # match stays on one line
 ]
 
 
@@ -99,10 +106,10 @@ def test_boundary_cases(text, keep, gone):
         assert gone not in out
 
 
-def test_unterminated_quote_masks_only_the_match():
-    out = T.mask('curl -u "alice:' + PW + " https://x")
-    assert PW not in out or "https://x" in out   # never runs past the string; the rest of the text is still there
-    assert "https://x" in out
+def test_unterminated_quote_masks_to_end_of_line_only():
+    out = T.mask('curl -u "alice:' + PW + " https://x\nnext line")
+    assert PW not in out
+    assert "next line" in out   # the match never runs past its line
 
 
 def test_header_inside_json_string_stays_valid_json():
@@ -119,6 +126,9 @@ PROBES = [
     ("ghp_" + BODY, BODY), ("gho_" + BODY, BODY), ("ghu_" + BODY, BODY), ("ghs_" + BODY, BODY), ("ghr_" + BODY, BODY),
     ("Authorization: Bearer " + BODY, BODY), ("Authorization: Basic " + B64, B64), ("Authorization: token " + BODY, BODY),
     ("curl -u alice:" + PW + " https://x", PW), ("curl --user=alice:" + PW + " https://x", PW),
+    ('headers={"Authorization": "Basic ' + B64 + '"}', B64),
+    # not a shared probe: brain-hud's redact_secrets keeps a quoted `'Authorization': 'token <hex>'`; retro masks it
+    # (test_mask_hides_each_form), and brain-hud is out of this change's scope.
 ]
 
 

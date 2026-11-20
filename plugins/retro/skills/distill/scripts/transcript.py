@@ -458,8 +458,12 @@ BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
 # An Authorization header whatever its scheme (Bearer, Basic, token, or none); the value stops at whitespace or a
 # quote so a JSON string stays valid. And curl -u / --user credentials: only a value holding a colon, so
 # `sudo -u bob` and `git push -u origin` stay. Same shapes as brain-hud's host_layout._SECRETS (a test compares them).
-AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization:\s*)(?:(?:bearer|basic|token)\s+)?[^\s\"']+")
-CURL_USER_RE = re.compile(r"""(?<!\S)(-u|--user)(\s+|=)(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s:"']+:[^\s"']+)""")
+# The header name may be quoted (JSON, Python dict) and so may the value; the match stays on one line. A quoted
+# curl credential cut off before its closing quote (digest text is cut) runs to the end of its line.
+AUTH_HEADER_RE = re.compile(r"""(?i)\b(authorization\\?["']?[ \t]*:[ \t]*\\?["']?)(?:(?:bearer|basic|token)[ \t]+)?[^\s"'\\]+""")
+CURL_USER_RE = re.compile(r"""(?<!\S)(-u[ \t]*|--user(?:[ \t]+|=))"""
+                          r"""(?:"[^"\n]*:[^"\n]*(?:"|(?=\n)|\Z)|'[^'\n]*:[^'\n]*(?:'|(?=\n)|\Z)"""
+                          r"""|[^\s:"']+:(?:[^\s"']|["'](?=[^\s"']))+)""")
 SESSION_URL_RE = re.compile(r"https://claude\.ai/code/session_[A-Za-z0-9]+")
 # The board's refusals, shared: a whole private-key block (to its END line, or to the end of the text), and the
 # 52-character lowercase base32 shape of an Azure DevOps PAT.
@@ -483,13 +487,13 @@ def mask_data(obj):
 
 
 def mask(text: str) -> str:
-    """Hide values a skill must never carry: private-key blocks, tokens and PAT shapes, Authorization headers, curl -u/--user credentials, emails (domain kept), GUIDs,
-    session links, user names in paths. Heuristics: a secret in no known shape is not caught."""
+    """Hide values a skill must never carry: private-key blocks, tokens and PAT shapes, Authorization headers,
+    curl -u/--user credentials, emails (domain kept), GUIDs, session links, user names in paths. Heuristics: a secret in no known shape is not caught."""
     text = PRIVATE_KEY_RE.sub("[private-key]", text)
     text = TOKEN_RE.sub("[token]", text)
     text = ADO_PAT_RE.sub("[token]", text)
     text = AUTH_HEADER_RE.sub(r"\1[token]", text)
-    text = CURL_USER_RE.sub(r"\1\2[token]", text)
+    text = CURL_USER_RE.sub(r"\1[token]", text)
     text = BEARER_RE.sub(r"\1[token]", text)
     text = EMAIL_RE.sub(lambda m: "[address]@" + m.group(1).lower(), text)
     text = GUID_RE.sub("[guid]", text)
