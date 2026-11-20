@@ -1,12 +1,18 @@
 # Open items
 
-What is known to be open after factory 0.28.0, inspector 0.9.0 and retro 0.3.0 (2026-11-20). There are no known
-reproducible bugs: every finding of the reviews of #174–#177, including two outside reviews, is fixed and has a
-test. What follows is work that was planned but not built, things nobody has been able to check, and decisions
+What is known to be open after factory 0.28.0, inspector 0.9.0 and retro 0.3.0 (2026-11-20). Every finding of
+the reviews of #174–#177, including two outside reviews, is fixed and has a test. One reproduced bug was found
+after the release, by `/inspector:inspect` (item 0). What follows is work that was planned but not built, things nobody has been able to check, and decisions
 waiting on the owner.
 
 Each item says where it would go (as `/retro:distill` routes a lesson): **check**, **test**, **access**,
 **guidance**, **skill**, **model** or **no-change**. Close an item by deleting its row in the PR that closes it.
+
+## Known bug
+
+| # | Item | Where | What happens | Next step |
+|---|---|---|---|---|
+| 0 | The audit's branch secret check skips files `.gitattributes` marks `-diff` or `binary` | test + code (inspector) | `scan.py --range` reads `git log -p`, which prints "Binary files differ" for those files, so a credential added to one is never scanned, with no warning. Reproduced: one commit adding the same token to `x.cfg` (`-diff`), `y.dat` (`binary`) and `z.txt` gave 1 finding under `--range` and 3 under `--ref`; verified REAL (`docs/inspector/2026-11-20-case.md`). The matrix covers git settings but not repository attributes. | Add `--text` to `DIFF_SHAPE`, skip true binaries (a NUL byte) in the history pass as the tree pass does, and add `-diff` and `binary` rows to `tests/test_scan_matrix.py`; the rows fail first. |
 
 ## Planned, not built
 
