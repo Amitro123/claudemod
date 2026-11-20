@@ -183,11 +183,26 @@ def _merge_mode(repo: Path) -> str:
     return "remerge" if p.returncode == 0 else "first-parent"
 
 
+# The diff's shape is the scanner's, not the user's: a repository's diff.noprefix, mnemonicPrefix, an external
+# diff tool or a textconv filter would change the "+++ b/<path>" lines the parser reads, and nothing would match;
+# log.showRoot=false would hide the first commit's diff (--root shows it).
+DIFF_SHAPE = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--root"]
+
+
 def scan_range(repo: Path, rng: str, secrets, allow, out):
-    text = run(repo, "-c", "core.quotePath=true", "log", "-p", "--no-color", f"--diff-merges={_merge_mode(repo)}",
-               "--format=commit %H", "--unified=0", rng)
+    # Two passes: every commit, merges of two parents by what the merge itself changed (remerge); then merges of
+    # three or more parents (an octopus), which remerge shows nothing for, as a dense combined diff, keeping only
+    # the lines that are in none of the parents.
+    _scan_log(run(repo, "-c", "core.quotePath=true", "log", "-p", *DIFF_SHAPE, f"--diff-merges={_merge_mode(repo)}",
+                  "--format=commit %H", "--unified=0", rng), secrets, allow, out)
+    _scan_log(run(repo, "-c", "core.quotePath=true", "log", "-p", *DIFF_SHAPE, "--min-parents=3",
+                  "--diff-merges=dense-combined", "--format=commit %H", "--unified=0", rng), secrets, allow, out, combined=True)
+
+
+def _scan_log(text: str, secrets, allow, out, combined: bool = False):
     sha, path, buf, nums, n = None, None, [], [], 0
     in_header = False  # between "diff --git" and the first "@@": only there is "+++ " a file name, not an added "++ " line
+    cols = 1  # a combined diff has one marker column per parent ("@@@" for two, "@@@@" for three)
 
     def flush():
         if path and buf:
@@ -206,11 +221,16 @@ def scan_range(repo: Path, rng: str, secrets, allow, out):
             path, buf, nums = (target[2:] if target.startswith("b/") else None), [], []
         elif ln.startswith("@@"):
             in_header = False
+            cols = max(1, len(ln) - len(ln.lstrip("@")) - 1)
             m = re.search(r"\+(\d+)", ln)
             n = int(m.group(1)) if m else 0
-        elif ln.startswith("+") and path and readable(path, 0):
-            buf.append(ln[1:])
-            nums.append(n)
+        elif not in_header and path and readable(path, 0) and len(ln) >= cols:
+            marks = ln[:cols]
+            if "-" in marks:
+                continue  # a line only a parent had: not in the result
+            if marks == "+" * cols or (not combined and marks == "+"):
+                buf.append(ln[cols:])
+                nums.append(n)
             n += 1
     flush()
 

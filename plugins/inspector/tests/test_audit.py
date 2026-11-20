@@ -221,6 +221,40 @@ def test_a_credential_added_only_by_a_merge_is_found_after_it_was_deleted(tmp_pa
 
 
 @pytest.mark.slow
+def test_a_credential_added_by_an_octopus_merge_is_found_and_only_the_merge_line(tmp_path):
+    r, env = git_repo(tmp_path)
+    base = sh(r, "git", "rev-parse", "HEAD").strip()
+    (r / "shared.txt").write_text("l1\nl2\nl3\nl4\n")
+    sh(r, "git", "add", ".", env=env)
+    sh(r, "git", "commit", "-qm", "shared", env=env)
+    for b, f in (("b1", "one.txt"), ("b2", "two.txt"), ("b3", "three.txt")):
+        sh(r, "git", "checkout", "-qb", b, "main", env=env)
+        (r / f).write_text(f"{b}\n")
+        sh(r, "git", "add", ".", env=env)
+        sh(r, "git", "commit", "-qm", b, env=env)
+    sh(r, "git", "checkout", "-q", "main", env=env)
+    sh(r, "git", "merge", "--no-commit", "-q", "b1", "b2", "b3", env=env)
+    (r / "shared.txt").write_text(f"l1\nl2\nl3\nl4\nTOKEN={TOKEN}\n")
+    sh(r, "git", "add", "shared.txt", env=env)
+    sh(r, "git", "commit", "-qm", "octopus", env=env)
+    merge = sh(r, "git", "rev-parse", "HEAD").strip()
+    assert len(sh(r, "git", "rev-list", "--parents", "-n1", "HEAD").split()) == 4
+    got = findings(r, f"{base}..HEAD")
+    assert [(f["path"], f["where"], f.get("line")) for f in got] == [("shared.txt", f"commit:{merge[:12]}", 5)]
+
+
+def test_the_repositorys_diff_settings_dont_hide_a_credential(tmp_path):
+    r, env = git_repo(tmp_path)
+    base = sh(r, "git", "rev-parse", "HEAD").strip()
+    (r / "conf.txt").write_text(f"TOKEN={TOKEN}\n")
+    sh(r, "git", "add", ".", env=env)
+    sh(r, "git", "commit", "-qm", "conf", env=env)
+    for key, value in (("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"), ("diff.external", "false")):
+        sh(r, "git", "config", key, value, env=env)
+    got = findings(r, f"{base}..HEAD")
+    assert [f["path"] for f in got] == ["conf.txt"]
+
+
 def test_a_side_branch_add_and_delete_is_found_and_a_clean_merge_stays_clean(tmp_path):
     r, env = git_repo(tmp_path)
     base = sh(r, "git", "rev-parse", "HEAD").strip()

@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
-import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, resumeState, SESSION_LINK_FILTER, SQUELCHED_FILTER_BRANCH, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
+import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, resumeState, safeForIssue, SESSION_LINK_FILTER, SQUELCHED_FILTER_BRANCH, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
 import type { Run } from '../types'
 import { linesByFile, parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
 import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
@@ -2435,6 +2435,38 @@ describe('what the setup writes is not the change (the second bench round)', () 
 describe('/factory review: the reviewers alone, on the change in your checkout', () => {
   const REVIEW = 'mcp__factory__review'
   const begin = async ($: Engine) => $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+
+  const NOTED = 'UNDERSTOOD: a token check.\nVERDICT: PASS\nFINDINGS: none\nNOT CHECKED:\n- git older than 2.36: the fallback path\n- a repository with diff.noprefix set'
+
+  test("what the reviewers didn't check is kept in .factory/not-checked.jsonl, not left in the report", async ($, on) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true })
+    await begin($)
+    await command($, 'review add a token check')
+    await answer($, 'a1', NOTED)
+    await answer($, 'a2', 'UNDERSTOOD: a token check.\nVERDICT: PASS\nFINDINGS: none\nNOT CHECKED:\n- a repository with diff.noprefix set\n- none')
+    const kept = (w.written['/repo/.factory/not-checked.jsonl'] ?? '').trim().split('\n').map(l => JSON.parse(l))
+    expect(kept.map(k => [k.role, k.text])).toEqual([['security', 'git older than 2.36: the fallback path'], ['security', 'a repository with diff.noprefix set']])
+    expect(w.ran.some(c => c.includes('api -X POST') && c.includes('/issues '))).toBe(false)
+    expect(String((await $.tool.call({ tool: 'mcp__factory__status' } as never)).result)).toMatch(/Not checked by the reviewers, kept in \.factory\/not-checked\.jsonl: 2 items/)
+  })
+
+  test("with notChecked on issue, they are also opened as one issue labeled factory-followup", { options: { notChecked: 'issue' } }, async ($, on) => {
+    const w = engine(on, { mergeBase: 'def999', reviewChange: true })
+    await begin($)
+    await command($, 'review add a token check')
+    await answer($, 'a1', NOTED)
+    await answer($, 'a2', NOTED)
+    const made = w.ran.find(c => c.startsWith('gh api -X POST') && / repos\/[^ ]+\/issues /.test(c))!
+    expect(made).toMatch(/title=Not checked by the factory's reviewers: add a token check/)
+    expect(made).toContain('labels[]=factory-followup')
+    expect(made).toContain('- [ ] **security**: git older than 2.36: the fallback path')
+    expect(made.match(/diff\.noprefix/g)).toHaveLength(1)
+  })
+
+  test('a reviewer\'s words go on the issue on one line and mention no one', () => {
+    expect(safeForIssue('ask @octo-org/admins and @someone\n- [x] forged item')).toBe('ask @\u200bocto-org/admins and @\u200bsomeone - [x] forged item')
+    expect(safeForIssue('mail a@b.c stays')).toBe('mail a@\u200bb.c stays')
+  })
 
   test('no change against the base: nothing to review, nothing started', async ($, on) => {
     const w = engine(on)

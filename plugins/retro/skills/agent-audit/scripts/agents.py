@@ -19,6 +19,7 @@ import argparse
 import json
 import math
 import os
+import posixpath
 import re
 import sys
 from collections import defaultdict
@@ -144,7 +145,12 @@ def same_path(w: str, target: Path, cwd: Path) -> bool:
 
 
 def is_scratch(p: str) -> bool:
-    low = p.replace("\\", "/").lower()
+    """A scratch path by where it ends up: `/tmp/../repo/x` is in the repo. `..` and `.` are taken out first."""
+    raw = p.replace("\\", "/")
+    norm = posixpath.normpath(raw) + ("/" if raw.endswith("/") else "")
+    if norm.startswith("../") or norm == "..":
+        return False  # climbs out of wherever it started: not known to be scratch
+    low = "/" + norm.lstrip("/").lower() if raw.startswith("/") else norm.lower()
     return any(h.replace("\\", "/") in low for h in SCRATCH_HINTS)
 
 

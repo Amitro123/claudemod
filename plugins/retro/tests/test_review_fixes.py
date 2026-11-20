@@ -190,3 +190,18 @@ def test_timestamps_in_mixed_formats_compare_by_the_instant():
     assert _instant("2026-11-19T12:00:00+02:00") == _instant("2026-11-19T10:00:00Z")
     assert _instant("2026-11-19T10:00:00.1234567Z") is not None, "more than six fraction digits"
     assert _instant("") is None and _instant("yesterday") is None
+
+
+def test_a_truncated_private_key_is_masked_without_breaking_the_json_line():
+    line = json.dumps({"type": "tool_result", "content": "-----BEGIN RSA PRIVATE KEY-----\nMIIEow...cut", "next": "kept"})
+    out = T.mask(line)
+    assert json.loads(out) == {"type": "tool_result", "content": "[private-key]", "next": "kept"}
+    assert T.mask("-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\nafter") == "[private-key]\nafter"
+    assert T.mask("-----BEGIN PRIVATE KEY-----\nabc") == "[private-key]", "plain text with no end still masks to the end"
+
+
+def test_a_path_through_scratch_and_back_out_is_not_scratch():
+    assert A.is_scratch("/tmp/run/out.md") and A.is_scratch("C:\\Users\\a\\AppData\\Local\\Temp\\x.txt")
+    assert not A.is_scratch("/tmp/../home/user/repo/src/app.py")
+    assert not A.is_scratch("scratchpad/../../repo/x.py")
+    assert not A.is_scratch("../tmp/x")

@@ -48,7 +48,12 @@ the ask, the host's settings, or the model.
      Recommend the model per agent type, with the runs behind it.
    When an agent struggled, decide in this order: was the brief clear (else **brief**), was the host in the
    way (else), would a stronger model plausibly have done it (**model**), otherwise **execution**.
-5. **Write the fixes.** For a brief: the exact lines to add or change, in the shape of
+5. **Write the fixes, each where it holds best.** A fix a machine can enforce beats one an agent must remember:
+   an execution failure that repeats gets a check or test (a lint rule, an assertion, the check wired into CI)
+   before a stop rule in a brief; a host problem gets the access or setting, not words. In
+   `/retro:distill`'s terms: **brief** → guidance (a skill's own text → skill), **host** → access,
+   **execution** → test or check when it repeats, else guidance, **model** → model. Look at the project's
+   checks and CI first: one that exists but isn't run is the fix. For a brief: the exact lines to add or change, in the shape of
    `references/brief-contract.md`, with the budget from "Budgets from what was observed", and the file it
    goes in. For execution: the ask to split or the stop rule to add. For a model: the agent type and model.
 
@@ -77,7 +82,8 @@ needs. A handful of runs is a hint, not a measurement: say how many.
 
 1. The table and the "By skill" and "By model" tables from step 2, unchanged.
 2. Per agent: each ask and its verdict, then each problem with its owner and the evidence.
-3. The fixes from step 5, as text the user can paste, grouped by owner.
+3. The fixes from step 5, as text the user can paste, grouped by owner, each with its target and how its
+   effect would show (a test that fails before, the next run's calls); `/retro:distill` routes them in full.
 4. One line on what you could not check (no transcript, a report file only).
 
 Budget: about 10 tool calls, plus 2 per agent whose transcript you open beyond the digest.
