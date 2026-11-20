@@ -70,16 +70,28 @@ MARKER = "<!-- mistake-brain: new entries are inserted immediately below this li
 # A value: a quoted string whole (a password with a space in it), else up to the next space.
 _VALUE = r"""(?:"[^"]*"?|'[^']*'?|\S+)"""
 _SECRETS = [
+    # A secret set through a config subcommand: the name and the value are separated by a space only
+    # (aws configure set aws_secret_access_key X, npm config set //registry.npmjs.org/:_authToken X), an optional
+    # flag with its value before the name. A name without a secret keyword (region, registry) is left alone;
+    # npm config set always-auth true over-redacts "true" on purpose.
+    (re.compile(r"(?i)\b((?:aws configure set|npm config set|npm set|yarn config set|pip config set)\s+(?:--?[\w-]+\s+(?!-)\S+\s+)?\S*(?:token|password|passwd|secret|key|auth)\S*\s+)(?!-)" + _VALUE), r"\1[redacted]"),
+    # A query parameter named only key, sig or signature: ?key=..., &sig=.... The name must be the whole parameter.
+    (re.compile(r"""(?i)([?&](?:key|sig|signature|x-amz-signature))=[^\s&#"']+"""), r"\1=[redacted]"),
     # The keyword alone or at the end of an env-style name (DB_PASSWORD=, GITHUB_TOKEN=): \b can't
     # match after an underscore, so the name's own prefix is part of the match.
     # A JSON or YAML key in quotes ("password": "x") too: the quote between the name and the colon.
     (re.compile(r"(?i)\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|auth))([\"']?)(=|:\s*)" + _VALUE), r"\1\2\3[redacted]"),
     (re.compile(r"(?i)(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)" + _VALUE), r"\1\2[redacted]"),
     # An Authorization header whatever its scheme (Bearer, Basic, token, or none): GitHub takes "token <x>".
-    (re.compile(r"(?i)\b(authorization:\s*)(?:(?:bearer|basic|token)\s+)?[^\s\"']+"), r"\1[redacted]"),
+    # The key may be quoted ('Authorization': ...) and the quotes backslash-escaped (JSON inside a string).
+    (re.compile(r"""(?i)\b(authorization\\?["']?\s*:\s*\\?["']?)(?:(?:bearer|basic|token)\s+)?[^\s"'\\]+"""), r"\1[redacted]"),
     (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 [redacted]"),
-    # curl -u user:pass, --user=user:pass: only a value holding a colon, so sudo -u bob and git push -u stay.
-    (re.compile(r"""(?<!\S)(-u|--user)(\s+|=)(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s:"']+:\S+)"""), r"\1\2[redacted]"),
+    # curl -u user:pass, -uuser:pass, --user=user:pass: only a value holding a colon, so sudo -u bob and git push -u
+    # stay. Either side of the colon may be empty (-u :PAT, -u key:). A quoted value (quotes possibly backslash-escaped)
+    # is taken whole and may be cut off before its closing quote, to the end of its line. Unquoted, it stops at
+    # whitespace or a shell separator; a quoted tail (alice:"pa ss") is part of the password. No nested quantifier
+    # over overlapping classes: the alternatives start with different characters.
+    (re.compile(r"""(?<!\S)(-u\s*|--user(?:\s+|=))(?:\\?(?:"[^"\n]*:[^"\n]*"?|'[^'\n]*:[^'\n]*'?)[^\s;|&)]*|[^\s:"';|&)\\]*:(?:"[^"\n]*"?|'[^'\n]*'?|[^\s;|&)"'])*)"""), r"\1[redacted]"),
     (re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), "[redacted]"),          # Slack tokens
     (re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), "[redacted]"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "[redacted]"),

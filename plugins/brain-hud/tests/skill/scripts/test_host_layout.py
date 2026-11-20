@@ -26,6 +26,23 @@ def test_memory_path_is_identical_for_every_host(tmp_path):
     assert host_layout.memory_path(tmp_path, "claude") == tmp_path / ".agent-brain" / "shared" / "MEMORY.md"
 
 
+def test_safe_for_markdown_redacts_before_cutting_at_the_limit():
+    # The entry point the hooks use: a credential cut by the length limit must not survive.
+    # The caller's own command was already cut mid-value (no closing quote), then a long tail follows.
+    line = 'curl -u "alice:S3cretPassword\n' + "x" * 300
+    out = host_layout.safe_for_markdown(line, limit=200)
+    assert "S3cr" not in out and len(out) <= 200
+
+
+def test_redaction_runs_in_linear_time_on_hostile_lines():
+    import time
+    for frag in ("-u a:", '"', ":", "-u :\"", "\\\"a:"):
+        text = (frag * (50000 // len(frag)))[:50000]
+        start = time.perf_counter()
+        host_layout.redact_secrets(text)
+        assert time.perf_counter() - start < 2, frag
+
+
 def test_memory_path_rejects_unknown_host(tmp_path):
     import pytest
     with pytest.raises(ValueError, match="unknown host"):
