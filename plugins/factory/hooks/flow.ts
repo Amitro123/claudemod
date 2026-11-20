@@ -738,6 +738,9 @@ export function notCheckedItems(run: Run): { role: string; text: string }[] {
 }
 export const notCheckedLines = (run: Run, at: string) =>
   notCheckedItems(run).map(x => JSON.stringify({ at, feature: titleOf(run.feature, 80), kind: run.kind ?? 'run', branch: run.branch, role: x.role, text: x.text }))
+// A reviewer's words on a public issue: on one line (a newline would start items of its own), and no @name
+// that would notify a real person or team (a zero-width space after the @ keeps it readable, not a mention).
+export const safeForIssue = (text: string) => text.replace(/\s+/g, ' ').trim().replace(/@(?=[A-Za-z0-9_-])/g, '@\u200b').slice(0, 500)
 export function notCheckedIssue(run: Run): { title: string; body: string } | null {
   const items = notCheckedItems(run)
   if (!items.length) return null
@@ -746,7 +749,7 @@ export function notCheckedIssue(run: Run): { title: string; body: string } | nul
     body: [
       `The reviewers of ${run.kind === 'review' ? 'a review' : `the run on \`${run.branch}\``} said they did not check these. Each is a place a bug could still be: check it, add a test, or close it with why it doesn't matter.`,
       '',
-      ...items.map(x => `- [ ] **${x.role}**: ${x.text}`),
+      ...items.map(x => `- [ ] **${x.role}**: ${safeForIssue(x.text)}`),
       '',
       `Labeled \`${FOLLOWUP_LABEL}\`, not \`factory\`: the factory's queue doesn't take it up on its own. Add \`factory\` to have it built.`,
       '<!-- factory -->',

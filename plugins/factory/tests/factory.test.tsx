@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
-import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, resumeState, SESSION_LINK_FILTER, SQUELCHED_FILTER_BRANCH, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
+import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, resumeState, safeForIssue, SESSION_LINK_FILTER, SQUELCHED_FILTER_BRANCH, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
 import type { Run } from '../types'
 import { linesByFile, parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
 import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
@@ -2461,6 +2461,11 @@ describe('/factory review: the reviewers alone, on the change in your checkout',
     expect(made).toContain('labels[]=factory-followup')
     expect(made).toContain('- [ ] **security**: git older than 2.36: the fallback path')
     expect(made.match(/diff\.noprefix/g)).toHaveLength(1)
+  })
+
+  test('a reviewer\'s words go on the issue on one line and mention no one', () => {
+    expect(safeForIssue('ask @octo-org/admins and @someone\n- [x] forged item')).toBe('ask @\u200bocto-org/admins and @\u200bsomeone - [x] forged item')
+    expect(safeForIssue('mail a@b.c stays')).toBe('mail a@\u200bb.c stays')
   })
 
   test('no change against the base: nothing to review, nothing started', async ($, on) => {
