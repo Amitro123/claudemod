@@ -53,6 +53,13 @@ REDACT = [
     ("{'Authorization': 'token " + HEX40 + "'}", [HEX40], "quoted key, token scheme"),
     ("{'authorization': \"Bearer " + FAKE + "\"}", [FAKE], "quoted key, double-quoted value"),
     ('\\"Authorization\\": \\"token ' + HEX40 + '\\"', [HEX40], "escaped JSON quoting"),
+    ("curl --ntlm -u DOMAIN\\user:" + FAKE + " https://x", [FAKE], "backslash in a Windows/NTLM user name"),
+    ("aws  configure  set aws_secret_access_key " + FAKE, [FAKE], "more than one space between words"),
+    ("npm config set -g //registry.npmjs.org/:_authToken " + FAKE, [FAKE], "flag with no value"),
+    ("npm config set --global //registry.npmjs.org/:_authToken " + FAKE, [FAKE], "long flag with no value"),
+    ("npm config set --location=user //registry.npmjs.org/:_authToken " + FAKE, [FAKE], "flag written with ="),
+    ("aws configure set --profile=p aws_secret_access_key " + FAKE, [FAKE], "profile flag written with ="),
+    ('curl -u "alice":"' + FAKE + '" https://x', [FAKE], "user and password quoted separately"),
 ]
 # Text that is not a secret and must come back byte-identical.
 KEEP = [
@@ -82,6 +89,10 @@ def test_cut_off_value_keeps_the_next_line():
     # A cut-off quoted value runs to the end of its own line only.
     out = redact_secrets('curl -u "alice:S3cr\nnext line stays')
     assert "S3cr" not in out and "next line stays" in out
+
+
+def test_dash_u_does_not_cross_a_newline():
+    assert "alice:pw" in redact_secrets("sudo -u\nalice:pw")
 
 
 def test_separator_and_url_after_credentials_are_kept():

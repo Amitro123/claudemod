@@ -36,7 +36,7 @@ def test_safe_for_markdown_redacts_before_cutting_at_the_limit():
 
 def test_redaction_runs_in_linear_time_on_hostile_lines():
     import time
-    for frag in ("-u a:", '"', ":", "-u :\"", "\\\"a:"):
+    for frag in ("-u a:", '"', ":", "-u :\"", "\\\"a:", "npm config set " + "key" * 100, "key", "npm config set -g key "):
         text = (frag * (50000 // len(frag)))[:50000]
         start = time.perf_counter()
         host_layout.redact_secrets(text)
