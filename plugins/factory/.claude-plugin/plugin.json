@@ -64,6 +64,13 @@
       "default": "go-on",
       "options": ["go-on", "stop"]
     },
+    "notChecked": {
+      "type": "string",
+      "title": "What the reviewers didn't check",
+      "description": "Each reviewer ends with what it did not verify. record: kept as a line each in .factory/not-checked.jsonl, counted in the status. issue: also opened as one GitHub issue per run, labeled factory-followup (which the factory's queue doesn't take up on its own)",
+      "default": "record",
+      "options": ["record", "issue"]
+    },
     "models": {
       "type": "string",
       "title": "Models by feature size",

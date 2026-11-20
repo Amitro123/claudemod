@@ -74,6 +74,9 @@ import {
   builtinSkill,
   lastLines,
   ledgerOf,
+  notCheckedIssue,
+  notCheckedLines,
+  FOLLOWUP_LABEL,
   OUTCOMES,
   outcomesLine,
   statsReport,
@@ -171,6 +174,8 @@ let maxRounds = 2
 let checksOption = ''
 let setupOption = ''
 let stopOnBaseFailure = false
+// What the reviewers didn't check: kept in .factory/not-checked.jsonl, and with 'issue' also opened as one issue.
+let notCheckedIssues = false
 let autoPr = false
 let modelsOption: 'auto' | 'fixed' = 'auto'
 let skillsOption: Partial<Record<Role, string[]>> = {}
@@ -1245,6 +1250,7 @@ async function finishReview($: EngineInterface, rid: string) {
     return { ...moveTo(cur, 'done', n ? `reviewed: ${n} finding${n === 1 ? '' : 's'} to fix, sent to Claude` : 'reviewed: no blocker or major finding'), ledger: ledgerOf(cur) }
   })
   if (!r) return
+  await keepNotChecked($, r, r.worktree)
   await record($, rid, 'review findings', reviewDonePrompt(r))
   await recordStats($, rid)
   void $.prompt.submit({ text: reviewDonePrompt(r) }).catch(() => $.ui.toast(`The review is done: ${r.note}. /factory status lists the findings.`))
@@ -1319,6 +1325,24 @@ async function reportOutcomes($: EngineInterface, rid: string, raw: unknown): Pr
   return `Recorded ${by.size} outcome${by.size === 1 ? '' : 's'}. ${outcomesLine(after.ledger)}${open.length ? ` Still to report: ${open.join(', ')}.` : ''}`
 }
 
+// The reviewers' NOT CHECKED lists, kept: a line each in .factory/not-checked.jsonl beside findings.jsonl, and
+// with the notChecked option on 'issue', one issue that lists them (labeled factory-followup, which the queue
+// doesn't take). Never throws: keeping them is worth less than finishing the run.
+async function keepNotChecked($: EngineInterface, r: Run, root: string) {
+  const lines = notCheckedLines(r, new Date(await $.clock.now()).toISOString())
+  if (!lines.length) return
+  const file = `${root}/.factory/not-checked.jsonl`
+  const before = await $.fs.read(file).then(t => String(t), () => '')
+  await $.fs.write(file, `${before}${before && !before.endsWith('\n') ? '\n' : ''}${lines.join('\n')}\n`).catch(() => {})
+  const issue = notCheckedIssues ? notCheckedIssue(r) : null
+  if (!issue) return
+  const api = await apiOf($, root)
+  await gh($, ['api', '-X', 'POST', api('labels'), '-f', `name=${FOLLOWUP_LABEL}`, '-f', 'color=C5DEF5'], root)
+  const made = await gh($, ['api', '-X', 'POST', api('issues'), '-f', `title=${issue.title}`, '-f', `body=${issue.body}`, '-f', `labels[]=${FOLLOWUP_LABEL}`, '--jq', '.html_url'], root)
+  if (made.exitCode === 0 && made.stdout.trim()) await record($, r.slug, 'not checked', `Opened ${made.stdout.trim()} for ${lines.length} item${lines.length === 1 ? '' : 's'} the reviewers didn't check.`)
+  else $.ui.toast(`Factory: couldn't open the not-checked issue: ${tailOf(made.stderr, 1)}`)
+}
+
 // Every outcome recorded in this repository, added up: what the status says of how far reviews hold.
 async function repoOutcomes($: EngineInterface, root: string): Promise<string> {
   const text = await $.fs.read(`${root}/.factory/findings.jsonl`).then(t => String(t), () => '')
@@ -1329,7 +1353,9 @@ async function repoOutcomes($: EngineInterface, root: string): Promise<string> {
       return []
     }
   })
-  return entries.length ? `Review findings in this repository so far (.factory/findings.jsonl): ${outcomesLine(entries)}` : ''
+  const unchecked = (await $.fs.read(`${root}/.factory/not-checked.jsonl`).then(t => String(t), () => '')).split('\n').filter(l => l.trim()).length
+  const kept = unchecked ? ` Not checked by the reviewers, kept in .factory/not-checked.jsonl: ${unchecked} item${unchecked === 1 ? '' : 's'}.` : ''
+  return entries.length ? `Review findings in this repository so far (.factory/findings.jsonl): ${outcomesLine(entries)}${kept}` : kept.trim()
 }
 
 // The main Claude opened the approved run's PR: it now reads as opened, with its link.
@@ -1418,6 +1444,7 @@ async function openPr($: EngineInterface, rid: string, reason: string, byApprove
     return { ...moveTo(cur, 'done', note), pr: { state: handed ? 'handed' : 'requested' }, autoMerge: autoMerge && byApprover && !handed, steps: { ...cur.steps, approver: { ...cur.steps.approver, state: 'pass' } } }
   })
   if (!r || !moved) return
+  await keepNotChecked($, r, rootOf(r))
   await recordStats($, rid)
   void $.prompt.submit({ text: prPrompt(r, reason, prRepoOf(r, r.remotes?.origin ?? null, r.remotes?.upstream ?? null)) }).catch(() => {
     $.ui.toast(`Approved. Open a PR from ${r.branch} yourself; the prompt could not be sent.`)
@@ -1932,6 +1959,7 @@ export const register: Register = (on, options) => {
   checksOption = String(options.checks ?? '')
   setupOption = String(options.setup ?? '')
   stopOnBaseFailure = String(options.baseFailures ?? 'go-on') === 'stop'
+  notCheckedIssues = String(options.notChecked ?? 'record') === 'issue'
   autoPr = String(options.autoPr ?? 'off') === 'on'
   modelsOption = String(options.models ?? 'auto') === 'fixed' ? 'fixed' : 'auto'
   skillsOption = parseSkills(String(options.skills ?? ''))

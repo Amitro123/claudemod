@@ -728,6 +728,32 @@ export function ledgerOf(run: Run): LedgerEntry[] {
   return [...standing, ...ruled].map((x, i) => ({ id: `F${i + 1}`, ...x }))
 }
 
+// What the reviewers said they did not check, kept past the run: a line each in .factory/not-checked.jsonl,
+// and (the notChecked option) one follow-up issue. A list in a report is read once and forgotten.
+export const FOLLOWUP_LABEL = 'factory-followup'
+export function notCheckedItems(run: Run): { role: string; text: string }[] {
+  const seen = new Set<string>()
+  return run.reviews.flatMap(r => (r.notChecked ?? []).map(t => ({ role: r.role as string, text: t.trim() })))
+    .filter(x => x.text && !/^none\.?$/i.test(x.text) && !seen.has(x.text) && !!seen.add(x.text))
+}
+export const notCheckedLines = (run: Run, at: string) =>
+  notCheckedItems(run).map(x => JSON.stringify({ at, feature: titleOf(run.feature, 80), kind: run.kind ?? 'run', branch: run.branch, role: x.role, text: x.text }))
+export function notCheckedIssue(run: Run): { title: string; body: string } | null {
+  const items = notCheckedItems(run)
+  if (!items.length) return null
+  return {
+    title: `Not checked by the factory's reviewers: ${titleOf(run.feature, 70)}`,
+    body: [
+      `The reviewers of ${run.kind === 'review' ? 'a review' : `the run on \`${run.branch}\``} said they did not check these. Each is a place a bug could still be: check it, add a test, or close it with why it doesn't matter.`,
+      '',
+      ...items.map(x => `- [ ] **${x.role}**: ${x.text}`),
+      '',
+      `Labeled \`${FOLLOWUP_LABEL}\`, not \`factory\`: the factory's queue doesn't take it up on its own. Add \`factory\` to have it built.`,
+      '<!-- factory -->',
+    ].join('\n'),
+  }
+}
+
 export const OUTCOMES: Outcome[] = ['fixed', 'not-a-bug', 'wont-fix']
 const OUTCOME_WORDS: Record<Outcome, string> = { fixed: 'fixed', 'not-a-bug': 'not a bug', 'wont-fix': "won't fix", refuted: 'refuted by the skeptic', downgraded: 'downgraded by the skeptic', design: 'a design choice (the skeptic)', unverified: 'unverified (the skeptic)' }
 
