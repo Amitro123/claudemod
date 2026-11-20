@@ -34,6 +34,21 @@ def test_safe_for_markdown_redacts_before_cutting_at_the_limit():
     assert "S3cr" not in out and len(out) <= 200
 
 
+def test_safe_for_markdown_secret_straddling_the_cut_boundary_is_not_exposed():
+    # The password starts 5 characters before the 200-character cut: cutting first would keep "S3cre".
+    secret = "S3cretPassw0rdValue"
+    head = " curl -u alice:"
+    line = "x" * (195 - len(head)) + head + secret + " https://example.test"
+    assert line.index(secret) == 195
+    out = host_layout.safe_for_markdown(line, limit=200)
+    assert "S3c" not in out and secret not in out and len(out) <= 200
+    # same boundary for a secret set through a config subcommand
+    head = " npm config set -g //registry.npmjs.org/:_authToken "
+    line = "x" * (195 - len(head)) + head + secret + " && npm publish"
+    out = host_layout.safe_for_markdown(line, limit=200)
+    assert "S3c" not in out and len(out) <= 200
+
+
 def test_redaction_runs_in_linear_time_on_hostile_lines():
     import time
     for frag in ("-u a:", '"', ":", "-u :\"", "\\\"a:", "npm config set " + "key" * 100, "key", "npm config set -g key "):

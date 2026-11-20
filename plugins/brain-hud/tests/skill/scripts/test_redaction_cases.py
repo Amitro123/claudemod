@@ -98,3 +98,31 @@ def test_dash_u_does_not_cross_a_newline():
 def test_separator_and_url_after_credentials_are_kept():
     assert "echo ok" in redact_secrets("curl -u a:pw;echo ok")
     assert "https://x" in redact_secrets('curl -u a:"p w" https://x')
+
+
+# A secret whose own text carries a keyword (token/key/auth/...), followed by more command. A flag without a value
+# (-g, --global, --location=user) must not take the secret NAME as its value: then the keyword-bearing secret would be
+# read as the name and the word after it masked instead. Row: text, substrings that must be gone, substrings that
+# must stay, why.
+TOKVAL = "mytokenvalue1234"
+AFTER = [
+    ("npm config set -g //registry.npmjs.org/:_authToken " + TOKVAL + " && npm publish", [TOKVAL], ["npm publish"], "-g without a value, && after"),
+    ("npm config set -g //registry.npmjs.org/:_authToken " + TOKVAL + " ; npm publish", [TOKVAL], ["npm publish"], "-g without a value, ; after"),
+    ("npm config set -g //registry.npmjs.org/:_authToken " + TOKVAL + " --registry https://r.example", [TOKVAL], ["--registry https://r.example"], "-g without a value, another argument after"),
+    ("npm config set --global //registry.npmjs.org/:_authToken " + TOKVAL + " && npm publish", [TOKVAL], ["npm publish"], "long flag without a value"),
+    ("npm config set --location=user //registry.npmjs.org/:_authToken " + TOKVAL + " && npm publish", [TOKVAL], ["npm publish"], "flag written with ="),
+    ("npm config set //registry.npmjs.org/:_authToken " + TOKVAL + " && npm publish", [TOKVAL], ["npm publish"], "no flag at all"),
+    ("aws configure set --profile=p aws_secret_access_key " + TOKVAL + " && aws s3 ls", [TOKVAL], ["aws s3 ls"], "profile flag written with ="),
+    ("aws configure set --profile p aws_secret_access_key " + TOKVAL + " && aws s3 ls", [TOKVAL], ["aws s3 ls"], "profile flag with its value (must still work)"),
+    ("aws configure set --profile p aws_secret_access_key " + TOKVAL + " --region eu-west-1", [TOKVAL], ["--region eu-west-1"], "flag value, then another argument after"),
+    ("aws configure set -g aws_secret_access_key " + TOKVAL + " && aws s3 ls", [TOKVAL], ["aws s3 ls"], "-g before an aws name"),
+]
+
+
+def test_keyword_bearing_secret_is_masked_and_the_rest_of_the_command_stays():
+    bad = []
+    for text, gone, stay, why in AFTER:
+        out = redact_secrets(text)
+        if any(g in out for g in gone) or not all(k in out for k in stay):
+            bad.append((text, why, out))
+    assert bad == []

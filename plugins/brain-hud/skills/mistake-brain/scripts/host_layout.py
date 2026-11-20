@@ -75,9 +75,11 @@ _SECRETS = [
     # (aws configure set aws_secret_access_key X, npm config set //registry.npmjs.org/:_authToken X), an optional
     # flag with its value before the name. A name without a secret keyword (region, registry) is left alone;
     # npm config set always-auth true over-redacts "true" on purpose.
-    # The flag before the name may have a value (--profile p), none (-g) or be written with = (--location=user).
+    # The flag before the name may have a value (--profile p), none (-g) or be written with = (--location=user). The
+    # value is tried last (lazy), so a flag with none never takes the secret NAME for its value; known limit: a value
+    # that itself holds a keyword (--profile keyprof NAME X) is read as the name.
     # The name is bounded (200 characters a side), so a long token full of keywords stays linear.
-    (re.compile(r"(?i)\b((?:aws\s+configure\s+set|npm\s+config\s+set|npm\s+set|yarn\s+config\s+set|pip\s+config\s+set)\s+(?:-\S+\s+(?:(?!-)\S+\s+)?)?\S{0,200}?(?:token|password|passwd|secret|key|auth)\S{0,200}\s+)(?!-)" + _VALUE), r"\1[redacted]"),
+    (re.compile(r"(?i)\b((?:aws\s+configure\s+set|npm\s+config\s+set|npm\s+set|yarn\s+config\s+set|pip\s+config\s+set)\s+(?:-\S+\s+(?:(?!-)\S+\s+)??)?\S{0,200}?(?:token|password|passwd|secret|key|auth)\S{0,200}\s+)(?!-)" + _VALUE), r"\1[redacted]"),
     # A query parameter named only key, sig or signature: ?key=..., &sig=.... The name must be the whole parameter.
     (re.compile(r"""(?i)([?&](?:key|sig|signature|x-amz-signature))=[^\s&#"']+"""), r"\1=[redacted]"),
     # The keyword alone or at the end of an env-style name (DB_PASSWORD=, GITHUB_TOKEN=): \b can't
