@@ -26,6 +26,38 @@ def test_memory_path_is_identical_for_every_host(tmp_path):
     assert host_layout.memory_path(tmp_path, "claude") == tmp_path / ".agent-brain" / "shared" / "MEMORY.md"
 
 
+def test_safe_for_markdown_redacts_before_cutting_at_the_limit():
+    # The entry point the hooks use: a credential cut by the length limit must not survive.
+    # The caller's own command was already cut mid-value (no closing quote), then a long tail follows.
+    line = 'curl -u "alice:S3cretPassword\n' + "x" * 300
+    out = host_layout.safe_for_markdown(line, limit=200)
+    assert "S3cr" not in out and len(out) <= 200
+
+
+def test_safe_for_markdown_secret_straddling_the_cut_boundary_is_not_exposed():
+    # The password starts 5 characters before the 200-character cut: cutting first would keep "S3cre".
+    secret = "S3cretPassw0rdValue"
+    head = " curl -u alice:"
+    line = "x" * (195 - len(head)) + head + secret + " https://example.test"
+    assert line.index(secret) == 195
+    out = host_layout.safe_for_markdown(line, limit=200)
+    assert "S3c" not in out and secret not in out and len(out) <= 200
+    # same boundary for a secret set through a config subcommand
+    head = " npm config set -g //registry.npmjs.org/:_authToken "
+    line = "x" * (195 - len(head)) + head + secret + " && npm publish"
+    out = host_layout.safe_for_markdown(line, limit=200)
+    assert "S3c" not in out and len(out) <= 200
+
+
+def test_redaction_runs_in_linear_time_on_hostile_lines():
+    import time
+    for frag in ("-u a:", '"', ":", "-u :\"", "\\\"a:", "npm config set " + "key" * 100, "key", "npm config set -g key "):
+        text = (frag * (50000 // len(frag)))[:50000]
+        start = time.perf_counter()
+        host_layout.redact_secrets(text)
+        assert time.perf_counter() - start < 2, frag
+
+
 def test_memory_path_rejects_unknown_host(tmp_path):
     import pytest
     with pytest.raises(ValueError, match="unknown host"):
