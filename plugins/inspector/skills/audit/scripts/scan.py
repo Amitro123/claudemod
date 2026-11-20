@@ -184,8 +184,9 @@ def _merge_mode(repo: Path) -> str:
 
 
 # The diff's shape is the scanner's, not the user's: a repository's diff.noprefix, mnemonicPrefix, an external
-# diff tool or a textconv filter would change the "+++ b/<path>" lines the parser reads, and nothing would match.
-DIFF_SHAPE = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"]
+# diff tool or a textconv filter would change the "+++ b/<path>" lines the parser reads, and nothing would match;
+# log.showRoot=false would hide the first commit's diff (--root shows it).
+DIFF_SHAPE = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--root"]
 
 
 def scan_range(repo: Path, rng: str, secrets, allow, out):
