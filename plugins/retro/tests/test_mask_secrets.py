@@ -23,6 +23,7 @@ import transcript as T  # noqa: E402
 BODY = "Q7" * 15            # 30 alphanumerics
 B64 = "Zm9vYmFy" * 4        # a Basic credential shape
 PW = "Pw" + "Zx9" * 6       # a password
+STRIPE = "sk_" + "live_" + BODY  # an API key used as the user name
 
 # (id, text, secret that must be gone)
 FORMS = [
@@ -37,6 +38,13 @@ FORMS = [
     ("curl-u", "curl -u alice:" + PW + " https://x", PW),
     ("auth-basic-quoted-key", 'headers={"Authorization": "Basic ' + B64 + '"}', B64),
     ("auth-token-quoted-key", "headers={'Authorization': 'token " + "ab12" * 10 + "'}", "ab12" * 10),
+    # review round 2: an empty side of the colon, schemes beyond bearer/basic/token, the argument-list form
+    ("curl-u-empty-user", "curl -u :" + PW + " https://x", PW),                              # Azure DevOps: PAT as password
+    ("curl-u-empty-password", "curl https://api.stripe.com/v1/charges -u " + STRIPE + ": ", STRIPE),  # Stripe: key as user
+    ("auth-negotiate", "Authorization: Negotiate " + B64, B64),
+    ("auth-ntlm", "Authorization: NTLM " + B64, B64),
+    ("argv-list", 'run(["curl", "-u", "alice:' + PW + '", "https://x"])', PW),
+    ("argv-list-user-eq", "['curl', '--user=alice:" + PW + "', 'https://x']", PW),
 ]
 
 
@@ -94,6 +102,15 @@ BOUNDARY = [
     ("curl-u-quote-in-password", 'curl -u alice:pa"' + PW + " https://x", None, PW),        # quote char inside password
     ("curl-u-attached", "curl -ualice:" + PW + " https://x", None, PW),                     # short form without a space
     ("header-split-lines", "Authorization:\nnext line", "next line", None),                 # match stays on one line
+    # review round 2
+    ("curl-u-empty-both", "curl -u : https://x", None, None),                               # a bare colon: nothing to hide, must not crash
+    ("curl-u-docker-uid-gid", "docker run -u 1000:1000 img", "img", "1000:1000"),            # MASKED on purpose: uid:gid is the shape of user:pass; over-masking is the safe side
+    ("curl-u-no-colon-stays", "curl -u alice https://x", "curl -u alice https://x", None),   # no colon: curl prompts for the password, nothing to hide
+    ("json-in-markdown-closing-quote", '{"cmd": "curl -u alice:' + PW + '", "y": 1}', '[token]", "y": 1}', PW),  # the quote that closes the string stays
+    ("json-in-markdown-single-quote", "{'cmd': 'curl -u alice:" + PW + "', 'y': 1}", "[token]', 'y': 1}", PW),
+    ("curl-u-in-parens", "(curl -u alice:" + PW + ")", None, PW),                            # a credential before a close paren is still hidden
+    ("auth-any-scheme-unquoted", "Authorization: Digest " + B64 + " https://x", None, B64),  # an unknown scheme word is consumed with its value
+    ("auth-scheme-word-only-line", "Authorization: Bearer\nnext", "next", None),            # scheme with no value: stays on its line
 ]
 
 
@@ -140,3 +157,19 @@ def test_retro_mask_and_brain_hud_redact_agree_on_shared_probes():
     for text, secret in PROBES:
         assert secret not in T.mask(text), f"retro mask leaks: {text[:30]}"
         assert secret not in mod.redact_secrets(text), f"brain-hud redact leaks: {text[:30]}"
+
+
+def test_argument_list_in_json_digest_keeps_json_valid_and_hides_credential():
+    # mask_data sees "-u" and the credential as two strings of one list: it pairs them (the text rules can't)
+    d = {"args": ["curl", "-u", "alice:" + PW, "https://x"], "more": ["--user", ":" + PW]}
+    raw = json.dumps(T.mask_data(d))
+    back = json.loads(raw)
+    assert PW not in raw and back["args"][0] == "curl" and back["args"][3] == "https://x" and len(back["args"]) == 4
+
+
+def test_call_brief_cut_at_160_chars_still_hides_a_cut_credential():
+    cmd = "curl -sS -X POST https://example.invalid/api/very/long/path " + "x" * 80 + " -u alice:" + PW
+    brief = T.Call(id="1", tool="Bash", input={"command": cmd}).brief()
+    assert len(brief) <= 160
+    for cut in (brief, brief[:-3]):
+        assert "PwZ" not in T.mask(cut)
