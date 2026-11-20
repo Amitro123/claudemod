@@ -18,6 +18,17 @@ jobs:
       - run: npm i -g @anthropic-ai/claude-code@2.1.312
       - run: claude plugin validate plugins/${{ matrix.mod }}
       - run: claude plugin test plugins/${{ matrix.mod }}
+  # The factory's kit tests on Windows too: there the engine hands the hooks `C:\...` paths, and the test
+  # fake must key a file the same whatever path form it is given (tests/paths.test.ts). Same pinned CLI.
+  factory-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm i -g @anthropic-ai/claude-code@2.1.312
+      - run: claude plugin test plugins/factory
   # The factory's branch-history scan for never-commit files, against real git in disposable
   # repositories: `claude plugin test` can't start a process. Its own job, so it runs whatever the
   # factory's kit tests do. Node 22.12+ (type stripping behind the flag, ES module detection on by
