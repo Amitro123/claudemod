@@ -99,3 +99,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-20 | #180 inspector audit: the history scan reads files marked -diff or binary | none (4 of 4 answered; typesafe/jev-1.13, $0.0002) | — (the bug was found by /inspector:inspect, not by these four) |
 | 2026-11-20 | #181 inspector, retro: tests that run on Windows, and a Windows job in CI | none (4 of 4 answered; typesafe/jev-1.13, $0.0001) | — (tests and CI only) |
 | 2026-11-20 | #181 again: Windows CI fixes (golden normalizer, forbidden names, UTF-8 for every subprocess text call) | none (4 of 4 answered; typesafe/jev-1.13, $0.0005) | — (the encoding gap was found by the pytest-windows job, not by these four) |
+| 2026-11-20 | factory tests: the engine fake keys files by one path form on Windows too (fix/factory-windows) | not run: INCOMPLETE, 0 of 4 answered (HTTP 401, no decision-model key on this machine) | — (nothing was checked; tests and CI only) |

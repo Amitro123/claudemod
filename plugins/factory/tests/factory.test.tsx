@@ -5,6 +5,7 @@ import type { On } from 'claude-code'
 import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from '../hooks/route'
 import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, resumeState, safeForIssue, SESSION_LINK_FILTER, SQUELCHED_FILTER_BRANCH, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
 import type { Run } from '../types'
+import { posix } from './support/posix'
 import { linesByFile, parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
 import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
 import { issueFile, parsePages, parseRestIssue, parseRestIssueList, queueLines, refusal, trustedComments, type Issue } from '../hooks/issues'
@@ -197,15 +198,16 @@ function engine(on: On, { hold = '', goalRun = true, fails = 0, files = ['packag
     return ok('ok')
   })
   on('fs.read', (_, e) => {
-    if (e.path.endsWith('package.json')) return { value: pkg } as never
-    if (configJson && e.path.endsWith('/.factory/config.json')) return { value: configJson } as never
-    if (e.path in written) return { value: written[e.path] } as never
+    const path = posix(e.path)
+    if (path.endsWith('package.json')) return { value: pkg } as never
+    if (configJson && path.endsWith('/.factory/config.json')) return { value: configJson } as never
+    if (path in written) return { value: written[path] } as never
     // The spec the agent wrote: a file the engine has, with no commands in it.
-    if (/\/docs\/specs\/.+\.md$/.test(e.path)) return { value: '# Spec' } as never
+    if (/\/docs\/specs\/.+\.md$/.test(path)) return { value: '# Spec' } as never
     throw new Error('ENOENT')
   })
   on('fs.write', (_, e) => {
-    written[e.path] = e.text
+    written[posix(e.path)] = e.text
     return { value: undefined } as never
   })
   on('fs.list', () => ({ value: files.map(name => ({ name, kind: 'file' })) }) as never)
