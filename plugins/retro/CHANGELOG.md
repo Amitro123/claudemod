@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed: masking a private key cut off before its END line took the rest of the line with it, which broke a JSON transcript line. It now stops at the end of the string the key is in.
+- Fixed: `/retro:agent-audit` counted a write to `/tmp/../<repo>/file` as a scratch write, because it matched `/tmp/` in the text. The path is normalized first.
+- Fixed: `lint_skill.py --recommendations` passed an empty `evidence:` or a `->` with no target. And distill no longer asks to lint a skill folder when no lesson went to *skill*.
 - Changed: `/retro:distill` routes each lesson before it drafts anything. After reading the project's checks, CI and docs, it gives each lesson one destination: an existing check to fix or wire in, a new test or lint rule, missing access or navigation docs, guidance in a brief, a skill, a model choice, or no change yet. Only *skill* lessons go into a SKILL.md draft. Each recommendation names its evidence, what was measured (kept apart from the hypothesis), what was already there, the change and its target, why, and how to verify it (`references/recommendations.md`), and `lint_skill.py --recommendations` checks it. `/retro:agent-audit` maps its owners onto the same destinations. Idea from comparing with mattpocock/skills' retro, which routes lessons into checks first.
 - Fixed: `lint_skill.py .` read the folder's name as empty.
 - Fixed: a resumed agent's calls were split between its dispatches by comparing timestamps as text, so `…:01.5Z` sorted before `…:01Z` and `+00:00` against `Z` went by the wrong order. They are compared as instants now.

@@ -458,7 +458,9 @@ BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
 SESSION_URL_RE = re.compile(r"https://claude\.ai/code/session_[A-Za-z0-9]+")
 # The board's refusals, shared: a whole private-key block (to its END line, or to the end of the text), and the
 # 52-character lowercase base32 shape of an Azure DevOps PAT.
-PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S)
+# A key cut off before its END line stops at the end of the string it sits in (an unescaped quote: the text is
+# often a JSON line) rather than taking the rest of the line with it.
+PRIVATE_KEY_RE = re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|(?=(?<!\\)")|\Z)', re.S)
 ADO_PAT_RE = re.compile(r"(?<![A-Za-z0-9])[a-z2-7]{52}(?![A-Za-z0-9])")
 HOME_RE = re.compile(r"(?i)(?<![\w/])([A-Z]:\\Users\\|/Users/|/home/)([^\\/\s'\"`\[]+)")
 
