@@ -97,3 +97,5 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-20 | #178 release: factory 0.28.0, inspector 0.9.0, retro 0.3.0 | none (4 of 4 answered; typesafe/jev-1.13, $0.0002) | — |
 | 2026-11-20 | #179 docs: rules with how each is held, factory stabilization plan, inspect case file | none (4 of 4 answered; typesafe/jev-1.13, $0.0004) | — (docs only) |
 | 2026-11-20 | #180 inspector audit: the history scan reads files marked -diff or binary | none (4 of 4 answered; typesafe/jev-1.13, $0.0002) | — (the bug was found by /inspector:inspect, not by these four) |
+| 2026-11-20 | #181 inspector, retro: tests that run on Windows, and a Windows job in CI | none (4 of 4 answered; typesafe/jev-1.13, $0.0001) | — (tests and CI only) |
+| 2026-11-20 | #181 again: Windows CI fixes (golden normalizer, forbidden names, UTF-8 for every subprocess text call) | none (4 of 4 answered; typesafe/jev-1.13, $0.0005) | — (the encoding gap was found by the pytest-windows job, not by these four) |

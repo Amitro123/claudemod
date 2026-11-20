@@ -32,13 +32,15 @@ def test_no_transcript_for_this_project_is_no_match_not_another_projects(tmp_pat
 
 def test_a_newer_foreign_transcript_never_wins(tmp_path):
     mine = _home_with(tmp_path, T.project_slug("/work/mine"))
-    other = _home_with(tmp_path, "-work-other")
+    other = _home_with(tmp_path, T.project_slug("/work/other"))
     os.utime(other, (time.time() + 60, time.time() + 60))
     cur = tmp_path / ".cursor" / "projects"
-    (cur / "work-other" / "agent-transcripts").mkdir(parents=True)
-    (cur / "work-other" / "agent-transcripts" / "x.md").write_text("Do it.\n")
-    (cur / "work-mine" / "agent-transcripts").mkdir(parents=True)
-    (cur / "work-mine" / "agent-transcripts" / "y.md").write_text("Do it.\n")
+    # Cursor's folder for a project, as candidates() matches it: from the project's path, so on Windows the drive is in it.
+    cursor_of = lambda p: T._norm(T.project_slug(p))  # noqa: E731
+    (cur / cursor_of("/work/other") / "agent-transcripts").mkdir(parents=True)
+    (cur / cursor_of("/work/other") / "agent-transcripts" / "x.md").write_text("Do it.\n")
+    (cur / cursor_of("/work/mine") / "agent-transcripts").mkdir(parents=True)
+    (cur / cursor_of("/work/mine") / "agent-transcripts" / "y.md").write_text("Do it.\n")
     got = T.candidates("/work/mine", str(tmp_path))
     assert mine in got and other not in got
     assert [f.name for f in got if ".cursor" in str(f)] == ["y.md"]
@@ -119,7 +121,7 @@ def test_a_budget_in_turns_is_not_compared_with_calls(tmp_path):
 
 
 # R6 (#168): paths outside /tmp, which the audit counts as scratch
-WORK = Path("/work")
+WORK = Path(os.path.abspath("/work"))  # C:\work on Windows, /work elsewhere: what a write resolves against
 
 
 def run_with_write(path: str, ok: bool = True) -> dict:

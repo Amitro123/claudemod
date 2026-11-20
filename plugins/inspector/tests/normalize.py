@@ -42,7 +42,8 @@ def normalize_json(r: dict, extra: list[str] | None = None) -> dict:
 
 def normalize_md(text: str, volatile: list[str]) -> str:
     text = _swap(text, volatile, "<VOLATILE>")
-    text = re.sub(r"python3 '?[^\s']*evidence\.py'?", "python3 <SCRIPT>", text)
+    # The interpreter is `python3` on POSIX and `python` on Windows (python_cmd), and a Windows path is quoted.
+    text = re.sub(r"python3? '?[^\s']*evidence\.py'?", "python3 <SCRIPT>", text)
     # shell quoting of a path is platform dependent (a Windows path is quoted, a POSIX temp path is not)
     text = text.replace("'<VOLATILE>'", "<VOLATILE>")
     text = re.sub(r"^Inspector \S+ · fingerprint [0-9a-f]+$", "Inspector <VERSION> · fingerprint <FINGERPRINT>", text, flags=re.M)

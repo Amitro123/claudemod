@@ -20,7 +20,7 @@ TENANT = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
 
 
 def sh(cwd: Path, *args: str, env=None) -> str:
-    return subprocess.run(list(args), cwd=cwd, check=True, capture_output=True, text=True, env=env).stdout
+    return subprocess.run(list(args), cwd=cwd, check=True, capture_output=True, text=True, encoding="utf-8", env=env).stdout
 
 
 def make_repo(tmp: Path) -> Path:
@@ -274,8 +274,13 @@ def test_a_side_branch_add_and_delete_is_found_and_a_clean_merge_stays_clean(tmp
     assert [(f["path"], f["where"]) for f in got] == [("k.txt", f"commit:{added[:12]}")], "once, at the side commit, not again at the merge"
 
 
+# A double quote and a tab are legal in a file name on Linux and macOS, not on Windows: those names run only where they can exist.
+NOT_ON_WINDOWS = pytest.mark.skipif(os.name == "nt", reason="Windows forbids this character in a file name")
+
+
 @pytest.mark.slow
-@pytest.mark.parametrize("name", ["נתונים.txt", "with space.txt", 'quo"te.txt', "tab\there.txt"])
+@pytest.mark.parametrize("name", ["נתונים.txt", "with space.txt", pytest.param('quo"te.txt', marks=NOT_ON_WINDOWS),
+                                  pytest.param("tab\there.txt", marks=NOT_ON_WINDOWS)])
 def test_file_names_git_quotes_are_scanned_with_their_real_name(tmp_path, name):
     r, env = git_repo(tmp_path)
     (r / name).write_text(f"x\nTOKEN={TOKEN}\n")

@@ -18,7 +18,7 @@ import evidence  # noqa: E402
 
 def run(repo: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
-                          text=True).stdout
+                          text=True, encoding="utf-8").stdout
 
 
 def commit(repo: Path, files: dict[str, str | None], msg: str) -> None:

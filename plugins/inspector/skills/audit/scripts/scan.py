@@ -179,7 +179,7 @@ def unquote_path(s: str) -> str:
 def _merge_mode(repo: Path) -> str:
     """remerge shows only what a merge itself changed against git's own merge of its parents (git 2.36+);
     an older git gets the first-parent diff, which repeats the side branch's lines."""
-    p = subprocess.run(["git", "-C", str(repo), "log", "-1", "--diff-merges=remerge", "--format=%H"], capture_output=True, text=True)
+    p = subprocess.run(["git", "-C", str(repo), "log", "-1", "--diff-merges=remerge", "--format=%H"], capture_output=True, text=True, encoding="utf-8")
     return "remerge" if p.returncode == 0 else "first-parent"
 
 

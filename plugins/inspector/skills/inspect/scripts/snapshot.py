@@ -27,7 +27,7 @@ def plugin_identity(root: Path = PLUGIN_ROOT) -> dict:
 
 
 def git(repo: str, *args: str) -> str:
-    proc = subprocess.run(['git', '-C', repo, *args], capture_output=True, text=True)
+    proc = subprocess.run(['git', '-C', repo, *args], capture_output=True, text=True, encoding="utf-8")
     if proc.returncode:
         raise ValueError(f'Cannot validate saved evidence repository: {proc.stderr.strip()}')
     return proc.stdout.strip()

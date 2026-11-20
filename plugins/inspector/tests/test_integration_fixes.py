@@ -87,5 +87,5 @@ def test_normalizer_blanks_only_the_volatile_plugin_fields(collected):
 def test_scripts_run_from_another_directory_in_isolated_mode(tmp_path, script, args):
     # -I drops the script folder from sys.path: the strictest import check (plain runs are a subset)
     cmd = [sys.executable, "-X", "utf8", "-I", str(SCRIPTS / script), *args]
-    r = subprocess.run(cmd, cwd=tmp_path, capture_output=True, text=True)
+    r = subprocess.run(cmd, cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
     assert r.returncode == 0, r.stderr

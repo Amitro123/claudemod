@@ -8,6 +8,8 @@ A file that really is binary (a NUL byte in it) is skipped in history as it is i
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from test_audit import TOKEN, findings, sh  # noqa: F401  (also puts the scripts on the path)
@@ -39,7 +41,6 @@ def commit(r, env, msg, **files):
 
 @pytest.fixture(scope="module")
 def history(tmp_path_factory):
-    import os
     tmp = tmp_path_factory.mktemp("matrix")
     env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
            "GIT_COMMITTER_EMAIL": "t@example.com"}
@@ -52,7 +53,9 @@ def history(tmp_path_factory):
     commit(r, env, "plain", **{"plain.cfg": secret})
     sh(r, "git", "mv", "plain.cfg", "moved.cfg", env=env)
     commit(r, env, "rename and add", **{"moved.cfg": secret + secret.replace("TOKEN", "OTHER")})
-    commit(r, env, "odd names", **{"שם עברי.txt": secret, "with space.txt": secret, 'q"uote.txt': secret})
+    # A double quote is legal in a file name on Linux and macOS, not on Windows: that shape exists only where git can hold it.
+    odd = {"שם עברי.txt": secret, "with space.txt": secret, **({} if os.name == "nt" else {'q"uote.txt': secret})}
+    commit(r, env, "odd names", **odd)
     # Attributes: text files git is told to diff as binary, and a real binary (NUL bytes) holding the same value.
     commit(r, env, "attributes", **{"deps.lockx": secret, "blob.dat": secret})
     (r / "real.bin").write_bytes(b"\x00\x01\x02" + secret.encode() + b"\x00")
@@ -108,7 +111,7 @@ def history(tmp_path_factory):
 
 # real.bin is not here: a file with a NUL byte is skipped in history as `scan_files` skips it in a tree.
 EXPECTED = ["blob.dat", "conflict.txt", "criss.txt", "deps.lockx", "evil-merge.txt", "gone.txt", "moved.cfg",
-            "plain.cfg", 'q"uote.txt', "root.txt", "shared.txt", "with space.txt", "שם עברי.txt"]
+            "plain.cfg", *([] if os.name == "nt" else ['q"uote.txt']), "root.txt", "shared.txt", "with space.txt", "שם עברי.txt"]
 
 
 @pytest.mark.slow

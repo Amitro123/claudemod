@@ -50,6 +50,7 @@ def test_missing_cards_directory_is_an_error(tmp_path):
     assert crosscheck.read_cards(str(tmp_path / 'missing'))[1]
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='evals/run-offline.sh is a POSIX runner; its stand-ins are sh scripts on PATH')
 @pytest.mark.parametrize('validate_code,pytest_code,expected', [(1,0,1),(0,1,1),(0,0,0)])
 def test_offline_runner_preserves_both_check_results(tmp_path, validate_code, pytest_code, expected):
     for name, code in [('claude', validate_code), ('python3', pytest_code)]:

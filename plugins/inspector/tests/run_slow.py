@@ -31,7 +31,7 @@ WEIGHT = ["test_github_enrich", "test_evidence", "test_collector_equality", "tes
 
 def slow_files() -> list[str]:
     p = subprocess.run([sys.executable, "-m", "pytest", str(HERE), "-m", "slow", "--collect-only", "-q", "-p", "no:cacheprovider"],
-                       cwd=ROOT, capture_output=True, text=True)
+                       cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
     names = sorted({Path(l.split("::")[0]).name for l in p.stdout.splitlines() if "::" in l})
     return sorted(names, key=lambda n: (WEIGHT.index(n[:-3]) if n[:-3] in WEIGHT else len(WEIGHT), n))
 

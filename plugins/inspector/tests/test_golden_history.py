@@ -41,7 +41,7 @@ def _has_history() -> bool:
     if not (ROOT / ".git").exists():
         return False
     shallow = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-shallow-repository"],
-                             capture_output=True, text=True).stdout.strip()
+                             capture_output=True, text=True, encoding="utf-8").stdout.strip()
     known = subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", f"{PR72}^{{commit}}"]).returncode == 0
     return shallow == "false" and known
 

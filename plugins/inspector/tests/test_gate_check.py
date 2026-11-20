@@ -60,7 +60,7 @@ def build(tmp: Path, unverified: int = 0) -> Path:
 
 
 def run_check(run: Path, *extra):
-    p = subprocess.run([sys.executable, str(CHECK), str(run), "--expect", "1,2", *extra], capture_output=True, text=True)
+    p = subprocess.run([sys.executable, str(CHECK), str(run), "--expect", "1,2", *extra], capture_output=True, text=True, encoding="utf-8")
     try:
         rep = json.loads(p.stdout)
     except ValueError:
@@ -295,7 +295,7 @@ def add_plan(run: Path, *, verify: bool = True, mode: str = "parallel", sweepers
 
 def run_plan_check(run: Path, *extra):
     """No --expect: the plan supplies the ids."""
-    p = subprocess.run([sys.executable, str(CHECK), str(run), *extra], capture_output=True, text=True)
+    p = subprocess.run([sys.executable, str(CHECK), str(run), *extra], capture_output=True, text=True, encoding="utf-8")
     try:
         rep = json.loads(p.stdout)
     except ValueError:
@@ -314,7 +314,7 @@ def test_complete_run_with_a_plan_passes(tmp_path):
 def test_the_plan_replaces_the_command_line(tmp_path):
     """--expect 7,8 would look for cards 7 and 8; with a plan the readers are 1 and 2."""
     run = add_plan(build(tmp_path))
-    p = subprocess.run([sys.executable, str(CHECK), str(run), "--expect", "7,8"], capture_output=True, text=True)
+    p = subprocess.run([sys.executable, str(CHECK), str(run), "--expect", "7,8"], capture_output=True, text=True, encoding="utf-8")
     assert p.returncode == 0, p.stdout[-400:]
 
 

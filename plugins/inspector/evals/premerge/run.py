@@ -63,7 +63,7 @@ SKIP = {(CM, "#97"), (CM, "#48")}     # culprits whose assumption fits no questi
 
 
 def git(repo, *a):
-    return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, errors="replace").stdout
+    return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
 
 
 def units(repo):

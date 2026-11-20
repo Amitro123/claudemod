@@ -124,5 +124,5 @@ def test_garbage_or_future_timestamp_is_a_miss():
 
 def test_help_documents_the_flag():
     import subprocess
-    out = subprocess.run([sys.executable, str(Path(evidence.__file__)), "--help"], capture_output=True, text=True).stdout
+    out = subprocess.run([sys.executable, str(Path(evidence.__file__)), "--help"], capture_output=True, text=True, encoding="utf-8").stdout
     assert "--refresh-github" in out and "--no-cache" in out
