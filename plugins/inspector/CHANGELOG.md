@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed: the audit's history scan skipped every file `.gitattributes` marks `-diff` or `binary`, because `git log -p` prints "Binary files differ" for them. A credential added to such a file in a branch was never found, with no warning. The scan now passes `--text`. A file that really is binary (a NUL byte in what a commit added) is still skipped, as the tree scan skips it. Images, archives and the other skipped extensions are left out by git itself (a case-insensitive pathspec), so `--text` doesn't print them. The matrix (`tests/test_scan_matrix.py`) gains a `-diff` file, a `binary` file and a real binary: on the scanner before this fix it fails under all 12 settings. Found by `/inspector:inspect` (`docs/inspector/2026-11-20-case.md`).
+
 ## 0.9.0 (2026-11-20)
 
 The audit's secret scan holds under any git settings and history shape (merges, octopus, noprefix, showRoot, textconv, quoted names), checked by a matrix of both; the verifier's verdicts are validated; branches report unpublished commits.
