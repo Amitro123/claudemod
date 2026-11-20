@@ -39,17 +39,17 @@
     {
       "name": "factory",
       "source": "./plugins/factory",
-      "description": "A software factory: an intake weighs each feature or GitHub issue labeled factory, a spec and your approval of its plan, build on a branch, checks, reviewers routed by risk, an approver, then the PR; up to three runs at once"
+      "description": "A software factory: an intake weighs each feature or GitHub issue labeled factory, a spec and your approval of its plan, build on a branch, checks, reviewers routed by risk, an approver, then the PR; up to three runs at once; a run survives a restart"
     },
     {
       "name": "inspector",
       "source": "./plugins/inspector",
-      "description": "A bug detective: reads what the project promises, traces every fix PR back to the change that broke it, classifies the bugs and writes a case file of what still needs fixing"
+      "description": "A bug detective: reads what the project promises, traces every fix PR back to the change that broke it, classifies the bugs and writes a case file of what still needs fixing; and an independent read-only audit of deployments, commits and secrets against the record that authorizes them"
     },
     {
       "name": "retro",
       "source": "./plugins/retro",
-      "description": "Learns from finished runs: turns a run into a skill or tightens the skill it used, and audits sub-agents against their briefs (brief, agent, host or model at fault)"
+      "description": "Learns from finished runs: routes each lesson to a check, a test, access, guidance, a skill or a model choice, audits sub-agents against their briefs (brief, agent, host or model at fault), and gives sub-agents a shared board of facts with evidence"
     }
   ]
 }

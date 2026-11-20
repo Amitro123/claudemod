@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.9.0 (2026-11-20)
+
+The audit's secret scan holds under any git settings and history shape (merges, octopus, noprefix, showRoot, textconv, quoted names), checked by a matrix of both; the verifier's verdicts are validated; branches report unpublished commits.
+
 - Fixed: `log.showRoot=false` hid the first commit's diff from the secret scan, and a textconv filter in `.gitattributes` hid the files it applies to. Found by a new test matrix (`tests/test_scan_matrix.py`): every history shape (root commit, rename, odd names, add then delete, a merge's own line, octopus, criss-cross, a conflict's resolution) under every setting that changes `git log -p` (noprefix, mnemonic prefix, color, showRoot, renames, quotePath, algorithm, external diff, textconv, relative, context). On the scanner before this release it fails 12 of 12; a new shape or setting goes in its tables.
 - Fixed: the audit's secret scan read git's diff as the repository configured it, so `diff.noprefix` (or a mnemonic prefix, an external diff tool, a textconv filter) hid every credential in the history. The scan now sets the diff's shape itself.
 - Fixed: a credential added by an octopus merge (three or more parents) was not found: remerge shows nothing for those. A second pass reads them as a dense combined diff and keeps only lines in none of the parents.

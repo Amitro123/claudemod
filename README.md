@@ -492,7 +492,7 @@ session's loaded copy. To test the candidate directly, use an absolute plugin di
 claude --plugin-dir /absolute/path/to/claudemod/plugins/inspector
 ```
 
-The 0.8.2 release is the version in this checkout. This mechanism
+The 0.9.0 release is the version in this checkout. This mechanism
 checks saved evidence freshness, not the LLM provider's prompt cache.
 
 ### Inspector: failure reporting

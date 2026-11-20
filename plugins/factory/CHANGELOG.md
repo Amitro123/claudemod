@@ -4,6 +4,10 @@ Earlier releases are described in the repository README.
 
 ## Unreleased
 
+## 0.28.0 (2026-11-20)
+
+Survives a restart (`/factory resume`), re-runs a failing check on the base before sending the builder back (`baseFailures`), takes session links out of the builder's commits, hands out shell-safe PR commands for the right repository, keeps what the reviewers didn't check (`notChecked`), and budgets from measured runs.
+
 - Fixed: a base check that was interrupted (the session killed mid-check) left `.factory/.base-<run>` on disk with its installed dependencies, and nothing removed it. Each base check now gets a folder of its own (`.base-<run>-<time>`), so a leftover can't get in the way of the next one. A session's start removes leftovers through git, and the doctor lists them. While the base's dependencies install, the run says so.
 - Changed: every reviewer is told that, where the change reads another program's output (git, gh, az, a CLI, a file format), it should name the settings and versions that change that output and check the code under each, or list the ones it couldn't under NOT CHECKED. Why: the secret scan's parser missed `diff.noprefix` and octopus merges, and the factory's reviewers read past both.
 - Added: **what the reviewers didn't check is kept.** Each reviewer's NOT CHECKED list used to be read once in the report and lost. At the end of a run or a review it now goes to `.factory/not-checked.jsonl` (one line per item, duplicates and "none" dropped), and the status counts them. With the new `notChecked` option on `issue`, the run also opens one GitHub issue that lists them as a checklist. The issue is labeled `factory-followup`, not `factory`, so the queue doesn't build it on its own; add `factory` to have it built. Why: in the review of #174 the code reviewer wrote that it hadn't checked the fallback when git's remerge isn't available. An outside review then found a bug in that very area (octopus merges), and the note had gone nowhere.
