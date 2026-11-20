@@ -25,8 +25,8 @@ jobs:
   pytest-windows:
     runs-on: windows-latest
     timeout-minutes: 45
-    env:
-      PYTHONUTF8: '1'   # open() and the console in UTF-8, as on Linux
+    # No PYTHONUTF8: a user's Windows has the locale's encoding (cp1252) for open() and the console, and the job
+    # runs as they do, so a file opened without encoding= or a non-ASCII name printed shows up here.
     steps:
       - run: git config --global core.autocrlf false   # check files out as committed, LF, as the golden tests expect
       - uses: actions/checkout@v4
