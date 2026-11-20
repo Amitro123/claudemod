@@ -465,6 +465,18 @@ ADO_PAT_RE = re.compile(r"(?<![A-Za-z0-9])[a-z2-7]{52}(?![A-Za-z0-9])")
 HOME_RE = re.compile(r"(?i)(?<![\w/])([A-Z]:\\Users\\|/Users/|/home/)([^\\/\s'\"`\[]+)")
 
 
+def mask_data(obj):
+    """mask() over every string inside decoded JSON (keys too), structure kept: masking the serialized text
+    can't tell a string's closing quote from an escaped one, and cut through JSON syntax."""
+    if isinstance(obj, str):
+        return mask(obj)
+    if isinstance(obj, dict):
+        return {mask_data(k) if isinstance(k, str) else k: mask_data(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [mask_data(v) for v in obj]
+    return obj
+
+
 def mask(text: str) -> str:
     """Hide values a skill must never carry: private-key blocks, tokens and PAT shapes, emails (domain kept), GUIDs,
     session links, user names in paths. Heuristics: a secret in no known shape is not caught."""

@@ -205,3 +205,63 @@ def test_a_path_through_scratch_and_back_out_is_not_scratch():
     assert not A.is_scratch("/tmp/../home/user/repo/src/app.py")
     assert not A.is_scratch("scratchpad/../../repo/x.py")
     assert not A.is_scratch("../tmp/x")
+
+
+def _write_verdict(tmp_path, target, cwd="/work/repo"):
+    from pathlib import Path as P
+    run = T.AgentRun("x", "a", "", "auditor", None, "Rules: read-only\nBudget: 5 tool calls", report="done",
+                     calls=[T.Call("1", "Write", {"file_path": target}, ok=True)])
+    return A.audit_run(run, P(cwd))["causes"]["execution"]
+
+
+def test_a_source_file_named_like_scratch_is_still_a_write_to_the_repository(tmp_path):
+    for target in ["/work/repo/src/scratchpad.py", "/work/repo/src/temp/app.py", "/work/repo/src/tmp/app.py",
+                   "src/temp/app.py", "./src/scratchpad.py", "/work/repo/src/app.py"]:
+        assert _write_verdict(tmp_path, target) == ["broke the brief's read-only rule"], target
+    for target in ["/tmp/claude-0/s/scratchpad/out.md", "/work/repo/.inspector-run/r.json", ".inspector-run/r.json",
+                   "/var/folders/ab/T/x.txt", "$env:TEMP\\x.txt", "%TEMP%\\x.txt"]:
+        assert _write_verdict(tmp_path, target) == [], target
+    win = "C:\\Users\\a\\repo"
+    assert _write_verdict(tmp_path, "C:\\Users\\a\\AppData\\Local\\Temp\\x.txt", win) == []
+    assert _write_verdict(tmp_path, "C:\\Users\\a\\repo\\src\\temp\\x.py", win) == ["broke the brief's read-only rule"]
+
+
+def test_a_repository_under_a_temp_folder_is_not_scratch_itself(tmp_path):
+    assert _write_verdict(tmp_path, "/tmp/repo/src/app.py", "/tmp/repo") == ["broke the brief's read-only rule"]
+    assert _write_verdict(tmp_path, "src/app.py", "/tmp/repo") == ["broke the brief's read-only rule"]
+    assert _write_verdict(tmp_path, "/tmp/elsewhere/out.md", "/tmp/repo") == []
+    assert _write_verdict(tmp_path, "/tmp/../work/repo/src/app.py") == ["broke the brief's read-only rule"]
+
+
+BACKSLASH = chr(92)
+TRICKY = ["-----BEGIN PRIVATE KEY-----\nQUJDQUJD" + BACKSLASH,
+          "-----BEGIN PRIVATE KEY-----\nQUJD" + BACKSLASH * 3,
+          "-----BEGIN PRIVATE KEY-----\nQUJD\n-----END PRIVATE KEY-----",
+          'quote " and ' + BACKSLASH + '" inside',
+          "log line C:" + BACKSLASH + "work" + BACKSLASH]
+
+
+def test_masking_json_keeps_it_json_with_backslashes_quotes_and_nesting():
+    data = {"content": TRICKY[0], "next": "kept", "list": [{"a": v, "b": "kept"} for v in TRICKY], "n": 3}
+    out = json.loads(json.dumps(T.mask_data(data)))
+    assert out["next"] == "kept" and out["n"] == 3 and all(x["b"] == "kept" for x in out["list"])
+    assert "QUJD" not in json.dumps(out)
+    assert out["list"][3]["a"] == TRICKY[3] and out["list"][4]["a"] == TRICKY[4]
+
+
+def test_both_clis_emit_valid_json_around_a_cut_off_key_and_a_trailing_backslash(tmp_path):
+    md = tmp_path / "run.md"
+    md.write_text("Do it.\n\n-----BEGIN PRIVATE KEY-----\nQUJDQUJD\n\nran it in C:" + BACKSLASH + "work" + BACKSLASH + "\n\nsaid \"done\"\n", encoding="utf-8")
+    out = tmp_path / "t.json"
+    assert TR.main([str(md), "--json", "--out", str(out)]) in (0, None)
+    text = out.read_text(encoding="utf-8")
+    json.loads(text)
+    assert "QUJDQUJD" not in text
+    rep = tmp_path / "agents"
+    rep.mkdir()
+    (rep / "c.json").write_text(json.dumps({"agent": "c", "type": "auditor", "did": [TRICKY[0], "next step", TRICKY[4]]}))
+    out2 = tmp_path / "a.json"
+    A.main(["--reports", str(rep), "--json", "--out", str(out2), "--cwd", str(tmp_path)])
+    text2 = out2.read_text(encoding="utf-8")
+    json.loads(text2)
+    assert "QUJDQUJD" not in text2
