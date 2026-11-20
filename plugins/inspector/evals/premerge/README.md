@@ -96,3 +96,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-20 | #177 again: retro scratch by location (R1), JSON masked value by value (R2) | none (4 of 4 answered; typesafe/jev-1.13, $0.0004) | — (both found by an outside recheck: a substring match and serialized-text masking, outside what these four ask) |
 | 2026-11-20 | #178 release: factory 0.28.0, inspector 0.9.0, retro 0.3.0 | none (4 of 4 answered; typesafe/jev-1.13, $0.0002) | — |
 | 2026-11-20 | #179 docs: rules with how each is held, factory stabilization plan, inspect case file | none (4 of 4 answered; typesafe/jev-1.13, $0.0004) | — (docs only) |
+| 2026-11-20 | #180 inspector audit: the history scan reads files marked -diff or binary | none (4 of 4 answered; typesafe/jev-1.13, $0.0002) | — (the bug was found by /inspector:inspect, not by these four) |

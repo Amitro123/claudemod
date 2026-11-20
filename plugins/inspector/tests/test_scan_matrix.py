@@ -2,8 +2,9 @@
 
 Each shape adds the same credential in a file of its own, in a different way: the root commit, a plain commit,
 a renamed file, a two-parent merge, an octopus merge, a criss-cross merge, a conflict's resolution, odd file
-names, an add then delete. Each setting is one a repository or user may have that changes what `git log -p`
-prints. Every shape must be found under every setting: a new shape or setting goes in the tables below.
+names, an add then delete, and a text file `.gitattributes` marks `-diff` or `binary` (git prints "Binary files
+differ" for those). Each setting is one a repository or user may have that changes what `git log -p` prints.
+A file that really is binary (a NUL byte in it) is skipped in history as it is in the tree. Every shape must be found under every setting: a new shape or setting goes in the tables below.
 """
 from __future__ import annotations
 
@@ -46,11 +47,17 @@ def history(tmp_path_factory):
     sh(tmp, "git", "init", "-q", "-b", "main", str(r))
     secret = f"TOKEN={TOKEN}\n"
     # The textconv driver the "textconv" setting turns on, for these files: it would print them reversed.
-    commit(r, env, "root", **{"root.txt": secret, ".gitattributes": "*.cfg diff=rev\n", "shared.txt": "a\nb\nc\nd\n"})
+    commit(r, env, "root", **{"root.txt": secret, ".gitattributes": "*.cfg diff=rev\n*.lockx -diff\n*.dat binary\n",
+                              "shared.txt": "a\nb\nc\nd\n"})
     commit(r, env, "plain", **{"plain.cfg": secret})
     sh(r, "git", "mv", "plain.cfg", "moved.cfg", env=env)
     commit(r, env, "rename and add", **{"moved.cfg": secret + secret.replace("TOKEN", "OTHER")})
     commit(r, env, "odd names", **{"שם עברי.txt": secret, "with space.txt": secret, 'q"uote.txt': secret})
+    # Attributes: text files git is told to diff as binary, and a real binary (NUL bytes) holding the same value.
+    commit(r, env, "attributes", **{"deps.lockx": secret, "blob.dat": secret})
+    (r / "real.bin").write_bytes(b"\x00\x01\x02" + secret.encode() + b"\x00")
+    sh(r, "git", "add", "real.bin", env=env)
+    sh(r, "git", "commit", "-qm", "a real binary", env=env)
     commit(r, env, "added", **{"gone.txt": secret})
     sh(r, "git", "rm", "-q", "gone.txt", env=env)
     sh(r, "git", "commit", "-qm", "deleted", env=env)
@@ -99,8 +106,9 @@ def history(tmp_path_factory):
     return r, env
 
 
-EXPECTED = ["conflict.txt", "criss.txt", "evil-merge.txt", "gone.txt", "moved.cfg", "plain.cfg", 'q"uote.txt',
-            "root.txt", "shared.txt", "with space.txt", "שם עברי.txt"]
+# real.bin is not here: a file with a NUL byte is skipped in history as `scan_files` skips it in a tree.
+EXPECTED = ["blob.dat", "conflict.txt", "criss.txt", "deps.lockx", "evil-merge.txt", "gone.txt", "moved.cfg",
+            "plain.cfg", 'q"uote.txt', "root.txt", "shared.txt", "with space.txt", "שם עברי.txt"]
 
 
 @pytest.mark.slow

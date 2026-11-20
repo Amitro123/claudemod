@@ -185,8 +185,15 @@ def _merge_mode(repo: Path) -> str:
 
 # The diff's shape is the scanner's, not the user's: a repository's diff.noprefix, mnemonicPrefix, an external
 # diff tool or a textconv filter would change the "+++ b/<path>" lines the parser reads, and nothing would match;
-# log.showRoot=false would hide the first commit's diff (--root shows it).
-DIFF_SHAPE = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--root"]
+# log.showRoot=false would hide the first commit's diff (--root shows it); a `-diff` or `binary` attribute in
+# .gitattributes would print "Binary files differ" instead of the lines (--text prints them). A file that really
+# is binary (a NUL byte in what it adds) is then skipped by _scan_log, as scan_files skips it in a tree.
+DIFF_SHAPE = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--root", "--text"]
+
+
+# Files the scan never reads, left out by git itself: with --text it would otherwise print every image and archive
+# in the range in full.
+SKIP_PATHSPEC = ["--", ".", *[f":(exclude,glob,icase)**/*{e}" for e in sorted(SKIP_EXT)]]
 
 
 def scan_range(repo: Path, rng: str, secrets, allow, out):
@@ -194,9 +201,9 @@ def scan_range(repo: Path, rng: str, secrets, allow, out):
     # three or more parents (an octopus), which remerge shows nothing for, as a dense combined diff, keeping only
     # the lines that are in none of the parents.
     _scan_log(run(repo, "-c", "core.quotePath=true", "log", "-p", *DIFF_SHAPE, f"--diff-merges={_merge_mode(repo)}",
-                  "--format=commit %H", "--unified=0", rng), secrets, allow, out)
+                  "--format=commit %H", "--unified=0", rng, *SKIP_PATHSPEC), secrets, allow, out)
     _scan_log(run(repo, "-c", "core.quotePath=true", "log", "-p", *DIFF_SHAPE, "--min-parents=3",
-                  "--diff-merges=dense-combined", "--format=commit %H", "--unified=0", rng), secrets, allow, out, combined=True)
+                  "--diff-merges=dense-combined", "--format=commit %H", "--unified=0", rng, *SKIP_PATHSPEC), secrets, allow, out, combined=True)
 
 
 def _scan_log(text: str, secrets, allow, out, combined: bool = False):
@@ -205,7 +212,8 @@ def _scan_log(text: str, secrets, allow, out, combined: bool = False):
     cols = 1  # a combined diff has one marker column per parent ("@@@" for two, "@@@@" for three)
 
     def flush():
-        if path and buf:
+        # A NUL byte in what the commit added: a real binary, read as text only because of --text.
+        if path and buf and not any("\0" in line for line in buf):
             scan_text(path, f"commit:{sha[:12]}", "\n".join(buf), secrets, allow, out, line_no=nums)
 
     for ln in text.splitlines():
