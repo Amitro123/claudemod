@@ -30,7 +30,7 @@ GH_PAT = "github_pat_" + "x9Y8" * 6
 SK = "sk-" + "proj-q1W2" * 3
 STRIPE = "sk_" + "live_" + "Zz9Y8x7W6v5U4t3S2r1Q"
 AKIA = "AKIA" + "ABCD1234EFGH5678"
-JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIx.c2lnbmF0dXJl"
+JWT = ".".join(["ey" + "JhbGciOiJIUzI1NiJ9", "ey" + "JzdWIiOiIx", "c2lnbmF0" + "dXJl"])
 SECRET = "wJalrFake" + "SecretValue1234"
 
 # (reason, text in, text out). One row per shape the issue names, plus the neighbour each pattern could swallow.
@@ -72,6 +72,33 @@ MASKED = [
     ("environment assignment of a TOKEN variable", "export GITHUB_TOKEN=abc123def", "export GITHUB_TOKEN=[token]"),
     ("private key block", "add\n-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----\nok", "add\n[private-key]\nok"),
     ("email is still masked (the 2026-11-15 content-filter case)", "Co-Authored-By: X <a@b.co>", "Co-Authored-By: X <[address]>"),
+    # Review round 2 (issue #185).
+    ("env assignment, single-quoted value with a space (the tail used to leak)", "DB_PASSWORD='a b' next", "DB_PASSWORD=[token] next"),
+    ("env assignment, double-quoted value with a space", 'DB_PASSWORD="a b c" next', "DB_PASSWORD=[token] next"),
+    ("env assignment, quote cut off by a limit: masked to the end of the line", "DB_PASSWORD='a b c\nnext line", "DB_PASSWORD=[token]\nnext line"),
+    ("env assignment, unterminated at the end of the text", 'API_KEY="a b', "API_KEY=[token]"),
+    ("env assignment inside JSON text, escaped quotes", r'{"cmd": "DB_PASSWORD=\"a b\" run"}', '{"cmd": "DB_PASSWORD=[token] run"}'),
+    ("lowercase bearer", "curl -H bearer abcdefghijklmnopqrstuvwx url", "curl -H bearer [token] url"),
+    ("upper-case BEARER", "BEARER abcdefghijklmnopqrstuvwx", "BEARER [token]"),
+    ("x-api-key header, lowercase, in a curl line", "curl -H 'x-api-key: abc123def456' u", "curl -H 'x-api-key: [token]' u"),
+    ("X-Api-Key header", "X-Api-Key: abc123def456", "X-Api-Key: [token]"),
+    ("X-API-KEY header as a JSON key", '{"X-API-KEY": "abc123"}', '{"X-API-KEY": "[token]"}'),
+    ("--password=VALUE", "mysql --password=hunter2 db", "mysql --password=[token] db"),
+    ("--password VALUE", "mysql --password hunter2 --x", "mysql --password [token] --x"),
+    ("--pass=VALUE", "tool --pass=hunter2", "tool --pass=[token]"),
+    ("--password quoted with a space", 'tool --password "a b" run', "tool --password [token] run"),
+    ("JSON password", '{"password": "hunter2"}', '{"password": "[token]"}'),
+    ("JSON api_key without a space after the colon", '{"api_key":"k1x2"}', '{"api_key":"[token]"}'),
+    ("JSON apikey", '{"apikey": "k1x2"}', '{"apikey": "[token]"}'),
+    ("JSON client_secret with spaces in the value", '{"client_secret": "a b c"}', '{"client_secret": "[token]"}'),
+    ("JSON access_token, single quotes (a Python dict)", "{'access_token': 'x y'}", "{'access_token': '[token]'}"),
+    ("JSON password with a quote of the other kind inside", '{"password": "pa\'ss word"}', '{"password": "[token]"}'),
+    ("JSON inside a JSON string: backslash-escaped quotes", r'{"msg": "{\"password\": \"hun ter2\", \"ok\": 1}"}',
+     r'{"msg": "{\"password\": \"[token]\", \"ok\": 1}"}'),
+    ("Azure AccountKey", "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=Zm9vYmFyYmF6cXV4==;EndpointSuffix=core.windows.net",
+     "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=[token];EndpointSuffix=core.windows.net"),
+    ("Azure SharedAccessKey", "Endpoint=sb://x.servicebus.windows.net/;SharedAccessKeyName=root;SharedAccessKey=Zm9vYmFy+/b=",
+     "Endpoint=sb://x.servicebus.windows.net/;SharedAccessKeyName=root;SharedAccessKey=[token]"),
 ]
 
 # Text a reader needs: it must come out byte for byte. Each row names the neighbour a pattern could swallow.
@@ -91,7 +118,31 @@ UNCHANGED = [
     ("the word Authorization with no colon", "Authorization header is now optional"),
     ("a lowercase variable is not an env secret", "token=expired handling"),
     ("Windows path and backslashes", r"C:\work\keys\notes.txt"),
+    # Review round 2 (issue #185).
+    ("prose: a bearer of bad news is under the 16-character minimum", "the bearer of bad news"),
+    ("prose: bearer token rotation", "bearer token rotation is due"),
+    ("docker login --password-stdin is not --password", "docker login --password-stdin"),
+    ("--password followed by another flag has no value to hide", "tool --password --verbose"),
+    ("--passphrase-file is not --pass", "ssh-keygen --passphrase-file x"),
+    ("JSON null is not a secret value", '{"password": null}'),
+    ("JSON key that only starts with password", '{"password_policy": "strict"}'),
+    ("JSON key tokens (plural) is not token", '{"tokens": "many"}'),
+    ("Azure SharedAccessKeyName is a name, not the key", "SharedAccessKeyName=RootManageSharedAccessKey;Endpoint=sb://x/"),
+    ("x-api-key mentioned without a colon", "the x-api-key header is required"),
+    ("env name that only contains PASSWORD", "DB_PASSWORD_FILE=/run/secrets/db"),
 ]
+
+# Current deliberate over-masking, written down so a change to it is a decision and not an accident.
+OVERMASKED = [
+    ("a hyphenated word of 20+ characters after sk- has the shape of a key", "sk-learn-model-version-two-oh", "[token]"),
+    ("any 52-character lowercase base32 word has the shape of an Azure DevOps PAT", "x " + "abcdefghij" * 5 + "kl" + " y", "x [token] y"),
+    ("docker run -u 1000:1000 has the shape of curl -u user:pw", "docker run -u 1000:1000 img", "docker run -u [token] img"),
+]
+
+
+@pytest.mark.parametrize("reason,text,want", OVERMASKED, ids=[r[0] for r in OVERMASKED])
+def test_documented_over_masking(reason, text, want):
+    assert decide.scrub(text) == want
 
 
 @pytest.mark.parametrize("reason,text,want", MASKED, ids=[r[0] for r in MASKED])
@@ -145,6 +196,27 @@ HOSTILE = {
     "email domain dots": "a@" + "a." * (N // 2),
     "email at signs": "a@" * (N // 2),
     "email local part": "a." * (N // 2) + "@",
+    "bearer repeats": "bearer " * (N // 7),
+    "bearer long": "bearer " + "a" * N,
+    "x-api-key repeats": "x-api-key:" * (N // 10),
+    "x-api-key quotes": "x-api-key:" + "\"'" * (N // 2),
+    "password flag repeats": "--password " * (N // 11),
+    "password flag equals": "--pass=" * (N // 7),
+    "password flag quote": '--password "' + "a" * N,
+    "json key repeats": '"password":"' * (N // 12),
+    "json key quotes": '"' * N,
+    "json key long prefix": '"' + "a" * N + "password",
+    "json key hyphens": '"' + "a-" * (N // 2) + 'token":"',
+    "json escaped repeats": r'\"password\":\"' * (N // 15),
+    "json value backslashes": '"password":"' + "\\" * N,
+    "json value quote kinds": '"password":"' + "'" * N,
+    "env quote repeats": "A_TOKEN='" * (N // 9),
+    "env quote long": "A_TOKEN='" + "a" * N,
+    "env escaped quotes": 'A_TOKEN=\\"' * (N // 10),
+    "accountkey repeats": "AccountKey=" * (N // 11),
+    "accountkey long": "AccountKey=" + "a" * N,
+    "sharedaccesskey repeats": "SharedAccessKey=" * (N // 16),
+    "sharedaccesskey name": "SharedAccessKeyName=" * (N // 20),
     "mixed": ("Bearer " + "a" * 15 + " -u a:b ") * (N // 30),
 }
 
@@ -209,3 +281,35 @@ def test_the_merge_cards_pair_body_carries_no_token():
     merge_cards.ask_pairs(raw, [(0, 1, 0, 0)], "m", post=post)
     sent = json.dumps(post.bodies)
     assert post.bodies and not any(s in sent for s in (GH, SK, "r" * 24))
+
+
+# A diff of a few megabytes is now masked whole (the cut comes after the mask): still seconds, not minutes.
+def test_a_large_diff_is_masked_in_linear_time():
+    chunk = "+    value = compute(a, b)  # token refresh, key rotation, password policy\n+    x = {'k': 1}\n"
+    big = chunk * (2_000_000 // len(chunk))
+    t0 = time.perf_counter()
+    decide.scrub(big)
+    assert time.perf_counter() - t0 < 6.0
+
+
+# Round 2: the cut at premerge.CAP used to come BEFORE the mask, so a token that straddled it was sent cut to fewer
+# than 20 characters after its prefix, which no shape matches. Mask first, then cut.
+@pytest.mark.parametrize("keep", [0, 4, 7, 12, 19, 25, 40])
+def test_a_token_straddling_the_diff_cap_is_not_sent_in_part(keep):
+    # `keep` characters of the token (prefix included) fall before the old cut at CAP
+    diff = "x" * (premerge.CAP - keep - 1) + " " + GH + "\n+more\n" * 50
+    body, cut = premerge.request_body(diff, "t", "m")
+    assert "ghp_" not in body["state"], f"a piece of the token reached the body with {keep} characters before the cut"
+    assert cut
+
+
+def test_a_token_in_the_title_is_masked_too():
+    body, _ = premerge.request_body("+a\n", f"fix {GH}", "m")
+    assert GH not in body["state"] and "fix [token]" in body["state"]
+
+
+def test_the_pair_text_cap_does_not_cut_a_token_in_part():
+    # a lead's `what` is capped at 1500 characters; a token that straddles the cap must not be left cut in part
+    what = "w" * (1500 - 12) + " " + GH
+    text = merge_cards._pair_text({"where": "a.py:1", "what": what, "impact": "x"})
+    assert "ghp_" not in text

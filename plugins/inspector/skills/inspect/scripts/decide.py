@@ -84,12 +84,22 @@ EMAIL_RE = re.compile(r"(?<![\w.+%-])[\w.+%-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}
 # environment assignments) are new here. Every pattern is linear: a literal or a lookbehind anchors each match, and
 # no two unbounded quantifiers over overlapping classes sit side by side. Heuristics: a secret in no known shape is
 # not caught. Not masked on purpose: GUIDs, home directories and hashes, which a reader of a subject may need.
+# KNOWN LIMITS of a heuristic masker (not masked; no NFKC normalisation, on purpose or not yet):
+#   - a `?code=` OAuth value in a query string (only key, sig, token, secret ... are listed);
+#   - tokens of SendGrid (SG.), Stripe webhooks (whsec_), Hugging Face (hf_), Google OAuth (ya29.), Docker (dckr_pat_);
+#   - Slack and Discord webhook URLs, whose path is the secret;
+#   - an X-Amz-Signature query value;
+#   - a zero-width character inside a token (it breaks the shape);
+#   - Cyrillic or full-width look-alike letters in a prefix, as there is no NFKC normalisation;
+#   - a percent-encoded token (`ghp%5F...`);
+#   - a token split across a newline (every shape is matched within one line or word).
 # Token shapes start at a non-alphanumeric (an underscore or hyphen before one is a file-name joint, not a word).
 TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
                       r"glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|"
                       r"sk-[A-Za-z0-9_-]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}|npm_[A-Za-z0-9]{30,}|"
                       r"AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)")
-BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
+# Any case (`bearer`, `BEARER`); the 16-character minimum keeps prose such as "the bearer of bad news" readable.
+BEARER_RE = re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]{16,}")
 # An Authorization header: the scheme word (Bearer, Basic, Negotiate, any name) is consumed with the value; the header
 # name may be quoted (JSON, a Python dict) and so may the value; the match stays on one line.
 AUTH_HEADER_RE = re.compile(r"""(?i)\b(authorization\\?["']?[ \t]*:[ \t]*\\?["']?)(?:[A-Za-z][\w.-]*[ \t]+)?[^\s"'\\]+""")
@@ -118,7 +128,24 @@ AWS_ASSIGN_RE = re.compile(r"""(?i)(\baws_(?:secret_access_key|session_token)[ \
 NPM_AUTH_RE = re.compile(r"""(:_(?:authToken|auth|password)(?:[ \t]+|[ \t]*=[ \t]*))["']?[^\s"']+""")
 # An upper-case environment assignment whose name ends in TOKEN, SECRET, PASSWORD, API_KEY ...: `export GITHUB_TOKEN=x`.
 # The name is at most 60 characters before the keyword and starts at a word edge, so the scan stays linear.
-ENV_SECRET_RE = re.compile(r"""(?<![A-Za-z0-9_])([A-Z0-9_]{0,60}(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|PRIVATE_KEY|SECRET_ACCESS_KEY)=)["']?[^\s"']+""")
+# The value is a quoted string (either quote, optionally backslash-escaped as inside JSON text) or a run of non-space
+# characters. A quote cut off by a limit runs to the end of its line. Each alternative starts with a different character
+# and the quoted ones look at one character at a time, so each text has one way to match.
+ENV_SECRET_RE = re.compile(r"""(?<![A-Za-z0-9_])([A-Z0-9_]{0,60}(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|PRIVATE_KEY|SECRET_ACCESS_KEY)=)"""
+                           r"""(?:\\?"[^"\n]*(?:"|(?=\n)|\Z)|\\?'[^'\n]*(?:'|(?=\n)|\Z)|[^\s"']+)""")
+# `X-Api-Key: VALUE` in any case, the name possibly quoted (JSON, a curl -H argument).
+X_API_KEY_RE = re.compile(r"""(?i)\b(x-api-key\\?["']?[ \t]*:[ \t]*\\?["']?)[^\s"'\\]+""")
+# `--password=VALUE`, `--password VALUE`, `--passwd`, `--pass`: a quoted value may hold spaces. `--password-stdin` and
+# `--passphrase-file` are other flags; `--password --verbose` has no value (the space form refuses a leading hyphen).
+PASSWORD_FLAG_RE = re.compile(r"""(?i)(?<![\w-])(--(?:password|passwd|pass)(?:=|[ \t]+(?!-)))"""
+                              r"""(?:"[^"\n]*(?:"|(?=\n)|\Z)|'[^'\n]*(?:'|(?=\n)|\Z)|[^\s"']+)""")
+# A JSON (or Python dict) member whose key ends in password, passwd, secret, token, api_key or apikey and whose value is a
+# string: `"password": "VALUE"`, also inside JSON text where the quotes are escaped (`\"password\": \"VALUE\"`). The value
+# runs to the quote that opened it; a backslash before that quote is the escaped closing quote and ends it too.
+JSON_SECRET_RE = re.compile(r"""(?i)(\\?["'][\w-]{0,60}?(?:password|passwd|secret|token|api[_-]?key|apikey)\\?["'][ \t]*:[ \t]*\\?(?P<q>["']))"""
+                            r"""(?:(?!(?P=q))[^\\\n]|\\(?!(?P=q)))*""")
+# Azure connection strings: `AccountKey=...;` and `SharedAccessKey=...;` (not SharedAccessKeyName). Base64 keeps its `=`.
+AZURE_KEY_RE = re.compile(r"""(?i)(?<![A-Za-z])((?:AccountKey|SharedAccessKey)[ \t]*=[ \t]*)[^;\s"']+""")
 
 
 def mask_secrets(text: str) -> str:
@@ -135,6 +162,10 @@ def mask_secrets(text: str) -> str:
     text = AWS_SET_RE.sub(r"\1[token]", text)
     text = AWS_ASSIGN_RE.sub(r"\1[token]", text)
     text = NPM_AUTH_RE.sub(r"\1[token]", text)
+    text = X_API_KEY_RE.sub(r"\1[token]", text)
+    text = PASSWORD_FLAG_RE.sub(r"\1[token]", text)
+    text = JSON_SECRET_RE.sub(r"\1[token]", text)
+    text = AZURE_KEY_RE.sub(r"\1[token]", text)
     return ENV_SECRET_RE.sub(r"\1[token]", text)
 # Statuses a service answers when it dislikes what ONE unit's text says (a content filter, a size limit): splitting
 # the request narrows it down. 401, 429, 5xx and a network error never get better by splitting.

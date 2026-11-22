@@ -70,9 +70,12 @@ def git_diff(repo: str, base: str, head: str) -> str:
 
 
 def request_body(diff: str, title: str, model: str) -> tuple[dict, bool]:
+    # The diff and title are repository text: mask credentials and addresses before the body exists (issue #185), and
+    # mask BEFORE the cut: a token cut at CAP to fewer characters than its shape needs would be sent in part. Cutting
+    # masked text is safe, it no longer holds the secret (the cut may split a `[token]`, which hides nothing).
+    diff, title = decide.scrub(diff), decide.scrub(title)
     cut = len(diff) > CAP
     text = f"Title: {title or '(none)'}\n\n{diff[:CAP]}" + ("\n[diff cut here]" if cut else "")
-    # The diff and title are repository text: mask credentials and addresses before the body exists (issue #185).
     return decide.scrub({"model": model, "state": PREAMBLE + text,
                          "questions": {k: {"type": "noul", "instructions": q, "criteria": CRITERIA}
                                        for k, (q, _) in QUESTIONS.items()}}), cut
