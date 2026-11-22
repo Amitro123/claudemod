@@ -5,6 +5,13 @@ pair-of-backslashes branch and a single-backslash branch that also matched a bac
 group was ambiguous: a pair matched as the pair branch or as two single steps, so a run of N backslashes had 2^(N/2) ways to fail and the regex backtracked through all of
 them (N=36 took 4 s, N=40 did not finish). A transcript line holding such a run hung the digest.
 
+What each table pins. Regression tests (they fail on the code before the fix): test_backslash_run_terminates (the
+N=200 rows), test_long_backslash_run_is_linear (its long rows), the `email-dots` row of
+test_other_rules_linear_at_200k, and test_email_leading_punctuation (the EMAIL_RE rows). Pins (they PASS on the
+code before the fix, so they are not failing-first): the 9 MASK_ROWS rows and the other 9 rows of
+test_other_rules_linear_at_200k; they only guard that the fix did not change what is masked or break a shape that
+was already linear. Do not read them as regression tests.
+
 Every hostile input runs in a subprocess with a hard timeout: a regression shows as a timeout, never as a hung test
 run. Never call mask() on these inputs in the test process itself."""
 from __future__ import annotations
@@ -54,12 +61,13 @@ SHAPES = [
 @pytest.mark.parametrize("fn", ["mask", "mask_data"])
 @pytest.mark.parametrize("shape", SHAPES, ids=[s[0] for s in SHAPES])
 def test_backslash_run_terminates(fn, shape):
-    """N=200 backslashes: the vulnerable regex needs about 2**100 steps, so the 5 s cap is a timeout there."""
+    """N=200 backslashes: the vulnerable regex needs about 2**100 steps, so any cap fails it; 10 s leaves headroom
+    for a slow Windows runner (the fixed code takes milliseconds)."""
     _id, prefix, suffix, _why = shape
     try:
-        run_masked(fn, prefix, BS, 200, suffix, timeout=5.0)
+        run_masked(fn, prefix, BS, 200, suffix, timeout=10.0)
     except subprocess.TimeoutExpired:
-        pytest.fail(f"{fn}() did not finish in 5 s on {_id} (exponential backtracking)")
+        pytest.fail(f"{fn}() did not finish in 10 s on {_id} (exponential backtracking)")
 
 
 @pytest.mark.parametrize("n", [20000, 200000])
@@ -110,9 +118,29 @@ MASK_ROWS = [
     ("three-backslashes-in-user", '"-u", "d\\\\\\a:' + PW + '", "x"', PW, '"x"', "an odd run: a pair and a single one"),
     ("four-then-quote", '"-u", "alice:' + PW + '\\\\\\\\", "x"', PW, '"x"', "an even run before the quote leaves the quote unescaped: the string ends there"),
     ("backslash-before-newline", '"-u", "alice:' + PW + '", "x\\\nnext line', PW, "next line", "a backslash before a newline later in the text does not reach back into the match"),
-    ("email-after-underscore", "x_alice@example.com", "alice", "example.com", "the email rule starts at a run of local characters: `_` is not one, so the address is still found"),
+    ("email-with-underscore", "x_alice@example.com", "alice", "example.com", "keep-pin, passes on old code too: `_` is in the local-part class, so it is masked with the rest of the local part before and after the fix"),
     ("escaped-form", '\\"-u\\", \\"alice:' + PW + '\\"', PW, "", "the json.dumps form"),
 ]
+
+
+# Intended behaviour differences of EMAIL_RE (its lookbehind replaces `\b`): (id, text, expected output, why).
+# Each row fails on the code before the fix (verified against origin/main's transcript.py).
+EMAIL_ROWS = [
+    ("leading-hyphen", "-alice@example.com", "[address]@example.com", "the lookbehind takes the leading `-` into the local part; old output kept `-[address]`"),
+    ("leading-dot", ".alice@example.com", "[address]@example.com", "the leading `.` is consumed too; old output kept `.[address]`"),
+    ("leading-plus", "+alice@example.com", "[address]@example.com", "the leading `+` is consumed too; old output kept `+[address]`"),
+    ("leading-percent", "%alice@example.com", "[address]@example.com", "the leading `%` is consumed too; old output kept `%[address]`"),
+    ("nonascii-then-underscore", "ü_alice@example.com", "ü[address]@example.com",
+     "`\b` never fell between a non-ASCII letter and `_` (both are word characters), so old code missed the address"),
+]
+
+
+@pytest.mark.parametrize("row", EMAIL_ROWS, ids=[r[0] for r in EMAIL_ROWS])
+def test_email_leading_punctuation(row):
+    sys.path.insert(0, str(DISTILL))
+    import transcript as T
+    _id, text, expected, _why = row
+    assert T.mask(text) == expected
 
 
 @pytest.mark.parametrize("row", MASK_ROWS, ids=[r[0] for r in MASK_ROWS])
