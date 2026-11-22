@@ -93,6 +93,13 @@ EMAIL_RE = re.compile(r"(?<![\w.+%-])[\w.+%-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}
 #   - Cyrillic or full-width look-alike letters in a prefix, as there is no NFKC normalisation;
 #   - a percent-encoded token (`ghp%5F...`);
 #   - a token split across a newline (every shape is matched within one line or word).
+#   - a JSON value that is not a string (`"password": 12345`, an array of secrets) and a newline before the colon;
+#   - `password=x` / `token: x` in lower case in prose or a config line (only env names in capitals, flags, JSON keys,
+#     query strings and headers are keyed on the name);
+#   - `-p` (`mysql -phunter2`): one letter is too common to key on;
+#   - a flag name that holds a keyword but takes a boolean or a name and is not listed (`--token-cache-dir x` is read as
+#     a secret value; the kept suffixes and prefixes are in PASSWORD_FLAG_RE's comment);
+#   - a secret in a shell word that continues after `;` `|` `&` or `)` with no space (it is taken to the next space).
 # Token shapes start at a non-alphanumeric (an underscore or hyphen before one is a file-name joint, not a word).
 TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
                       r"glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|"
@@ -133,17 +140,34 @@ NPM_AUTH_RE = re.compile(r"""(:_(?:authToken|auth|password)(?:[ \t]+|[ \t]*=[ \t
 # and the quoted ones look at one character at a time, so each text has one way to match.
 ENV_SECRET_RE = re.compile(r"""(?<![A-Za-z0-9_])([A-Z0-9_]{0,60}(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|PRIVATE_KEY|SECRET_ACCESS_KEY)=)"""
                            r"""(?:\\?"[^"\n]*(?:"|(?=\n)|\Z)|\\?'[^'\n]*(?:'|(?=\n)|\Z)|[^\s"']+)""")
-# `X-Api-Key: VALUE` in any case, the name possibly quoted (JSON, a curl -H argument).
-X_API_KEY_RE = re.compile(r"""(?i)\b(x-api-key\\?["']?[ \t]*:[ \t]*\\?["']?)[^\s"'\\]+""")
-# `--password=VALUE`, `--password VALUE`, `--passwd`, `--pass`: a quoted value may hold spaces. `--password-stdin` and
-# `--passphrase-file` are other flags; `--password --verbose` has no value (the space form refuses a leading hyphen).
-PASSWORD_FLAG_RE = re.compile(r"""(?i)(?<![\w-])(--(?:password|passwd|pass)(?:=|[ \t]+(?!-)))"""
-                              r"""(?:"[^"\n]*(?:"|(?=\n)|\Z)|'[^'\n]*(?:'|(?=\n)|\Z)|[^\s"']+)""")
-# A JSON (or Python dict) member whose key ends in password, passwd, secret, token, api_key or apikey and whose value is a
-# string: `"password": "VALUE"`, also inside JSON text where the quotes are escaped (`\"password\": \"VALUE\"`). The value
-# runs to the quote that opened it; a backslash before that quote is the escaped closing quote and ends it too.
-JSON_SECRET_RE = re.compile(r"""(?i)(\\?["'][\w-]{0,60}?(?:password|passwd|secret|token|api[_-]?key|apikey)\\?["'][ \t]*:[ \t]*\\?(?P<q>["']))"""
-                            r"""(?:(?!(?P=q))[^\\\n]|\\(?!(?P=q)))*""")
+# `X-Api-Key: VALUE` or `X-Api-Key=VALUE` (spaces allowed around the sign) in any case, the name possibly quoted (JSON, a
+# curl -H argument).
+X_API_KEY_RE = re.compile(r"""(?i)\b(x-api-key\\?["']?[ \t]*[:=][ \t]*\\?["']?)[^\s"'\\]+""")
+# A flag whose name holds password, passwd, passphrase, secret, token or api-key (`--password`, `--db-password`,
+# `--client-secret`, `--api-key`, `--secret=`), or is exactly `--pass`, and that is followed by `=` or by a space and a
+# value that does not start with a hyphen (`--password --verbose` has no value). The value is one shell word: segments
+# of "..." (a backslash escapes the next character), '...' (no escapes: `'it'\''s'` is three segments and a backslash
+# pair), a backslash pair or plain characters, joined without a space; inside JSON text (`\"a b\"`) the escaped quotes
+# open and close it. A quote cut off by a limit runs to the end of its line.
+# Names that are not followed by a value are kept (the next word is a path, a number, a type or a redirect): a suffix
+# -stdin -file -count -length -policy -prompt -name -path -env -type, a prefix no- skip- without- ask- prompt- show- print-
+# list- use-, and `tokens` / `tokenizer` (`--max-tokens 100`). The name is checked in lookaheads over ONE run of
+# [\w-] characters that must start at its beginning, so each run costs a few passes over itself, not one per keyword.
+PASSWORD_FLAG_RE = re.compile(r"""(?i)(?<![\w-])(--(?=(?:[\w-]*(?:password|passwd|passphrase|secret|token(?!s|iz)|api-?key)|pass(?![\w-])))"""
+                              r"""(?!(?:no|skip|without|ask|prompt|show|print|list|use)-)(?![\w-]*-(?:stdin|file|count|length|policy|prompt|name|path|env|type)(?![\w-]))"""
+                              r"""[\w-]*(?:=|[ \t]+(?!-)))"""
+                              r"""(?:\\"(?:[^\\\n]|\\(?!"))*(?:\\"|(?=\n)|\Z)|"(?:[^"\\\n]|\\[^\n])*(?:"|(?=\n)|\Z)"""
+                              r"""|'[^'\n]*(?:'|(?=\n)|\Z)|\\[^\n]|[^\s"'\\])+""")
+# A JSON (or Python dict) member whose key ends in password, passwd, passphrase, pwd, secret, token, api_key, apikey,
+# secret_key or private_key and whose value is a string, a newline allowed after the colon. Two shapes. Plain text:
+# `"password": "VALUE"`; a backslash inside the value is an ordinary escape (`\"` is a quote in the secret), so the value
+# ends at the bare closing quote. JSON inside a string: `\"password\": \"VALUE\"`, where the quotes carry a backslash; there
+# the value runs to the first quote of its kind and a backslash before it is the escaped closing quote, which ends it too.
+JSON_KEY = r"""[\w-]{0,60}?(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|apikey|secret[_-]?key|private[_-]?key)"""
+JSON_SECRET_RE = re.compile(r"""(?i)((?<!\\)["']""" + JSON_KEY + r"""["'][ \t]*:\s*(?P<q>["']))"""
+                            r"""(?:(?!(?P=q))[^\\\n]|\\[^\n])*""")
+JSON_SECRET_ESC_RE = re.compile(r"""(?i)(\\["']""" + JSON_KEY + r"""\\["'][ \t]*:\s*\\?(?P<q>["']))"""
+                                r"""(?:(?!(?P=q))[^\\\n]|\\(?!(?P=q)))*""")
 # Azure connection strings: `AccountKey=...;` and `SharedAccessKey=...;` (not SharedAccessKeyName). Base64 keeps its `=`.
 AZURE_KEY_RE = re.compile(r"""(?i)(?<![A-Za-z])((?:AccountKey|SharedAccessKey)[ \t]*=[ \t]*)[^;\s"']+""")
 
@@ -165,6 +189,7 @@ def mask_secrets(text: str) -> str:
     text = X_API_KEY_RE.sub(r"\1[token]", text)
     text = PASSWORD_FLAG_RE.sub(r"\1[token]", text)
     text = JSON_SECRET_RE.sub(r"\1[token]", text)
+    text = JSON_SECRET_ESC_RE.sub(r"\1[token]", text)
     text = AZURE_KEY_RE.sub(r"\1[token]", text)
     return ENV_SECRET_RE.sub(r"\1[token]", text)
 # Statuses a service answers when it dislikes what ONE unit's text says (a content filter, a size limit): splitting

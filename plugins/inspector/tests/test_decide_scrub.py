@@ -99,6 +99,29 @@ MASKED = [
      "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=[token];EndpointSuffix=core.windows.net"),
     ("Azure SharedAccessKey", "Endpoint=sb://x.servicebus.windows.net/;SharedAccessKeyName=root;SharedAccessKey=Zm9vYmFy+/b=",
      "Endpoint=sb://x.servicebus.windows.net/;SharedAccessKeyName=root;SharedAccessKey=[token]"),
+    # Round 3 (issue #185). F1: in plain JSON, Python-dict or shell text a backslash before a quote is an ordinary escape,
+    # so the value goes on to the bare closing quote; only the JSON-text shape (\"password\": \"x\") ends at \".
+    ("JSON password with an escaped quote inside: the tail used to leak", r'{"password": "a\"SECRETSECRET"}', '{"password": "[token]"}'),
+    ("JSON password ending in an escaped backslash", r'{"password": "C:\\"}', '{"password": "[token]"}'),
+    ("Python dict password with an escaped apostrophe", r"{'password': 'it\'s SECRETSECRET'}", "{'password': '[token]'}"),
+    ("--password double-quoted with an escaped quote", r'tool --password "a\"SECRETSECRET" run', "tool --password [token] run"),
+    ("--password shell-quoted apostrophe", r"""tool --password 'it'\''s SECRETSECRET' run""", "tool --password [token] run"),
+    ("--password adjacent shell segments form one word", 'tool --password "a b"cd ef run', "tool --password [token] ef run"),
+    ("--password inside JSON text, escaped quotes", r'{"cmd": "tool --password \"a b\" run"}', r'{"cmd": "tool --password [token] run"}'),
+    # F2: a newline after the colon, more flag names, `=` after an api-key header name, more JSON key names.
+    ("JSON password with a newline after the colon", '{"password":\n  "hunter2"}', '{"password":\n  "[token]"}'),
+    ("--db-password: the keyword inside the flag name", "mysql --db-password hunter2 db", "mysql --db-password [token] db"),
+    ("--client-secret=", "tool --client-secret=abc123", "tool --client-secret=[token]"),
+    ("--token VALUE", "tool --token abc123 run", "tool --token [token] run"),
+    ("--api-key VALUE", "tool --api-key abc123 run", "tool --api-key [token] run"),
+    ("--secret=VALUE", "tool --secret=abc123", "tool --secret=[token]"),
+    ("--passphrase VALUE", "tool --passphrase 'a b' run", "tool --passphrase [token] run"),
+    ("X-Api-Key=VALUE", "X-Api-Key=abc123def456", "X-Api-Key=[token]"),
+    ("x-api-key = VALUE with spaces around the sign", "x-api-key = abc123def456", "x-api-key = [token]"),
+    ("JSON secretKey", '{"secretKey": "k1 x2"}', '{"secretKey": "[token]"}'),
+    ("JSON privateKey", '{"privateKey": "k1x2"}', '{"privateKey": "[token]"}'),
+    ("JSON passphrase", '{"passphrase": "a b"}', '{"passphrase": "[token]"}'),
+    ("JSON pwd", '{"pwd": "k1x2"}', '{"pwd": "[token]"}'),
 ]
 
 # Text a reader needs: it must come out byte for byte. Each row names the neighbour a pattern could swallow.
@@ -130,6 +153,18 @@ UNCHANGED = [
     ("Azure SharedAccessKeyName is a name, not the key", "SharedAccessKeyName=RootManageSharedAccessKey;Endpoint=sb://x/"),
     ("x-api-key mentioned without a colon", "the x-api-key header is required"),
     ("env name that only contains PASSWORD", "DB_PASSWORD_FILE=/run/secrets/db"),
+    # Round 3 (issue #185): a flag whose name holds a keyword but whose next word is not a value.
+    ("--password-stdin takes no value: the next word is a redirect", "docker login --password-stdin < pw.txt"),
+    ("--password-file: the next word is a path, not the password", "tool --password-file ./p.txt run"),
+    ("--password-file=PATH is a path", "tool --password-file=/run/secrets/p run"),
+    ("--secret-file: a path", "tool --secret-file ./s.txt run"),
+    ("--token-count: a number", "tool --token-count 5 run"),
+    ("--max-tokens: a number of LLM tokens", "llm --max-tokens 100 run"),
+    ("--tokenizer: a name, not a token", "llm --tokenizer fast run"),
+    ("--token-type: a kind of token, not the token", "tool --token-type bearer run"),
+    ("--no-password is a boolean flag", "mysql --no-password db"),
+    ("--passphrase-file: a path", "ssh-keygen --passphrase-file x"),
+    ("JSON key that only starts with pwd", '{"pwd_policy": "strict"}'),
 ]
 
 # Current deliberate over-masking, written down so a change to it is a decision and not an accident.
@@ -137,6 +172,11 @@ OVERMASKED = [
     ("a hyphenated word of 20+ characters after sk- has the shape of a key", "sk-learn-model-version-two-oh", "[token]"),
     ("any 52-character lowercase base32 word has the shape of an Azure DevOps PAT", "x " + "abcdefghij" * 5 + "kl" + " y", "x [token] y"),
     ("docker run -u 1000:1000 has the shape of curl -u user:pw", "docker run -u 1000:1000 img", "docker run -u [token] img"),
+    # Round 3 (issue #185): a flag-shaped word in prose is taken for the flag, and the next word for its value.
+    ("`--password` in prose: the next word is taken for the value (`flag` is lost)", "--password flag now documented", "--password [token] now documented"),
+    ("`--token` in prose: the next word is taken for the value", "the --token expired handling", "the --token [token] handling"),
+    ("`--secret-id` is a credential (a Vault secret id), so it is masked like --secret", "vault write --secret-id abc123 run", "vault write --secret-id [token] run"),
+    ("a JSON key pwd may be a working directory, but is masked as a password", '{"pwd": "/home/x"}', '{"pwd": "[token]"}'),
 ]
 
 
@@ -217,6 +257,27 @@ HOSTILE = {
     "accountkey long": "AccountKey=" + "a" * N,
     "sharedaccesskey repeats": "SharedAccessKey=" * (N // 16),
     "sharedaccesskey name": "SharedAccessKeyName=" * (N // 20),
+    # Round 3: the new and changed patterns, each in its worst shape.
+    "flag name run": "--" + "password" * (N // 8),
+    "flag name hyphens": "--" + "a-" * (N // 2) + "token",
+    "flag stdin repeats": "--password-stdin " * (N // 17),
+    "flag value quote segments": "--password " + "'a'" * (N // 3),
+    "flag value dq segments": "--password " + '"a"' * (N // 3),
+    "flag value backslashes": "--password " + "\\" * N,
+    "flag dq backslashes": '--password "' + "\\" * N,
+    "flag escaped quote long": '--password \\"' + "a" * N,
+    "flag escaped quote repeats": '--password \\"' * (N // 13),
+    "flag unquoted then quote": "--password " + "a'" * (N // 2),
+    "json plain escapes": '"password":"' + '\\"' * (N // 2),
+    "json plain escapes repeats": '"password":"a\\"' * (N // 14),
+    "json newline colon": '"password":' + "\n" * N,
+    "json newline colon repeats": '"password":\n' * (N // 12),
+    "json key variants": '"secretKey":"' * (N // 13),
+    "json privatekey long": '"' + "a" * N + "privateKey",
+    "json escaped long": '\\"password\\":\\"' + "a" * N,
+    "x-api-key equals": "x-api-key=" * (N // 10),
+    "x-api-key spaces": "x-api-key" + " " * N,
+    "x-api-key equals spaces": "x-api-key" + " =" * (N // 2),
     "mixed": ("Bearer " + "a" * 15 + " -u a:b ") * (N // 30),
 }
 
@@ -290,6 +351,19 @@ def test_a_large_diff_is_masked_in_linear_time():
     t0 = time.perf_counter()
     decide.scrub(big)
     assert time.perf_counter() - t0 < 6.0
+
+
+# Round 3 (F3): a hostile 2 MB diff, every new pattern fed its worst shape, is masked in bounded time. Cost, measured on
+# 2026-11-22: about 1 s per MB of ordinary text, so 10 s is a generous bound; a quadratic pattern misses it by minutes.
+def test_a_hostile_two_megabyte_diff_is_masked_in_bounded_time():
+    unit = ('+ --password "a\\"b" \'x\' --db-password y --token-count 3 --password-stdin < f\n'
+            '+ {"password":\n "a\\"b", "secretKey": \'it\\\'s\'} x-api-key = k X-Api-Key=v \\"password\\": \\"z\\"\n')
+    big = unit * (2_000_000 // len(unit))
+    t0 = time.perf_counter()
+    out = decide.scrub(big)
+    took = time.perf_counter() - t0
+    assert took < 10.0, f"2 MB hostile diff took {took:.1f}s"
+    assert "[token]" in out and "\"b\"" not in out
 
 
 # Round 2: the cut at premerge.CAP used to come BEFORE the mask, so a token that straddled it was sent cut to fewer
