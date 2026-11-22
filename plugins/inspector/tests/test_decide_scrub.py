@@ -122,6 +122,32 @@ MASKED = [
     ("JSON privateKey", '{"privateKey": "k1x2"}', '{"privateKey": "[token]"}'),
     ("JSON passphrase", '{"passphrase": "a b"}', '{"passphrase": "[token]"}'),
     ("JSON pwd", '{"pwd": "k1x2"}', '{"pwd": "[token]"}'),
+    # Round 4 (issue #185). F1: a backslash before a newline or at the end of the text ends a quoted flag value that is
+    # cut off by a limit; the quoted branch used to fail as a whole and leave the secret as written.
+    ("--password double-quoted, cut off by a limit after a trailing backslash (the tail used to leak)",
+     'tool --password "SECRETTAIL\\', "tool --password [token]"),
+    ("--password double-quoted, backslash before the newline (the tail used to leak)",
+     'tool --password "SECRETTAIL\\\nnext', "tool --password [token]\nnext"),
+    ("--password single-quoted, trailing backslash (no escapes in '...', so it was never a defect)",
+     "tool --password 'SECRETTAIL\\", "tool --password [token]"),
+    ("--password single-quoted, backslash before the newline", "tool --password 'SECRETTAIL\\\nnext", "tool --password [token]\nnext"),
+    ("JSON password cut off after a trailing backslash (the value has no required closer, so it was never a defect)",
+     '{"password": "SECRETTAIL\\', '{"password": "[token]'),
+    ("JSON password, backslash before the newline", '{"password": "SECRETTAIL\\\nnext', '{"password": "[token]\nnext'),
+    ("JSON-in-JSON password cut off after a trailing backslash", '\\"password\\": \\"SECRETTAIL\\',
+     '\\"password\\": \\"[token]'),
+    # F3: an underscore in the flag name, a dot in a JSON key.
+    ("--api_key VALUE: the underscore spelling", "tool --api_key abc123 run", "tool --api_key [token] run"),
+    ("--api_key=VALUE", "tool --api_key=abc123 run", "tool --api_key=[token] run"),
+    ("JSON key with a dot (a flattened config path)", '{"db.password": "hunter2"}', '{"db.password": "[token]"}'),
+    ("JSON key with several dots, single quotes", "{'spring.datasource.password': 'x y'}", "{'spring.datasource.password': '[token]'}"),
+    # F4: the credential flags the suffix rule must not let go, and the `<` rule's neighbour (a value that follows).
+    ("--password VALUE stays masked next to a redirect later in the line", "tool --password abc123 < in.txt", "tool --password [token] < in.txt"),
+    ("--token VALUE then a redirect", "tool --token abc123 < in.txt", "tool --token [token] < in.txt"),
+    ("--secret-id VALUE is a credential (Vault)", "vault write --secret-id abc123 run", "vault write --secret-id [token] run"),
+    ("--api-key VALUE (kept masked by the F4 suffix rule)", "tool --api-key abc123 --x", "tool --api-key [token] --x"),
+    ("a name that only contains a kept suffix word in the middle is still a credential", "tool --token-file-key abc123 run",
+     "tool --token-file-key [token] run"),
 ]
 
 # Text a reader needs: it must come out byte for byte. Each row names the neighbour a pattern could swallow.
@@ -165,6 +191,25 @@ UNCHANGED = [
     ("--no-password is a boolean flag", "mysql --no-password db"),
     ("--passphrase-file: a path", "ssh-keygen --passphrase-file x"),
     ("JSON key that only starts with pwd", '{"pwd_policy": "strict"}'),
+    # Round 4 (issue #185), F4: a flag whose name ends in a word that says the value is not a secret.
+    ("--token-ttl: a duration", "tool --token-ttl 3600 run"),
+    ("--token-ttl=3600 with an equals sign", "tool --token-ttl=3600 run"),
+    ("--token-expiry: a duration", "tool --token-expiry 60 run"),
+    ("--token-lifetime: a duration", "tool --token-lifetime 1h run"),
+    ("--token-limit: a number", "tool --token-limit 5 run"),
+    ("--token-max: a number", "tool --token-max 5 run"),
+    ("--token-budget: a number", "llm --token-budget 100 run"),
+    ("--token-endpoint: an address", "oauth --token-endpoint https://idp.example/token run"),
+    ("--token-url: an address", "oauth --token-url https://idp.example/token run"),
+    ("--tokenfile: a path (no hyphen before file)", "tool --tokenfile ./t run"),
+    ("--password_policy: underscore spelling of a policy name", "tool --password_policy strict run"),
+    ("--password-command: a command that prints the password, not the password", 'tool --password-command "pass show x" run'),
+    ("--secrets-dir: a directory", "tool --secrets-dir /run/secrets run"),
+    ("--secret-manager: the name of a service", "tool --secret-manager vault run"),
+    ("--api-key-header: a header name", "tool --api-key-header X-Key run"),
+    ("--api-key-prefix: a prefix such as pk", "tool --api-key-prefix pk run"),
+    ("--with-token followed by a redirect: the `<` is not a value", "gh auth login --with-token < token.txt"),
+    ("--password followed by a redirect: the `<` is not a value", "tool --password < in.txt"),
 ]
 
 # Current deliberate over-masking, written down so a change to it is a decision and not an accident.
@@ -177,6 +222,10 @@ OVERMASKED = [
     ("`--token` in prose: the next word is taken for the value", "the --token expired handling", "the --token [token] handling"),
     ("`--secret-id` is a credential (a Vault secret id), so it is masked like --secret", "vault write --secret-id abc123 run", "vault write --secret-id [token] run"),
     ("a JSON key pwd may be a working directory, but is masked as a password", '{"pwd": "/home/x"}', '{"pwd": "[token]"}'),
+    # Round 4 (issue #185): a benign flag with a name that carries no listed suffix, or a different shape.
+    ("`--secret` in prose: the next word is taken for the value", "Explain what --secret does in vault", "Explain what --secret [token] in vault"),
+    ("`aws secretsmanager get-secret-value --secret-id NAME` takes a secret's name, but --secret-id is kept as a credential",
+     "aws secretsmanager get-secret-value --secret-id prod/db run", "aws secretsmanager get-secret-value --secret-id [token] run"),
 ]
 
 
@@ -278,6 +327,17 @@ HOSTILE = {
     "x-api-key equals": "x-api-key=" * (N // 10),
     "x-api-key spaces": "x-api-key" + " " * N,
     "x-api-key equals spaces": "x-api-key" + " =" * (N // 2),
+    # Round 4: the changed patterns.
+    "flag dq trailing backslash lines": '--password "a\\\n' * (N // 14),
+    "flag dq backslash newline long": '--password "' + "\\\n" * (N // 2),
+    "flag suffix names": "--token-ttl " * (N // 12),
+    "flag suffix long name": "--" + "token-" * (N // 6) + "ttl",
+    "flag tokenfile repeats": "--tokenfile " * (N // 12),
+    "flag api_key repeats": "--api_key " * (N // 10),
+    "flag redirect repeats": "--password < " * (N // 13),
+    "json dotted key": '"' + "a." * (N // 2) + 'token":"',
+    "json dotted key repeats": '"a.password":"' * (N // 14),
+    "json dots only": '"' + "." * N + 'password":"',
     "mixed": ("Bearer " + "a" * 15 + " -u a:b ") * (N // 30),
 }
 
@@ -353,16 +413,24 @@ def test_a_large_diff_is_masked_in_linear_time():
     assert time.perf_counter() - t0 < 6.0
 
 
-# Round 3 (F3): a hostile 2 MB diff, every new pattern fed its worst shape, is masked in bounded time. Cost, measured on
-# 2026-11-22: about 1 s per MB of ordinary text, so 10 s is a generous bound; a quadratic pattern misses it by minutes.
+# Round 3 (F3), round 4 (F5): a hostile diff, every new pattern fed its worst shape, is masked in time that grows in
+# step with its size. Measured on 2026-11-22: 2.3 to 2.6 s for 2 MB on a busy machine, so an absolute bound of 10 s was
+# tight; the ratio of the 2 MB time to the 1 MB time is about 2 for linear work and 4 for quadratic, and does not depend on
+# the machine's speed. The absolute bound stays as a loose backstop.
 def test_a_hostile_two_megabyte_diff_is_masked_in_bounded_time():
-    unit = ('+ --password "a\\"b" \'x\' --db-password y --token-count 3 --password-stdin < f\n'
-            '+ {"password":\n "a\\"b", "secretKey": \'it\\\'s\'} x-api-key = k X-Api-Key=v \\"password\\": \\"z\\"\n')
-    big = unit * (2_000_000 // len(unit))
-    t0 = time.perf_counter()
-    out = decide.scrub(big)
-    took = time.perf_counter() - t0
-    assert took < 10.0, f"2 MB hostile diff took {took:.1f}s"
+    unit = ('+ --password "a\\"b" \'x\' --db-password y --token-count 3 --password-stdin < f --token-ttl 5 --api_key z\n'
+            '+ {"password":\n "a\\"b", "secretKey": \'it\\\'s\', "db.token": "q"} x-api-key = k X-Api-Key=v \\"password\\": \\"z\\"\n')
+
+    def run(megabytes: int):
+        big = unit * (megabytes * 1_000_000 // len(unit))
+        t0 = time.perf_counter()
+        out = decide.scrub(big)
+        return time.perf_counter() - t0, out
+
+    t1, _ = run(1)
+    t2, out = run(2)
+    assert t2 < 30.0, f"2 MB hostile diff took {t2:.1f}s"
+    assert t2 < 3.2 * max(t1, 0.2), f"1 MB took {t1:.2f}s, 2 MB took {t2:.2f}s: more than linear"
     assert "[token]" in out and "\"b\"" not in out
 
 
