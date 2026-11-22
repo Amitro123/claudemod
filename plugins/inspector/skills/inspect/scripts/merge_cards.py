@@ -247,12 +247,12 @@ def ask_pairs(raw: list[dict], possible: list[tuple], model: str, post=None) -> 
     if not possible:
         return {}, meta
     keys = {f"q{n}": (i, j) for n, (i, j, _, _) in enumerate(possible)}
-    body = {"model": model,
+    body = decide.scrub({"model": model,     # lead text quotes repository code: masked before the body exists (issue #185)
             "state": PAIR_PREAMBLE + "\n\n".join(f"## Pair {n}\nLead A\n{_pair_text(raw[i])}\nLead B\n{_pair_text(raw[j])}"
                                                  for n, (i, j, _, _) in enumerate(possible)),
             "questions": {k: {"type": "noul", "criteria": PAIR_CRITERIA,
                               "instructions": f"Pair {k[1:]}: do Lead A and Lead B describe the same defect, so that one fix would close both?"}
-                          for k in keys}}
+                          for k in keys}})
     key = (os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy").strip()
     import time
     t0 = time.monotonic()

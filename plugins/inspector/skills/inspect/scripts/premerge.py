@@ -72,9 +72,10 @@ def git_diff(repo: str, base: str, head: str) -> str:
 def request_body(diff: str, title: str, model: str) -> tuple[dict, bool]:
     cut = len(diff) > CAP
     text = f"Title: {title or '(none)'}\n\n{diff[:CAP]}" + ("\n[diff cut here]" if cut else "")
-    return {"model": model, "state": PREAMBLE + text,
-            "questions": {k: {"type": "noul", "instructions": q, "criteria": CRITERIA}
-                          for k, (q, _) in QUESTIONS.items()}}, cut
+    # The diff and title are repository text: mask credentials and addresses before the body exists (issue #185).
+    return decide.scrub({"model": model, "state": PREAMBLE + text,
+                         "questions": {k: {"type": "noul", "instructions": q, "criteria": CRITERIA}
+                                       for k, (q, _) in QUESTIONS.items()}}), cut
 
 
 def check(diff: str, title: str = "", model: str = decide.DEFAULT_MODEL, cut: float = DEFAULT_CUT,
