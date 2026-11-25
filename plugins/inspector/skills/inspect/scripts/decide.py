@@ -105,6 +105,8 @@ EMAIL_RE = re.compile(r"(?<![\w.+%-])[\w.+%-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}
 #   - a flag name written with a zero-width space or an en dash instead of the hyphen (`--pass<ZWSP>word x`);
 #   - `--password $(cat f)SECRET`: the text glued to the end of the substitution is not masked;
 #   - a line continuation (backslash, newline) inside the quotes of a flag value: the value is cut at the line end.
+#   - an argument-list `-u` password holding the other quote kind (`["-u", "alice:p'w"]`): the value ends at the first
+#     quote, so `'w` is sent (docs/open-items.md #13; retro's copy has it too).
 # Token shapes start at a non-alphanumeric (an underscore or hyphen before one is a file-name joint, not a word).
 TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
                       r"glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|"
@@ -128,7 +130,7 @@ CURL_USER_RE = re.compile(r"""(?<![^\s"'])(-u[ \t]*|--user(?:[ \t]+|=))"""
 # Changed from the retro copy: its single-backslash branch `\\(?!["'])` also matches the first of a `\\` pair, which the pair
 # branch matches too, so a long run of backslashes backtracked exponentially (a 20k run never finished). Here the single
 # branch refuses a following backslash, so each text has one way to match.
-ARGV_USER_RE = re.compile(r"""(\\?["'](?:-u|--user)\\?["']\s*,\s*\\?["'])(?:[^"'\\\n:]|\\\\|\\(?![\\"']))*:(?:[^"'\\\n]|\\\\|\\(?![\\"']))*(?=\\?["'])""")
+ARGV_USER_RE = re.compile(r"""(\\?["'](?:-u|--user)\\?["']\s*,\s*\\?["'])(?:[^"'\\\n:]|\\\\|\\(?![\\"']))*:(?:[^"'\\\r\n]|\\\\|\\(?![\\"']))*(?=\\?(?:["']|\r|\n|\Z))""")
 PRIVATE_KEY_RE = re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|(?=(?<!\\)")|\Z)', re.S)
 ADO_PAT_RE = re.compile(r"(?<![A-Za-z0-9])[a-z2-7]{52}(?![A-Za-z0-9])")      # an Azure DevOps PAT: 52 lowercase base32
 # https://user:password@host (the password is the secret; a token alone as the user is caught by TOKEN_RE).
