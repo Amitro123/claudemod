@@ -479,8 +479,9 @@ CURL_USER_RE = re.compile(r"""(?<![^\s"'])(-u[ \t]*|--user(?:[ \t]+|=))"""
 # The single-backslash branch must not match a backslash that is followed by another one: that pair belongs to the
 # `\\\\` branch alone. Without the `\\` in the guard the group is ambiguous and a run of N backslashes backtracked
 # in 2^(N/2) ways (issue #196). The value also ends at a line end or the end of the text, after an optional backslash:
-# a digest cuts long lines, and a list cut inside the value kept the password (issue #198).
-ARGV_USER_RE = re.compile(r"""(\\?["'](?:-u|--user)\\?["']\s*,\s*\\?["'])(?:[^"'\\\n:]|\\\\|\\(?![\\"']))*:(?:[^"'\\\n]|\\\\|\\(?![\\"']))*(?=\\?(?:["']|\n|\Z))""")
+# a digest cuts long lines, and a list cut inside the value kept the password (issue #198). A `\r` ends it too, so a
+# CRLF line keeps its `\r` (review of #203).
+ARGV_USER_RE = re.compile(r"""(\\?["'](?:-u|--user)\\?["']\s*,\s*\\?["'])(?:[^"'\\\n:]|\\\\|\\(?![\\"']))*:(?:[^"'\\\r\n]|\\\\|\\(?![\\"']))*(?=\\?(?:["']|\r|\n|\Z))""")
 SESSION_URL_RE = re.compile(r"https://claude\.ai/code/session_[A-Za-z0-9]+")
 # The board's refusals, shared: a whole private-key block (to its END line, or to the end of the text), and the
 # 52-character lowercase base32 shape of an Azure DevOps PAT.

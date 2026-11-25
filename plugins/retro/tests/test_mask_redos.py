@@ -8,9 +8,12 @@ them (N=36 took 4 s, N=40 did not finish). A transcript line holding such a run 
 What each table pins. Regression tests (they fail on the code before the fix): test_backslash_run_terminates (the
 N=200 rows), test_long_backslash_run_is_linear (its long rows), the `email-dots` row of
 test_other_rules_linear_at_200k, and test_email_leading_punctuation (the EMAIL_RE rows). Pins (they PASS on the
-code before the fix, so they are not failing-first): the 9 MASK_ROWS rows and the other 9 rows of
+code before the fix, so they are not failing-first): the first 9 MASK_ROWS rows and the other 9 rows of
 test_other_rules_linear_at_200k; they only guard that the fix did not change what is masked or break a shape that
 was already linear. Do not read them as regression tests.
+
+Issue #198 (broken invariant: "an argument-list value ends only at a closing quote"): the `cut-*` MASK_ROWS rows are
+regression tests, failing on the code before #203: a list cut off inside the value kept the password.
 
 Every hostile input runs in a subprocess with a hard timeout: a regression shows as a timeout, never as a hung test
 run. Never call mask() on these inputs in the test process itself."""
@@ -129,6 +132,7 @@ MASK_ROWS = [
     ("cut-backslash-at-newline", '"-u", "alice:' + PW + '\\\nnext line', PW, "next line", "the same with the cut right after a backslash"),
     ("cut-escaped-form", '\\"-u\\", \\"alice:' + PW, PW, "", "the json.dumps form, cut off"),
     ("cut-single-quoted", "'-u', 'alice:" + PW, PW, "", "the Python repr form (single quotes), cut off"),
+    ("cut-at-crlf", '"-u", "alice:' + PW + '\r\nnext line', PW, "\r\nnext line", "review of #203: a Windows line end; the value stops at `\\r`, which is kept"),
 ]
 
 
