@@ -1011,6 +1011,13 @@ def investigate(repo: str, ref: str = "HEAD", since: str | None = None, limit: i
     decision_meta = None
     if decision_model:
         decision_meta = decision_phase(worked, decision_model, decision_cut, gh_warnings, decide_post)
+    if unit and worked and not worked[0].is_fix and worked[0].verdict != "removal":
+        # Named with --unit: the caller asks for this unit's culprits, so it is worked as a fix (SKILL.md: a fix the
+        # verdict missed is collected in a run of its own). Before 2026-11-25 such a unit got no case and no plan.
+        u = worked[0]
+        u.is_fix, u.why = True, [f"named with --unit {unit}"] + u.why
+        for c in u.commits:
+            c["is_fix"] = c.get("is_fix", False) or not (CHORE.search(c["subject"]) or BUMP.search(c["subject"]))
     jobs = [(u, c) for u in worked if u.is_fix and u.verdict != "removal" for c in u.commits if c.get("is_fix")]
 
     def parent_of(c) -> str:
@@ -1227,6 +1234,37 @@ def _gql_det(node) -> dict | None:
             "labels": labels, "closingIssuesReferences": closing}
 
 
+def graphql_refused(e: Exception) -> bool:
+    """gh failed because GitHub GraphQL is refused (a Claude Code cloud session answers it with HTTP 403), not for
+    another reason: only then do the readers below try the REST API instead."""
+    # Review of #209: gh's other errors on a GraphQL call name it too (`HTTP 401: Bad credentials
+    # (https://api.github.com/graphql)`, `GraphQL: API rate limit exceeded`): only a 403 that names GraphQL is the refusal.
+    t = str(e).lower()
+    return isinstance(e, GhUnavailable) and "http 403" in t and "graphql" in t
+
+
+# GitHub's closing keywords (docs: "Linking a pull request to an issue"): close, fix, resolve and their -s/-d forms,
+# any case, an optional colon, then #N or owner/repo#N. Read from the PR body only where GraphQL, which gives
+# `closingIssuesReferences` directly, is refused (a Claude Code cloud session answers it with HTTP 403).
+CLOSING_RE = re.compile(r"(?i)(?<![\w/-])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+(?:([\w.-]+/[\w.-]+))?#(\d+)\b")
+
+
+CODE_RE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.S)   # fenced blocks (an unclosed one to the end), inline code
+
+
+def closing_issues(body: str | None, slug: str) -> list[int]:
+    """The issues of `slug` that `body`'s closing keywords name, in order, each once. GitHub links no keyword written
+    inside code, fenced or inline (review of #209), so code is left out first."""
+    out: list[int] = []
+    for m in CLOSING_RE.finditer(CODE_RE.sub(" ", body or "")):
+        if m.group(1) and m.group(1).lower() != slug.lower():
+            continue
+        n = int(m.group(2))
+        if n not in out:
+            out.append(n)
+    return out
+
+
 def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1, batch: bool = True,
               refresh: bool = False, now=None) -> GhEnrichment:
     """Labels and closing issues for `prs`. Uncached PRs are read in batches of GH_BATCH by one `gh api graphql`
@@ -1249,6 +1287,22 @@ def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1, batch: bo
             raise GhUnavailable("gh returned unexpected JSON")
         return val
 
+    rest = threading.Event()   # set once GraphQL is refused: every later read goes through the REST API
+
+    def view(pr: int) -> dict:
+        """One PR in the shape `gh pr view --json` gives; through REST once GraphQL is refused."""
+        if not rest.is_set():
+            try:
+                return call(["pr", "view", str(pr), "-R", slug, "--json", GH_PR_FIELDS])
+            except GhUnavailable as e:
+                if not graphql_refused(e):
+                    raise
+                rest.set()
+        p = call(["api", f"repos/{slug}/pulls/{pr}"])
+        return {"title": p.get("title"), "body": p.get("body") or "", "labels": p.get("labels") or [],
+                "mergedAt": p.get("merged_at"),
+                "closingIssuesReferences": [{"number": n} for n in closing_issues(p.get("body"), slug)]}
+
     def one(pr: int):
         key = _gh_cache_key(slug, pr)
         hit = cache.get(key) if cache and not refresh else None
@@ -1260,7 +1314,7 @@ def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1, batch: bo
             return pr, None, ""
         complete = True
         try:
-            det = prefetched.get(pr) or call(["pr", "view", str(pr), "-R", slug, "--json", GH_PR_FIELDS])
+            det = prefetched.get(pr) or view(pr)
         except (GhUnavailable, ValueError) as e:             # ValueError: invalid JSON
             with lock:
                 out.error = out.error or str(e)
@@ -1276,16 +1330,19 @@ def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1, batch: bo
                 repo = ref.get("repository") or {}
                 where = f"{(repo.get('owner') or {}).get('login')}/{repo.get('name')}" if repo.get("name") else slug
                 try:
-                    full = call(["issue", "view", str(ref["number"]), "-R", where, "--json", "title,labels,state"])
+                    full = (call(["api", f"repos/{where}/issues/{ref['number']}"]) if rest.is_set() else
+                            call(["issue", "view", str(ref["number"]), "-R", where, "--json", "title,labels,state"]))
                     issue.update(title=full.get("title"), state=full.get("state"), labels=full.get("labels"))
                 except (GhUnavailable, ValueError):
                     complete = False                         # keep the number; do not cache a half answer
             closes.append({"number": issue["number"], "title": " ".join(str(issue["title"] or "").split())[:GH_TEXT_CHARS],
-                           "state": str(issue["state"] or ""), "labels": _names(issue["labels"])})
+                           "state": str(issue["state"] or "").upper(), "labels": _names(issue["labels"])})
         labels = _names(det.get("labels"))
         gh = {**({"labels": labels} if labels else {}), **({"closes": closes} if closes else {})}
         body = str(det.get("body") or "")[:PR_TEXT_CHARS]
-        if cache and complete and det.get("mergedAt"):        # a merged PR's data does not change
+        # A merged PR's data does not change. An answer read through REST is not stored: its closing issues come from
+        # the body, which can differ from GitHub's own links, and a later run may have GraphQL (review of #209).
+        if cache and complete and det.get("mergedAt") and not rest.is_set():
             cache.put(key, {"gh": gh, "body": body, "fetchedAt": clock().strftime("%Y-%m-%dT%H:%M:%SZ")})
         return pr, gh, body
 
@@ -1426,21 +1483,59 @@ def github_slug(repo: str) -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+REST_MAX_PAGES = 10   # at most 1,000 closed PRs read to find the last `n` merged ones (review of #209)
+
+
+def _rest_merged_prs(slug: str, n: int, run) -> list[dict]:
+    """The last `n` merged PRs through the REST API, in the shape `gh pr list --json` gives, with their files."""
+    closed: list[dict] = []
+    for page in range(1, REST_MAX_PAGES + 1):    # pages of closed PRs, newest updates first, until `n` are merged
+        try:
+            got = json.loads(run(["api", f"repos/{slug}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}"]) or "[]")
+        except json.JSONDecodeError:
+            raise GhUnavailable("gh returned invalid JSON")
+        closed += [p for p in got if isinstance(p, dict) and p.get("merged_at") and isinstance(p.get("number"), int)]
+        if len(got) < 100 or len(closed) >= n:
+            break
+    merged = sorted(closed, key=lambda p: p["merged_at"], reverse=True)[:n]
+    out = []
+    for p in merged:
+        try:
+            files = json.loads(run(["api", f"repos/{slug}/pulls/{int(p['number'])}/files?per_page=100"]) or "[]")
+        except json.JSONDecodeError:
+            raise GhUnavailable("gh returned invalid JSON")
+        out.append({"number": p["number"], "title": p.get("title"), "body": p.get("body"), "mergedAt": p["merged_at"],
+                    "mergeCommit": {"oid": p.get("merge_commit_sha") or ""},
+                    "headRefName": (p.get("head") or {}).get("ref") or "",
+                    "files": [{"path": f.get("filename", ""), "additions": f.get("additions"), "deletions": f.get("deletions")}
+                              for f in files if isinstance(f, dict)]})
+    return out
+
+
 def github_units(slug: str, n: int, roots: set[str], path=None, run=gh_runner) -> list[dict]:
     """The last `n` merged PRs as unit-like records. Every value is evidence level `inferred`:
-    it comes from GitHub, not from local history, and no blame is possible."""
+    it comes from GitHub, not from local history, and no blame is possible. Through REST where GraphQL is refused."""
+    rest = None
     try:
         prs = json.loads(run(["pr", "list", "-R", slug, "--state", "merged", "--limit", str(n), "--json",
                               "number,title,body,mergedAt,mergeCommit,headRefName"]) or "[]")
     except json.JSONDecodeError:
         raise GhUnavailable("gh returned invalid JSON")
+    except GhUnavailable as e:
+        if not graphql_refused(e):
+            raise
+        prs = rest = _rest_merged_prs(slug, n, run)
     out = []
     for pr in prs[:n]:
         num = pr.get("number")
-        try:
-            det = json.loads(run(["pr", "view", str(num), "-R", slug, "--json", "files,additions,deletions"]) or "{}")
-        except json.JSONDecodeError:
-            raise GhUnavailable("gh returned invalid JSON")
+        if rest is not None:
+            det = {"files": pr["files"], "additions": sum(int(f.get("additions") or 0) for f in pr["files"]),
+                   "deletions": sum(int(f.get("deletions") or 0) for f in pr["files"])}
+        else:
+            try:
+                det = json.loads(run(["pr", "view", str(num), "-R", slug, "--json", "files,additions,deletions"]) or "{}")
+            except json.JSONDecodeError:
+                raise GhUnavailable("gh returned invalid JSON")
         files = [{"path": f.get("path", ""), "ins": int(f.get("additions") or 0), "del": int(f.get("deletions") or 0)}
                  for f in det.get("files") or []]
         u = Unit((pr.get("mergeCommit") or {}).get("oid", ""), "pr", num, pr.get("title") or "",
@@ -1668,7 +1763,13 @@ def pr_text(repo: str, pr, run=gh_runner, slug=None) -> str:
         slug = slug or github_slug(repo)
         if not slug:
             return ""
-        return (json.loads(run(["pr", "view", str(pr), "-R", slug, "--json", "body"]) or "{}").get("body") or "")[:PR_TEXT_CHARS]
+        try:
+            got = run(["pr", "view", str(pr), "-R", slug, "--json", "body"])
+        except GhUnavailable as e:
+            if not graphql_refused(e):
+                raise
+            got = run(["api", f"repos/{slug}/pulls/{pr}"])
+        return (json.loads(got or "{}").get("body") or "")[:PR_TEXT_CHARS]
     except (GhUnavailable, ValueError, OSError, AttributeError):
         return ""
 
