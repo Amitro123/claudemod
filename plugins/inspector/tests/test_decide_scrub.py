@@ -60,6 +60,7 @@ MASKED = [
     ("argument list cut with no closing quote", '["curl", "-u", "alice:pw', '["curl", "-u", "[token]'),
     ("argument list cut after a backslash", '["curl", "-u", "alice:pw\\', '["curl", "-u", "[token]'),
     ("argument list cut at a line end", '["curl", "-u", "alice:pw\nnext', '["curl", "-u", "[token]\nnext'),
+    ("argument list cut at a CRLF line end", '["curl", "-u", "alice:pw\r\nnext', '["curl", "-u", "[token]\r\nnext'),
     ("password inside a URL", "git clone https://bob:hunter2@github.com/o/r.git",
      "git clone https://[token]@github.com/o/r.git"),
     ("?key= query value", "GET /v1/x?key=abc123def456&x=1", "GET /v1/x?key=[token]&x=1"),
@@ -400,6 +401,28 @@ def test_the_premerge_body_carries_no_token():
     assert post.bodies and GH not in sent and SK not in sent and "alice:pw" not in sent
 
 
+def test_the_decision_fix_eval_post_scrubs_what_it_sends(monkeypatch):
+    # Review of #208: the scrub inside client._post is the last guard (a caller that builds its own body); the body
+    # test above hands in its own `post` and never reaches it. Here urlopen is replaced and the bytes it gets are read.
+    monkeypatch.syspath_prepend(str(Path(__file__).parent.parent / "evals" / "decision-fix"))
+    import client
+    sent = []
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    monkeypatch.setattr(client.urllib.request, "urlopen", lambda req, timeout=None: sent.append(req.data) or Reply())
+    client._post("https://example.invalid/x", {"state": f"fix {SK}", "q": [f"token {GH}"]}, {"Authorization": "Bearer k"})
+    assert sent and SK.encode() not in sent[0] and GH.encode() not in sent[0], sent
+
+
 class ChatRecorder(Recorder):
     def __call__(self, url, body, headers):
         self.bodies.append(body)
@@ -409,7 +432,7 @@ class ChatRecorder(Recorder):
 def test_the_decision_fix_eval_bodies_carry_no_token(monkeypatch):
     # 2026-11-25 inspector run: evals/decision-fix/client.py built both bodies itself and never scrubbed them, and its
     # input carries commit subjects and changed code lines (run.py unit_text). A copy left behind by #199.
-    sys.path.insert(0, str(Path(__file__).parent.parent / "evals" / "decision-fix"))
+    monkeypatch.syspath_prepend(str(Path(__file__).parent.parent / "evals" / "decision-fix"))
     import client
     monkeypatch.setenv("OPENROUTER_API_KEY", "k-test")
     units = f"#1 fix {SK}\n+token = '{GH}'\n+curl -H 'Authorization: Bearer {'r' * 24}'"
