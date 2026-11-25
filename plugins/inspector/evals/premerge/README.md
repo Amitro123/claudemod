@@ -114,3 +114,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-25 | retro mask(): inspector's token, bearer and X-Api-Key shapes (inspector run lead) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 334ca10) | — |
 | 2026-11-25 | #198 retro mask(): ARGV_USER_RE also ends a value at a line end or the end of the text | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 7537cb2) | — |
 | 2026-11-25 | retro mask(): the review fixes of #203 (`\r` ends an argv value, docstring, open item #13) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 9c37330) | — |
+| 2026-11-25 | #195 brain-hud journal.ts: host_layout.py's #184 redaction rules; one shared case list | none (4 of 4 answered; typesafe/jev-1.13, $0.0003; run on c941737) | — |
