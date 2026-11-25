@@ -1,6 +1,6 @@
 """What a whole-plugin review found in the skill's hooks and scripts (2026-11-06), pinned.
 
-Run: pytest tests/skill/scripts/test_review_fixes.py -v
+Run: pytest tests/skill/scripts/test_review_fixes_brain_hud.py -v
 """
 from __future__ import annotations
 
