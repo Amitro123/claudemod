@@ -1931,7 +1931,7 @@ def main(argv=None) -> int:
     except (RuntimeError, ValueError, OSError) as e:
         print(f"evidence.py: {e}", file=sys.stderr)
         return 1
-    r["repo_path"] = os.path.abspath(a.repo)
+    r["repo_path"] = plan.long_abspath(a.repo)
     owner_sha = r["unit_shas"]
     bodies = r.pop("gh_bodies", None)       # PR texts the github phase read; never saved in evidence.json
     a.pr_body = lambda pr, slug=None: ("" if a.no_github else bodies.get(pr, "") if bodies is not None

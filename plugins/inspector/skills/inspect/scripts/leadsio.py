@@ -81,6 +81,53 @@ class LeadsError(ValueError):
     """Invalid leads or cards input; the message names every file and item path at fault."""
 
 
+_REWRITE = "rewrite it with the agent's file-writing tool; never repair it in a shell"
+
+
+def read_json(path: str):
+    """One reader for the run folder's JSON (leads, cards, verdicts, evidence): UTF-8 with or without a BOM in.
+
+    Windows PowerShell 5.1 writes a BOM with `-Encoding utf8` and UTF-16 with `>` (issue #200: plan.py refused a BOM
+    that leadsio accepted, and the shell repair that followed ate the array's `[`). Raises LeadsError with one line
+    that names the file and what to rewrite. The scripts write without a BOM (`encoding="utf-8"`)."""
+    name = os.path.basename(path)
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError as exc:
+        raise LeadsError(f"{name}: unreadable ({exc.strerror or exc})")
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        raise LeadsError(f"{name}: UTF-16, expected UTF-8 (PowerShell's `>` writes UTF-16); {_REWRITE}")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise LeadsError(f"{name}: not UTF-8 (byte {exc.start}); {_REWRITE}")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        if exc.msg == "Extra data" and text.lstrip().startswith("{"):
+            raise LeadsError(f"{name}: an object followed by more data (line {exc.lineno} column {exc.colno}); the array's "
+                             f"opening `[` may be missing; {_REWRITE}")
+        if exc.msg == "Extra data":
+            raise LeadsError(f"{name}: trailing data after the first JSON value (line {exc.lineno} column {exc.colno}); "
+                             f"the file must hold one value; {_REWRITE}")
+        raise LeadsError(f"{name}: invalid JSON at line {exc.lineno} column {exc.colno} ({exc.msg}); {_REWRITE}")
+
+
+def read_leads_json(path: str) -> list[dict]:
+    """leads.json as plan.py --phase verify and merge_verdicts.py need it: an array of objects, each with a `where`."""
+    data = read_json(path)
+    name = os.path.basename(path)
+    if not isinstance(data, list):
+        raise LeadsError(f"{name}: expected a JSON array of leads, found {type(data).__name__ if data is not None else 'null'}"
+                         f"; {_REWRITE}")
+    missing = [i for i, x in enumerate(data) if not (isinstance(x, dict) and isinstance(x.get("where"), str) and x["where"].strip())]
+    if missing:
+        raise LeadsError(f"{name}: lead(s) {', '.join(map(str, missing[:5]))} not an object with a non-empty string `where`"
+                         f"; {_REWRITE}")
+    return data
+
+
 def _check(item: object, path: str, bad: list[str]) -> bool:
     if not isinstance(item, dict):
         bad.append(f"{path}: expected an object")
