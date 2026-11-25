@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed (security): `mask()` let through a lower-case `bearer` value, `X-Api-Key` headers, and `npm_`, `sk_`/`rk_` live or test, `AIza` and `ASIA` keys. Inspector's copy of this masker (`decide.py`) gained them in #199; retro hadn't. `TOKEN_RE` and `BEARER_RE` are now the same patterns as inspector's, and `X_API_KEY_RE` is added. Found by an `/inspector:inspect` run on 2026-11-25 (verified REAL-LOW). Ten rows in `tests/test_mask_secrets.py` fail on the code before this change, in all three paths (mask, both digest formats, the CLI). Four more rows check that prose (`the bearer of bad news`, `npm_install`) stays readable. Inspector's heuristic rules (password flags, JSON keys, env assignments, URL userinfo, query strings, AWS, Azure) are not ported here.
+
 ## 0.3.0 (2026-11-20)
 
 `/retro:distill` routes each lesson to where it holds (a check, a test, access, guidance, a skill, a model choice or no change) before drafting a skill; masking covers private keys and Azure DevOps PATs and keeps JSON valid; agent-audit splits resumed agents, judges scratch by location and reports what it could only take on the agent's word; the board shows disagreements between writers.

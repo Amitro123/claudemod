@@ -454,9 +454,17 @@ def seconds_between(a: str | None, b: str | None) -> float | None:
 # `a.a.a.` run with no @ was scanned to its end from each boundary, quadratic; issue #196).
 EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})\b")
 GUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
-TOKEN_RE = re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|"
-                      r"xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)")
-BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
+# Token shapes start at a non-alphanumeric (an underscore or hyphen before one is a file-name joint, not a word).
+# Kept the same as inspector's copy (decide.py): its #199 added sk_/rk_ live|test, npm_, AIza and ASIA, and the
+# 2026-11-25 inspector run found retro without them.
+TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+                      r"glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|"
+                      r"sk-[A-Za-z0-9_-]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}|npm_[A-Za-z0-9]{30,}|"
+                      r"AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)")
+# Any case (`bearer`, `BEARER`); the 16-character minimum keeps prose such as "the bearer of bad news" readable.
+BEARER_RE = re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]{16,}")
+# `X-Api-Key: VALUE` or `X-Api-Key=VALUE` in any case, the name possibly quoted (JSON, a curl -H argument).
+X_API_KEY_RE = re.compile(r"""(?i)\b(x-api-key\\?["']?[ \t]*[:=][ \t]*\\?["']?)[^\s"'\\]+""")
 # An Authorization header: the scheme word (Bearer, Basic, Negotiate, NTLM, any name) is consumed with the value, and
 # both are hidden; the value stops at whitespace or a quote so a JSON string stays valid. And curl -u / --user
 # credentials: a colon is required (so `sudo -u bob` and `git push -u origin` stay) but either side of it may be empty
@@ -508,7 +516,7 @@ def mask_data(obj):
 
 
 def mask(text: str) -> str:
-    """Hide values a skill must never carry: private-key blocks, tokens and PAT shapes, Authorization headers,
+    """Hide values a skill must never carry: private-key blocks, tokens and PAT shapes, Authorization and X-Api-Key headers,
     curl -u/--user credentials, emails (domain kept), GUIDs, session links, user names in paths. Heuristics: a secret in no known shape is not caught."""
     text = PRIVATE_KEY_RE.sub("[private-key]", text)
     text = TOKEN_RE.sub("[token]", text)
@@ -517,6 +525,7 @@ def mask(text: str) -> str:
     text = ARGV_USER_RE.sub(r"\1[token]", text)
     text = CURL_USER_RE.sub(r"\1[token]", text)
     text = BEARER_RE.sub(r"\1[token]", text)
+    text = X_API_KEY_RE.sub(r"\1[token]", text)
     text = EMAIL_RE.sub(lambda m: "[address]@" + m.group(1).lower(), text)
     text = GUID_RE.sub("[guid]", text)
     text = SESSION_URL_RE.sub("[session-link]", text)
