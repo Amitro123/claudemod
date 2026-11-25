@@ -99,9 +99,10 @@ def decisions_body(shared_input: str, questions: list[dict], model: str = DECISI
     """The request body, and the key each question is sent under -> its unit id. Keys are q0, q1, ...:
     unit ids hold '#', which a key may not take well."""
     keys = {f"q{i}": q["id"] for i, q in enumerate(questions)}
-    body = {"model": model, "state": shared_input,
-            "questions": {k: {"type": "noul", "instructions": q["text"], "criteria": FIX_CRITERIA}
-                          for k, q in zip(keys, questions)}}
+    # Masked here, so any `post` sees the masked body (the input holds commit subjects and code lines; issue #185).
+    body = _decide_mod.scrub({"model": model, "state": shared_input,
+                              "questions": {k: {"type": "noul", "instructions": q["text"], "criteria": FIX_CRITERIA}
+                                            for k, q in zip(keys, questions)}})
     return body, keys
 
 
@@ -152,7 +153,7 @@ def openrouter_decisions(shared_input: str, questions: list[dict], model: str = 
 
 
 def _post(url: str, body: dict, headers: dict, timeout: int = 300) -> dict:
-    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
+    req = urllib.request.Request(url, data=json.dumps(_decide_mod.scrub(body)).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json", **headers})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -165,8 +166,8 @@ def _post(url: str, body: dict, headers: dict, timeout: int = 300) -> dict:
 def openrouter_decide(shared_input: str, questions: list[dict], model: str, post=_post) -> tuple[dict[str, dict], dict]:
     """(answers, meta): meta has the model that answered, its token usage and the wall time of the call."""
     key = _key()
-    body = {"model": model, "messages": openrouter_messages(shared_input, questions), "temperature": 0,
-            "response_format": {"type": "json_object"}}
+    body = _decide_mod.scrub({"model": model, "messages": openrouter_messages(shared_input, questions), "temperature": 0,
+                              "response_format": {"type": "json_object"}})
     t0 = time.monotonic()
     res = post(OPENROUTER_URL, body, {"Authorization": f"Bearer {key}"})
     seconds = round(time.monotonic() - t0, 2)
