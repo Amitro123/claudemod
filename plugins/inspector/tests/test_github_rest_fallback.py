@@ -75,7 +75,7 @@ def test_a_pr_that_closes_a_bug_issue_is_read_through_rest() -> None:
     assert res.error is None, res.error
     gh = res.data[202]
     assert gh["closes"] == [{"number": 186, "title": REST_ISSUES[186]["title"][:evidence.GH_TEXT_CHARS],
-                             "state": "closed", "labels": ["bug", "factory"]}]
+                             "state": "CLOSED", "labels": ["bug", "factory"]}]   # the shape GraphQL gives (review of #209)
     assert evidence.gh_fix_signals(gh) == ["closes #186 (bug)"]
     assert res.bodies[202].startswith("Closes #186")
 
@@ -101,12 +101,65 @@ KEYWORDS = [
     ("bare", "see #186", [], "a mention is not a link"),
     ("glued", "fixes#12", [], "no space: GitHub does not link it"),
     ("two", "Fixes #12, closes #13", [12, 13], "each keyword links its own issue"),
+    # review of #209: GitHub links no keyword written inside code
+    ("fenced-code", "Notes\n```\nfixes #12\n```\nCloses #13", [13], "a commit message quoted in a fenced block"),
+    ("inline-code", "the `fixes #12` form, and Closes #13", [13], "inline code"),
 ]
 
 
 @pytest.mark.parametrize("body,want", [(b, w) for _, b, w, _ in KEYWORDS], ids=[k[0] for k in KEYWORDS])
 def test_closing_keywords_as_github_reads_them(body, want) -> None:
     assert evidence.closing_issues(body, "o/r") == want
+
+
+# Review of #209: gh's HTTP errors end with the request URL, which for `gh pr view` is the GraphQL endpoint, and its
+# GraphQL errors start with `GraphQL:`. These texts follow that format (written here, not captured: in a session that
+# refuses GraphQL every call gets the 403 first). Only the refusal switches the run to REST.
+OTHER_GRAPHQL_FAILURES = [
+    ("bad-token", "gh failed (not logged in? try `gh auth login`): HTTP 401: Bad credentials (https://api.github.com/graphql)"),
+    ("rate-limit", "gh failed (not logged in? try `gh auth login`): GraphQL: API rate limit exceeded for user ID 1."),
+    ("missing-pr", "gh failed (not logged in? try `gh auth login`): GraphQL: Could not resolve to a PullRequest with the number of 4."),
+    ("server-error", "gh failed (not logged in? try `gh auth login`): HTTP 502: Bad Gateway (https://api.github.com/graphql)"),
+]
+
+
+@pytest.mark.parametrize("text", [t for _, t in OTHER_GRAPHQL_FAILURES], ids=[i for i, _ in OTHER_GRAPHQL_FAILURES])
+def test_only_the_refusal_switches_to_rest(text) -> None:
+    gh = NoGraphQL(refusal=text)
+    res = evidence.gh_enrich("o/r", [4], gh, None, batch=False)
+    assert res.error and not any(c[0] == "api" and c[1].startswith("repos/") for c in gh.calls), gh.calls
+    assert evidence.graphql_refused(evidence.GhUnavailable(REFUSAL))
+
+
+def test_an_answer_read_through_rest_is_not_cached() -> None:
+    # Review of #209: a body parse can differ from GitHub's own closingIssuesReferences (an issue linked from the
+    # sidebar), so it must not be served to a later run where GraphQL works.
+    class Cache(dict):
+        def __bool__(self):          # an empty store is still a store (gh_enrich tests `if cache`)
+            return True
+
+        def put(self, k, v):
+            self[k] = v
+    cache = Cache()
+    res = evidence.gh_enrich("Amitro123/claudemod", [202], NoGraphQL(), cache, batch=False)
+    assert res.data[202]["closes"] and cache == {}
+
+
+def test_the_github_fallback_pages_until_it_has_n_merged_prs() -> None:
+    # Review of #209: one page of closed PRs held fewer than `n` merged ones when many were closed unmerged.
+    class Paged(NoGraphQL):
+        def __call__(self, args):
+            if args[0] == "api" and args[1].split("?")[0].endswith("/pulls"):
+                self.calls.append(list(args))
+                page = int(dict(kv.split("=") for kv in args[1].split("?")[1].split("&"))["page"])
+                if page == 1:
+                    return json.dumps([{"number": 900 + i, "title": "x", "body": "", "merged_at": None} for i in range(100)])
+                if page == 2:
+                    return json.dumps([{**REST_PRS[202], "merge_commit_sha": "a" * 40, "head": {"ref": "b"}}])
+                return "[]"
+            return super().__call__(args)
+    out = evidence.github_units("Amitro123/claudemod", 1, set(), run=Paged())
+    assert [u["unit"] for u in out] == ["#202"], out
 
 
 def test_another_failure_is_not_taken_for_a_graphql_refusal() -> None:

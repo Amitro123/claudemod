@@ -1237,7 +1237,10 @@ def _gql_det(node) -> dict | None:
 def graphql_refused(e: Exception) -> bool:
     """gh failed because GitHub GraphQL is refused (a Claude Code cloud session answers it with HTTP 403), not for
     another reason: only then do the readers below try the REST API instead."""
-    return isinstance(e, GhUnavailable) and "graphql" in str(e).lower()
+    # Review of #209: gh's other errors on a GraphQL call name it too (`HTTP 401: Bad credentials
+    # (https://api.github.com/graphql)`, `GraphQL: API rate limit exceeded`): only a 403 that names GraphQL is the refusal.
+    t = str(e).lower()
+    return isinstance(e, GhUnavailable) and "http 403" in t and "graphql" in t
 
 
 # GitHub's closing keywords (docs: "Linking a pull request to an issue"): close, fix, resolve and their -s/-d forms,
@@ -1246,10 +1249,14 @@ def graphql_refused(e: Exception) -> bool:
 CLOSING_RE = re.compile(r"(?i)(?<![\w/-])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+(?:([\w.-]+/[\w.-]+))?#(\d+)\b")
 
 
+CODE_RE = re.compile(r"```.*?(?:```|\Z)|`[^`\n]*`", re.S)   # fenced blocks (an unclosed one to the end), inline code
+
+
 def closing_issues(body: str | None, slug: str) -> list[int]:
-    """The issues of `slug` that `body`'s closing keywords name, in order, each once."""
+    """The issues of `slug` that `body`'s closing keywords name, in order, each once. GitHub links no keyword written
+    inside code, fenced or inline (review of #209), so code is left out first."""
     out: list[int] = []
-    for m in CLOSING_RE.finditer(body or ""):
+    for m in CLOSING_RE.finditer(CODE_RE.sub(" ", body or "")):
         if m.group(1) and m.group(1).lower() != slug.lower():
             continue
         n = int(m.group(2))
@@ -1329,11 +1336,13 @@ def gh_enrich(slug: str, prs: list[int], run, cache, workers: int = 1, batch: bo
                 except (GhUnavailable, ValueError):
                     complete = False                         # keep the number; do not cache a half answer
             closes.append({"number": issue["number"], "title": " ".join(str(issue["title"] or "").split())[:GH_TEXT_CHARS],
-                           "state": str(issue["state"] or ""), "labels": _names(issue["labels"])})
+                           "state": str(issue["state"] or "").upper(), "labels": _names(issue["labels"])})
         labels = _names(det.get("labels"))
         gh = {**({"labels": labels} if labels else {}), **({"closes": closes} if closes else {})}
         body = str(det.get("body") or "")[:PR_TEXT_CHARS]
-        if cache and complete and det.get("mergedAt"):        # a merged PR's data does not change
+        # A merged PR's data does not change. An answer read through REST is not stored: its closing issues come from
+        # the body, which can differ from GitHub's own links, and a later run may have GraphQL (review of #209).
+        if cache and complete and det.get("mergedAt") and not rest.is_set():
             cache.put(key, {"gh": gh, "body": body, "fetchedAt": clock().strftime("%Y-%m-%dT%H:%M:%SZ")})
         return pr, gh, body
 
@@ -1474,18 +1483,25 @@ def github_slug(repo: str) -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+REST_MAX_PAGES = 10   # at most 1,000 closed PRs read to find the last `n` merged ones (review of #209)
+
+
 def _rest_merged_prs(slug: str, n: int, run) -> list[dict]:
     """The last `n` merged PRs through the REST API, in the shape `gh pr list --json` gives, with their files."""
-    try:
-        closed = json.loads(run(["api", f"repos/{slug}/pulls?state=closed&sort=updated&direction=desc&per_page=100"]) or "[]")
-    except json.JSONDecodeError:
-        raise GhUnavailable("gh returned invalid JSON")
-    merged = sorted((p for p in closed if isinstance(p, dict) and p.get("merged_at")), key=lambda p: p["merged_at"],
-                    reverse=True)[:n]
+    closed: list[dict] = []
+    for page in range(1, REST_MAX_PAGES + 1):    # pages of closed PRs, newest updates first, until `n` are merged
+        try:
+            got = json.loads(run(["api", f"repos/{slug}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page={page}"]) or "[]")
+        except json.JSONDecodeError:
+            raise GhUnavailable("gh returned invalid JSON")
+        closed += [p for p in got if isinstance(p, dict) and p.get("merged_at") and isinstance(p.get("number"), int)]
+        if len(got) < 100 or len(closed) >= n:
+            break
+    merged = sorted(closed, key=lambda p: p["merged_at"], reverse=True)[:n]
     out = []
     for p in merged:
         try:
-            files = json.loads(run(["api", f"repos/{slug}/pulls/{p['number']}/files?per_page=100"]) or "[]")
+            files = json.loads(run(["api", f"repos/{slug}/pulls/{int(p['number'])}/files?per_page=100"]) or "[]")
         except json.JSONDecodeError:
             raise GhUnavailable("gh returned invalid JSON")
         out.append({"number": p["number"], "title": p.get("title"), "body": p.get("body"), "mergedAt": p["merged_at"],
