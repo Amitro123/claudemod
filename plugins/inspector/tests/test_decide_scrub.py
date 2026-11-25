@@ -49,6 +49,9 @@ MASKED = [
     ("Authorization header with a quoted key and value (JSON)", '{"Authorization": "Bearer abc"}',
      '{"Authorization": "[token]"}'),
     ("bare Bearer token", "send Bearer abcdefghijklmnopqrstuvwx", "send Bearer [token]"),
+    # Review of retro #207: json.dumps text puts a letter right before the word (`\nBearer` is `\` `n`); a `\b` missed it
+    ("Bearer after a JSON-escaped newline", '{"h": "x\\nBearer abcdefghijklmnopqrstuvwx"}', '{"h": "x\\nBearer [token]"}'),
+    ("X-Api-Key after a JSON-escaped newline", '{"h": "x\\nX-Api-Key: abc123def456"}', '{"h": "x\\nX-Api-Key: [token]"}'),
     ("curl -u user:pw", "curl -u alice:s3cret https://x.io", "curl -u [token] https://x.io"),
     ("curl -u with an empty user (Azure DevOps PAT)", "curl -u :pat123 url", "curl -u [token] url"),
     ("curl -u with an empty password", "curl -u bob: url", "curl -u [token] url"),
