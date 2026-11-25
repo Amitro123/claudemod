@@ -134,15 +134,25 @@ export function countsText(entries: readonly JournalEntry[]): string {
 // A value: a quoted string whole (a password with a space in it), else up to the next space.
 const VALUE = String.raw`(?:"[^"]*"?|'[^']*'?|\S+)`
 const SECRETS: [RegExp, string][] = [
+  // #195: the rules host_layout.py gained in #184, in its order. A secret set through a config subcommand, the name and
+  // the value separated by a space only (aws configure set aws_secret_access_key X, npm config set
+  // //registry.npmjs.org/:_authToken X), an optional flag before the name (--profile p, -g, --location=user).
+  [new RegExp(String.raw`\b((?:aws\s+configure\s+set|npm\s+config\s+set|npm\s+set|yarn\s+config\s+set|pip\s+config\s+set)\s+(?:-\S+\s+(?:(?!-)\S+\s+)??)?\S{0,200}?(?:token|password|passwd|secret|key|auth)\S{0,200}\s+)(?!-)` + VALUE, 'gi'), '$1[redacted]'],
+  // A query parameter named only key, sig or signature: ?key=..., &sig=.... The name must be the whole parameter.
+  [/([?&](?:key|sig|signature|x-amz-signature))=[^\s&#"']+/gi, '$1=[redacted]'],
   // The keyword alone or at the end of an env-style name (DB_PASSWORD=, GITHUB_TOKEN=).
   // A JSON or YAML key in quotes ("password": "x") too: the quote between the name and the colon.
   [new RegExp(String.raw`\b([a-z0-9_]*?(?:token|password|passwd|secret|api[_-]?key|access[_-]?key|auth))(["']?)(=|:\s*)` + VALUE, 'gi'), '$1$2$3[redacted]'],
   [new RegExp(String.raw`(--?(?:token|password|passwd|pass|secret|api[_-]?key|access[_-]?key))(\s+)(?!-)` + VALUE, 'gi'), '$1$2[redacted]'],
   // An Authorization header whatever its scheme (Bearer, Basic, token, or none): GitHub takes "token <x>".
-  [/\b(authorization:\s*)(?:(?:bearer|basic|token)\s+)?[^\s"']+/gi, '$1[redacted]'],
+  // The key may be quoted ('Authorization': ...) and the quotes backslash-escaped (JSON inside a string).
+  [/\b(authorization\\?["']?\s*:\s*\\?["']?)(?:(?:bearer|basic|token)\s+)?[^\s"'\\]+/gi, '$1[redacted]'],
   [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 [redacted]'],
-  // curl -u user:pass, --user=user:pass: only a value holding a colon, so sudo -u bob and git push -u stay.
-  [/(?<!\S)(-u|--user)(\s+|=)(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s:"']+:\S+)/g, '$1$2[redacted]'],
+  // curl -u user:pass, -uuser:pass, --user=user:pass: only a value holding a colon, so sudo -u bob and git push -u
+  // stay. Either side of the colon may be empty (-u :PAT, -u key:); a quoted value (quotes possibly escaped) is taken
+  // whole and may be cut off before its closing quote, to the end of its line; a quoted tail (alice:"pa ss") is part
+  // of the password. host_layout.py's rule, character for character.
+  [/(?<!\S)(-u[ \t]*|--user(?:\s+|=))(?:\\?(?:"[^"\n]*:[^"\n]*"?|'[^'\n]*:[^'\n]*'?)[^\s;|&)]*|(?:[^\s:"';|&)]|"[^"\n]*"|'[^'\n]*')*:(?:"[^"\n]*"?|'[^'\n]*'?|[^\s;|&)"'])*)/g, '$1[redacted]'],
   [/\bxox[abposr]-[A-Za-z0-9-]{10,}/g, '[redacted]'], // Slack tokens
   [/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g, '[redacted]'],
   [/\bsk-[A-Za-z0-9_-]{16,}/g, '[redacted]'],

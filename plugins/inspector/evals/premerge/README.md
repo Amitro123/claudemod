@@ -107,6 +107,7 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-25 | #200 inspector: one BOM-tolerant reader for run-folder JSON (`leadsio.read_json`), long Windows paths in prompts | none (4 of 4 answered; typesafe/jev-1.13, $0.0003; run on b6999ad) | — |
 | 2026-11-25 | #186 inspector: one reader of OPENROUTER_API_KEY (`decide.api_key`); a malformed key is never sent or printed | none (4 of 4 answered; typesafe/jev-1.13, $0.0002; run on 4408297) | — (the leak was in the error path; none of the four questions asks about what an error message carries) |
 | 2026-11-25 | premerge eval table: `merge=union` in `.gitattributes` | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 0d914dd) | — |
+| 2026-11-25 | `.claude/skills/fix-issue`: the issue-to-PR procedure as a project skill | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on cffafdf) | — |
 | 2026-11-25 | retro trace: "Blocked or denied" lists refusals only (`refused()`) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 8d42792) | — |
 | 2026-11-25 | inspector: GitHub reads through REST where GraphQL is refused; `--unit` works the named unit | none (4 of 4 answered; typesafe/jev-1.13, $0.0003; run on baf8744) | — |
 | 2026-11-25 | inspector: scrub the decision-fix eval bodies; decide ARGV_USER_RE masks a cut-off list (inspector run lead) | none (4 of 4 answered; typesafe/jev-1.13, $0.0002; run on 71a50c8) | — |
@@ -114,3 +115,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-25 | #198 retro mask(): ARGV_USER_RE also ends a value at a line end or the end of the text | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 7537cb2) | — |
 | 2026-11-25 | retro mask(): the review fixes of #203 (`\r` ends an argv value, docstring, open item #13) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 9c37330) | — |
 | 2026-11-25 | tests: unique test file names, so `pytest plugins` collects (retro R2) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on d003247) | — |
+| 2026-11-25 | #195 brain-hud journal.ts: host_layout.py's #184 redaction rules; one shared case list | none (4 of 4 answered; typesafe/jev-1.13, $0.0003; run on c941737) | — |
