@@ -45,6 +45,24 @@ FORMS = [
     ("auth-ntlm", "Authorization: NTLM " + B64, B64),
     ("argv-list", 'run(["curl", "-u", "alice:' + PW + '", "https://x"])', PW),
     ("argv-list-user-eq", "['curl', '--user=alice:" + PW + "', 'https://x']", PW),
+    # 2026-11-25 inspector run (lead on transcript.py:457-459): shapes the inspector's copy of this masker (decide.py)
+    # gained in #199 and retro did not. Each fails on the code before this change.
+    ("bearer-lowercase", "curl -H 'bearer " + BODY + "' https://x", BODY),        # no Authorization name, scheme in lower case
+    ("bearer-uppercase", "BEARER " + BODY, BODY),
+    ("x-api-key-header", "curl -H 'x-api-key: " + BODY + "' https://x", BODY),    # Anthropic, many REST APIs
+    ("x-api-key-json", '{"X-Api-Key": "' + BODY + '"}', BODY),                    # the header name quoted, in a dict
+    ("x-api-key-equals", "X-API-KEY=" + BODY, BODY),
+    ("npm-token", "//registry.npmjs.org/ token npm_" + "Q7" * 18, "Q7" * 18),
+    ("stripe-live-key", "key " + STRIPE, BODY),
+    ("stripe-restricted-test", "rk_" + "test_" + BODY, BODY),
+    ("google-api-key", "key=AIza" + "Q7" * 17 + "Z", "Q7" * 17 + "Z"),             # 35 characters after AIza
+    ("aws-session-key-id", "ASIA" + "Q7ZX" * 4, "Q7ZX" * 4),                       # temporary credentials (STS)
+    # Review of #207: the form json.dumps gives (Call.brief()'s fallback) puts a letter right before the word: `\nBearer`
+    # is the two characters `\` `n`. Masked before #207 (no `\b`), so a `\b` there was a regression.
+    ("bearer-after-json-newline", '{"note": "line1\\nBearer ' + BODY + '"}', BODY),
+    ("bearer-after-json-tab", '{"h": "x\\tBearer ' + BODY + '"}', BODY),
+    ("bearer-glued-underscore", "auth_Bearer " + BODY, BODY),
+    ("x-api-key-after-json-newline", '{"h": "Accept: x\\nX-Api-Key: ' + BODY + '"}', BODY),
 ]
 
 
@@ -111,6 +129,11 @@ BOUNDARY = [
     ("curl-u-in-parens", "(curl -u alice:" + PW + ")", None, PW),                            # a credential before a close paren is still hidden
     ("auth-any-scheme-unquoted", "Authorization: Digest " + B64 + " https://x", None, B64),  # an unknown scheme word is consumed with its value
     ("auth-scheme-word-only-line", "Authorization: Bearer\nnext", "next", None),            # scheme with no value: stays on its line
+    # 2026-11-25 parity with the inspector copy: prose and short names stay readable
+    ("bearer-in-prose", "the bearer of bad news", "the bearer of bad news", None),            # under 16 characters after the word
+    ("npm-word-stays", "run npm_install and npm_config_cache", "run npm_install and npm_config_cache", None),  # under 30
+    ("stripe-short-stays", "sk_" + "live_ab", "sk_" + "live_ab", None),                       # under 10 after the prefix
+    ("x-api-key-in-prose", "send the x-api-key header", "send the x-api-key header", None),   # no `:` or `=`: no value
 ]
 
 
