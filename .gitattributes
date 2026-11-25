@@ -1,0 +1,3 @@
+# Each PR adds a row at the end of this table (CLAUDE.md), so two open PRs always collided there. The rows are
+# independent: git's built-in union merge keeps both sides' lines. tests/test_premerge_table_merge.py holds it.
+plugins/inspector/evals/premerge/README.md merge=union
