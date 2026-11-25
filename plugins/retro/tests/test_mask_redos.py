@@ -41,7 +41,7 @@ def run_masked(fn: str, prefix: str, fill: str, n: int, suffix: str = "", timeou
     """mask()/mask_data() on prefix + fill*n + suffix in a child process; the child's stdout, or TimeoutExpired."""
     spec = json.dumps({"fn": fn, "prefix": prefix, "fill": fill, "n": n, "suffix": suffix})
     r = subprocess.run([sys.executable, "-I", "-c", CHILD, str(DISTILL)], input=spec, capture_output=True,
-                       text=True, timeout=timeout, check=True)
+                       text=True, encoding="utf-8", timeout=timeout, check=True)
     return r.stdout.strip()
 
 
