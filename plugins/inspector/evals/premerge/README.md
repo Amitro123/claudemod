@@ -107,6 +107,7 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-25 | #200 inspector: one BOM-tolerant reader for run-folder JSON (`leadsio.read_json`), long Windows paths in prompts | none (4 of 4 answered; typesafe/jev-1.13, $0.0003; run on b6999ad) | — |
 | 2026-11-25 | #186 inspector: one reader of OPENROUTER_API_KEY (`decide.api_key`); a malformed key is never sent or printed | none (4 of 4 answered; typesafe/jev-1.13, $0.0002; run on 4408297) | — (the leak was in the error path; none of the four questions asks about what an error message carries) |
 | 2026-11-25 | premerge eval table: `merge=union` in `.gitattributes` | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 0d914dd) | — |
+| 2026-11-25 | retro trace: "Blocked or denied" lists refusals only (`refused()`) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 8d42792) | — |
 | 2026-11-25 | inspector: GitHub reads through REST where GraphQL is refused; `--unit` works the named unit | none (4 of 4 answered; typesafe/jev-1.13, $0.0003; run on baf8744) | — |
 | 2026-11-25 | inspector: scrub the decision-fix eval bodies; decide ARGV_USER_RE masks a cut-off list (inspector run lead) | none (4 of 4 answered; typesafe/jev-1.13, $0.0002; run on 71a50c8) | — |
 | 2026-11-25 | retro mask(): inspector's token, bearer and X-Api-Key shapes (inspector run lead) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 334ca10) | — |
