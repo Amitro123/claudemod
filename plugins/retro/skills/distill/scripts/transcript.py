@@ -462,9 +462,11 @@ TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat
                       r"sk-[A-Za-z0-9_-]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}|npm_[A-Za-z0-9]{30,}|"
                       r"AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)")
 # Any case (`bearer`, `BEARER`); the 16-character minimum keeps prose such as "the bearer of bad news" readable.
-BEARER_RE = re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]{16,}")
-# `X-Api-Key: VALUE` or `X-Api-Key=VALUE` in any case, the name possibly quoted (JSON, a curl -H argument).
-X_API_KEY_RE = re.compile(r"""(?i)\b(x-api-key\\?["']?[ \t]*[:=][ \t]*\\?["']?)[^\s"'\\]+""")
+# No `\b` before the word: in the text json.dumps gives (`\nBearer`, Call.brief()'s fallback) a letter sits right
+# before it, and the token went unmasked (review of #207). Nor before `x-api-key`, for the same reason.
+BEARER_RE = re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
+# An X-Api-Key header in any case: the name (possibly quoted, as in JSON or a curl -H argument), then `:` or `=`, then the key.
+X_API_KEY_RE = re.compile(r"""(?i)(x-api-key\\?["']?[ \t]*[:=][ \t]*\\?["']?)[^\s"'\\]+""")
 # An Authorization header: the scheme word (Bearer, Basic, Negotiate, NTLM, any name) is consumed with the value, and
 # both are hidden; the value stops at whitespace or a quote so a JSON string stays valid. And curl -u / --user
 # credentials: a colon is required (so `sudo -u bob` and `git push -u origin` stay) but either side of it may be empty

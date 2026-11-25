@@ -57,6 +57,12 @@ FORMS = [
     ("stripe-restricted-test", "rk_" + "test_" + BODY, BODY),
     ("google-api-key", "key=AIza" + "Q7" * 17 + "Z", "Q7" * 17 + "Z"),             # 35 characters after AIza
     ("aws-session-key-id", "ASIA" + "Q7ZX" * 4, "Q7ZX" * 4),                       # temporary credentials (STS)
+    # Review of #207: the form json.dumps gives (Call.brief()'s fallback) puts a letter right before the word: `\nBearer`
+    # is the two characters `\` `n`. Masked before #207 (no `\b`), so a `\b` there was a regression.
+    ("bearer-after-json-newline", '{"note": "line1\\nBearer ' + BODY + '"}', BODY),
+    ("bearer-after-json-tab", '{"h": "x\\tBearer ' + BODY + '"}', BODY),
+    ("bearer-glued-underscore", "auth_Bearer " + BODY, BODY),
+    ("x-api-key-after-json-newline", '{"h": "Accept: x\\nX-Api-Key: ' + BODY + '"}', BODY),
 ]
 
 
