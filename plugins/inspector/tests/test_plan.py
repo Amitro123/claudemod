@@ -675,6 +675,35 @@ def test_a_claim_hands_a_queued_case_to_exactly_one_reader(tmp_path) -> None:
     assert plan(run, "--claim", "5", "--reader", "1")[0] == 0
 
 
+# Windows: `mkdir` of a lock directory another reader is removing at that moment raises PermissionError (WinError 5,
+# Access is denied), not FileExistsError. Seen in CI (pytest-windows, run 45693931405): one of 8 claiming threads died
+# with it and the claim race test above came back with 7 answers. (id, what mkdir raises the first time, why)
+LOCK_RACES = [
+    ("exists", FileExistsError(17, "File exists"), "another reader holds the lock: the usual wait"),
+    ("windows-pending-delete", PermissionError(13, "Access is denied"), "the real CI error: the lock is being removed"),
+]
+
+
+@pytest.mark.parametrize("first", [r[1] for r in LOCK_RACES], ids=[r[0] for r in LOCK_RACES])
+def test_a_claim_waits_out_a_lock_that_is_taken_or_being_removed(tmp_path, monkeypatch, first) -> None:
+    run = make_run(tmp_path, 7)
+    assert plan(run)[0] == 0
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("plan_lock", PLAN)
+    pm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm)
+    real, calls = pm.os.mkdir, []
+
+    def mkdir(path, *a, **k):
+        if path.endswith(".lock") and not calls:
+            calls.append(path)
+            raise first
+        return real(path, *a, **k)
+    monkeypatch.setattr(pm.os, "mkdir", mkdir)
+    assert pm.claim(str(run), 3)[0] == 0, "the claim is made once the lock is free"
+    assert calls, "the first mkdir did fail"
+
+
 def test_the_queue_puts_the_cases_that_touch_the_most_files_first(tmp_path) -> None:
     run = make_run(tmp_path, 7)
     ev = json.loads((run / "evidence.json").read_text(encoding="utf-8"))
