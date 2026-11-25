@@ -25,6 +25,18 @@ uses it. Not verified: that agents' Writes there never ask for approval in an in
 
 **Same `where`, and no leads.** Two leads with one `where` are refused by `merge_verdicts.py`: give each a distinct suffix ` [lead N]` (a space, `[lead `, a number, `]`) on its `where` and in its verdict. The release gate compares on the `where` without the suffix and fails when a suffixed `where` repeats. With no lead at all, run `merge_verdicts.py` without `--verdicts` (`merged.json` is `[]`) and `handoff.py` (the "no leads" placeholder) so the folder still holds both files the gate requires; the generated plan lists both commands.
 
+**Keep the folder until the handoff is in the user's hands.** `open-bugs.md`, `merged.json`, the case file and
+`verdicts-*.json` are the run's durable output. Do not delete the run folder (a temporary `inspector-*` one
+included) until the user has its path, or an issue or PR that carries the handoff (issue #200: a temporary run
+folder was cleaned up right after the merge and the handoff was lost).
+
+**A JSON file a script refuses.** The scripts read UTF-8 with or without a BOM and name the file and the fault in
+one line (expected a JSON array, trailing data, the opening bracket may be missing, UTF-16). Have the agent that wrote the
+file write it again with its file-writing tool, or run the merge script again; never repair it in a shell. Windows
+PowerShell 5.1 adds a BOM with `-Encoding utf8` and writes UTF-16 with `>`, and in issue #200 a BOM strip by hand
+also removed the array's `[`. A PowerShell host that prints `Add-Content : Stream was not readable` around a command
+is the host's own noise, not a failure of the script; read the script's own output and exit code.
+
 ## Comparing plugin copies, and editing the plugin itself
 
 Compare two copies of the plugin: `python3 "<skill_root>/scripts/doctor.py" --repo <repo> --compare-plugin <other-plugin-root>`.
