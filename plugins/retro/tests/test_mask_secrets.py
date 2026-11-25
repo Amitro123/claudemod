@@ -167,8 +167,8 @@ PROBES = [
     ("Authorization: Bearer " + BODY, BODY), ("Authorization: Basic " + B64, B64), ("Authorization: token " + BODY, BODY),
     ("curl -u alice:" + PW + " https://x", PW), ("curl --user=alice:" + PW + " https://x", PW),
     ('headers={"Authorization": "Basic ' + B64 + '"}', B64),
-    # not a shared probe: brain-hud's redact_secrets keeps a quoted `'Authorization': 'token <hex>'`; retro masks it
-    # (test_mask_hides_each_form), and brain-hud is out of this change's scope.
+    # A quoted key with the token scheme: brain-hud masks it too since #194 (host_layout.py) and #195 (journal.ts).
+    ("headers={'Authorization': 'token " + "ab12" * 10 + "'}", "ab12" * 10),
 ]
 
 
