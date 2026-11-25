@@ -113,7 +113,9 @@ TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat
                       r"sk-[A-Za-z0-9_-]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}|npm_[A-Za-z0-9]{30,}|"
                       r"AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*)")
 # Any case (`bearer`, `BEARER`); the 16-character minimum keeps prose such as "the bearer of bad news" readable.
-BEARER_RE = re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]{16,}")
+# No `\b` before the word: in the text json.dumps gives (`\nBearer`, Call.brief()'s fallback) a letter sits right
+# before it, and the token went unmasked (review of #207). Nor before `x-api-key`, for the same reason.
+BEARER_RE = re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}")
 # An Authorization header: the scheme word (Bearer, Basic, Negotiate, any name) is consumed with the value; the header
 # name may be quoted (JSON, a Python dict) and so may the value; the match stays on one line.
 AUTH_HEADER_RE = re.compile(r"""(?i)\b(authorization\\?["']?[ \t]*:[ \t]*\\?["']?)(?:[A-Za-z][\w.-]*[ \t]+)?[^\s"'\\]+""")
@@ -149,7 +151,7 @@ ENV_SECRET_RE = re.compile(r"""(?<![A-Za-z0-9_])([A-Z0-9_]{0,60}(?:TOKEN|SECRET|
                            r"""(?:\\?"[^"\n]*(?:"|(?=\n)|\Z)|\\?'[^'\n]*(?:'|(?=\n)|\Z)|[^\s"']+)""")
 # `X-Api-Key: VALUE` or `X-Api-Key=VALUE` (spaces allowed around the sign) in any case, the name possibly quoted (JSON, a
 # curl -H argument).
-X_API_KEY_RE = re.compile(r"""(?i)\b(x-api-key\\?["']?[ \t]*[:=][ \t]*\\?["']?)[^\s"'\\]+""")
+X_API_KEY_RE = re.compile(r"""(?i)(x-api-key\\?["']?[ \t]*[:=][ \t]*\\?["']?)[^\s"'\\]+""")
 # A flag whose name holds password, passwd, passphrase, secret, token or api-key (`--password`, `--db-password`,
 # `--client-secret`, `--api-key`, `--secret=`), or is exactly `--pass`, and that is followed by `=` or by a space and a
 # value that does not start with a hyphen (`--password --verbose` has no value). The value is one shell word: segments
