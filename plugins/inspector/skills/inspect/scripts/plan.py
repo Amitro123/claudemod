@@ -35,6 +35,9 @@ import shlex
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # also under `python -I`
+import leadsio  # noqa: E402
+
 STRICT_JSON = ("strict JSON: write every path with forward slashes (C:/Users/...), never backslashes, and double any "
                "other backslash inside a string")   # 2026-11-15: a sweeper on Windows wrote C:\\Users raw; \\U broke the file
 CHUNK = 8
@@ -56,8 +59,25 @@ class Invalid(Exception):
     pass
 
 
+_WINDOWS = os.name == "nt"
+
+
+def long_abspath(p: str) -> str:
+    """The absolute path; on Windows a `~` may be an 8.3 short name (TEMP is often C:\\Users\\AMIT~1.ROS\\...), and
+    realpath gives the long one, so an agent's Read or git call names the same file the collector saved (issue #200).
+    Elsewhere, and without a `~`, no realpath: a folder reached through a link keeps the name the user gave it."""
+    a = os.path.abspath(p)
+    if _WINDOWS and "~" in a:
+        try:
+            a = os.path.realpath(a)
+        except (OSError, ValueError):
+            pass
+    return a
+
+
 def posix(p: str) -> str:
-    return os.path.abspath(p).replace("\\", "/")
+    """The absolute path with forward slashes, as prompts and plan.md name it."""
+    return long_abspath(p).replace("\\", "/")
 
 
 def one_line(s, cap=120) -> str:
@@ -66,10 +86,9 @@ def one_line(s, cap=120) -> str:
 
 def load(path: str):
     try:
-        with open(path, encoding="utf-8") as f:
-            return json.loads(f.read())
-    except (OSError, ValueError) as e:
-        raise Invalid(f"{path}: {str(e)[:100]}")
+        return leadsio.read_json(path)
+    except leadsio.LeadsError as e:
+        raise Invalid(f"{posix(path)}: {str(e).split(': ', 1)[-1][:200]}")
 
 
 class Ctx:
@@ -555,9 +574,10 @@ def plan_md(c: Ctx, doc: dict, verify: dict | None) -> str:
 
 def build_verify(c: Ctx, files: dict) -> dict:
     lp = os.path.join(c.run, "leads.json")
-    leads = load(lp)
-    if not isinstance(leads, list) or not all(isinstance(x, dict) and isinstance(x.get("where"), str) and x["where"] for x in leads):
-        raise Invalid("leads.json: expected an array of objects, each with a non-empty string `where`")
+    try:
+        leads = leadsio.read_leads_json(lp)
+    except leadsio.LeadsError as e:
+        raise Invalid(f"{posix(lp)}: {str(e).split(': ', 1)[-1]}")
     qs = host_questions(leads)
     asked = {w for w, _ in qs}
     # The leads with a documentation question go last, so they share the last chunk(s): those verifiers start after the
