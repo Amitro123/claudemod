@@ -22,6 +22,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import transcript as T  # noqa: E402
 
 BLOCK_RE = re.compile(r"\b(blocked|denied|not allowed|permission|refused|rejected by|requires approval)\b", re.I)
+# A call the host reported as done is a refusal only when its first line says so where a refusal is written: at its
+# end (`cat: /x: Permission denied`, `... (publickey).`, git's `returned error: 403`) or at its start after an optional
+# `program: ` prefix (`request blocked: ...`, `HTTP 403: ...`, `Permission to o/r.git denied ...`, Claude Code's
+# "Permission for this action was denied"). The bare words turn up anywhere in ordinary output (2026-11-25: GitHub's
+# `mergeable_state: blocked`; a grep quoting these phrases; a file `forbidden_words.py`; review of #205).
+REFUSAL_END_RE = re.compile(r"(?i)(?:permission denied|operation not permitted|access denied|returned error: 40[13])"
+                            r"(?: \([^)\n]*\))?\.?\s*$")
+REFUSAL_START_RE = re.compile(r"(?i)^\s*(?:[\w.@/-]+:\s+)?(?:request blocked|permission for this action was denied|"
+                              r"permission to \S+ denied|access denied|(?:HTTP(?:/[\d.]+)? )?403(?::| forbidden\b)|"
+                              r"forbidden\s*$)")
+
+
+EXIT_LINE_RE = re.compile(r"\AExit code \d+[ \t]*\r?\n")
+
+
+def said(c: T.Call, width: int = 200) -> str:
+    """The first line of what the host answered, after a failed Bash result's leading `Exit code N` line."""
+    text = EXIT_LINE_RE.sub("", c.result or "", count=1)
+    return first_line(text, width) if text.strip() else ""
+
+
+def refused(c: T.Call) -> bool:
+    """The host refused this call: a failed call on BLOCK_RE's words, a call reported done only on a refusal where one
+    is written (REFUSAL_START_RE, REFUSAL_END_RE). A
+    text transcript has no exit status (`ok` is None): BLOCK_RE's words are all there is to go on."""
+    # Claude Code opens a failed Bash result with an `Exit code N` line; the refusal, if any, is the line after it.
+    head = said(c, 400)
+    if not head:
+        return False
+    if c.ok:
+        return bool(REFUSAL_START_RE.match(head) or REFUSAL_END_RE.search(head))
+    return bool(BLOCK_RE.search(head))
 
 
 def norm(cmd: str) -> str:
@@ -66,8 +98,8 @@ def digest(sess: T.Session, steps: int = 80) -> dict:
     kinds = Counter(key(c) for c in calls)
     repeats = [{"what": k, "times": n} for k, n in kinds.most_common() if n >= 3]
     loops = [{"call": f"{t}: {b}", "times": n} for (t, b), n in exact.items() if n >= 2]
-    blocked = [{"step": i + 1, "call": c.brief(), "said": first_line(c.result)}
-               for i, c in enumerate(calls) if c.result and BLOCK_RE.search(first_line(c.result, 400))]
+    blocked = [{"step": i + 1, "call": c.brief(), "said": said(c)}
+               for i, c in enumerate(calls) if refused(c)]
     collapsed, last = [], None
     for i, c in enumerate(calls):
         k = (c.tool, norm(c.brief(400)))
