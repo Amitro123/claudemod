@@ -97,6 +97,13 @@ OTHER_RULES = [
     ("many-flags", "", "-u ", "", "CURL_USER_RE: a flag at every third character"),
     ("many-argv-openers", "", '"-u", "a', "", "ARGV_USER_RE: an opener at every start"),
     ("many-argv-colon-bs", "", '"-u", "a:\\', "", "ARGV_USER_RE: opener, colon and a backslash, repeated"),
+    # Review of #207: the patterns ported from inspector, with inspector's own hostile shapes (test_decide_scrub.py)
+    ("bearer-repeats", "", "bearer ", "", "BEARER_RE: a start at every word, each short of 16"),
+    ("bearer-long-blanks", "Bearer", " ", "x", "BEARER_RE: a long run of blanks after the word"),
+    ("x-api-key-repeats", "", "x-api-key:", "", "X_API_KEY_RE: a name and sign at every start"),
+    ("x-api-key-quotes", "", '"x-api-key"\\"', "", "X_API_KEY_RE: quoted names with escaped quotes"),
+    ("x-api-key-blanks", "x-api-key", " ", "=", "X_API_KEY_RE: a long run of blanks before the sign"),
+    ("token-prefixes", "", "npm_sk_live_AIza", "", "TOKEN_RE: a prefix at every start, none long enough"),
 ]
 
 

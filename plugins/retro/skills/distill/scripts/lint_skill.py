@@ -28,7 +28,7 @@ import transcript as T  # noqa: E402
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 REF_RE = re.compile(r"(?:<skill_root>/|(?<![\w/.-]))((?:scripts|references|assets)/[\w./-]+\.\w+)")
 PRIVATE = [("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")), ("azure-devops-pat", T.ADO_PAT_RE),
-           ("email", T.EMAIL_RE), ("guid", T.GUID_RE), ("token", T.TOKEN_RE), ("bearer", T.BEARER_RE),
+           ("email", T.EMAIL_RE), ("guid", T.GUID_RE), ("token", T.TOKEN_RE), ("bearer", T.BEARER_RE), ("x-api-key", T.X_API_KEY_RE),
            ("session-link", T.SESSION_URL_RE), ("home-path", re.compile(r"(?i)\b(?:[A-Z]:\\Users\\|/Users/)(?!\[user\])[^\\/\s'\"`<]+"))]
 ALLOWED_EMAIL_DOMAINS = ("example.com", "example.org", "example.net", "users.noreply.github.com", "anthropic.com")
 

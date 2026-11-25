@@ -272,6 +272,13 @@ def test_lint_refuses_private_data_bad_names_and_missing_files(tmp_path):
     assert len(warnings) == 4
 
 
+def test_lint_refuses_an_x_api_key_header(tmp_path):
+    # Review of #207: mask() hides `X-Api-Key: <key>` since #207, so a skill draft holding one is private data too.
+    d = tmp_path / "keyed"
+    write_skill(d, 'Call it with curl -H "X-Api-Key: ' + "q7zx9w3e" * 3 + '" https://x.\n')
+    assert any("x-api-key" in e for e in L.lint(d)[0]), L.lint(d)[0]
+
+
 def test_lint_allows_example_addresses(tmp_path):
     d = tmp_path / "ok"
     write_skill(d, "Write to a@example.com.\n")
