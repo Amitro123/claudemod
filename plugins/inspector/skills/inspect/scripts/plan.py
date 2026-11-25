@@ -244,15 +244,18 @@ class claim_lock:
             try:
                 os.mkdir(self.path)
                 return self
-            except FileExistsError:
+            except (FileExistsError, PermissionError) as e:
+                # On Windows a lock another claim is removing at that moment answers PermissionError (WinError 5),
+                # not FileExistsError: wait for it as for a held lock (pytest-windows, 2026-11-25).
+                if time.monotonic() > deadline:
+                    why = "another claim holds" if isinstance(e, FileExistsError) else f"could not create ({e.strerror or e})"
+                    raise Invalid(f"{why} {self.path}; try again")
                 try:
                     if time.time() - os.stat(self.path).st_mtime > self.STALE:
                         os.rmdir(self.path)
                         continue
                 except OSError:
                     continue
-                if time.monotonic() > deadline:
-                    raise Invalid(f"another claim holds {self.path}; try again")
                 time.sleep(0.02)
 
     def __exit__(self, *exc):

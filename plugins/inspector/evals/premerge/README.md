@@ -116,3 +116,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-25 | retro mask(): the review fixes of #203 (`\r` ends an argv value, docstring, open item #13) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 9c37330) | — |
 | 2026-11-25 | inspector tests: retro's and inspector's masker copies keep their shared rules identical | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 3b4a04e) | — |
 | 2026-11-25 | #195 brain-hud journal.ts: host_layout.py's #184 redaction rules; one shared case list | none (4 of 4 answered; typesafe/jev-1.13, $0.0003; run on c941737) | — |
+| 2026-11-25 | inspector plan.py: a claim waits out a lock being removed on Windows | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 7cd7fe3) | — |
