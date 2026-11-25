@@ -22,6 +22,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import transcript as T  # noqa: E402
 
 BLOCK_RE = re.compile(r"\b(blocked|denied|not allowed|permission|refused|rejected by|requires approval)\b", re.I)
+# A call the host reported as done is a refusal only when its first line opens with one, after an optional
+# `program: ` prefix: the bare words above turn up anywhere in ordinary output (2026-11-25: GitHub's
+# `mergeable_state: blocked`, twice; a grep whose output quoted these very phrases from source code).
+REFUSAL_RE = re.compile(r"^\s*(?:[\w.@/-]+:\s+)?(?:permission denied|access denied|request blocked|forbidden|"
+                        r"(?:HTTP/[\d.]+ )?403\b|permission for this action was denied)", re.I)
+
+
+def refused(c: T.Call) -> bool:
+    """The host refused this call: a failed call on BLOCK_RE's words, a call reported done only on REFUSAL_RE's. A
+    text transcript has no exit status (`ok` is None): BLOCK_RE's words are all there is to go on."""
+    head = first_line(c.result, 400) if c.result else ""
+    if not head:
+        return False
+    return bool(REFUSAL_RE.match(head) if c.ok else BLOCK_RE.search(head))
 
 
 def norm(cmd: str) -> str:
@@ -67,7 +81,7 @@ def digest(sess: T.Session, steps: int = 80) -> dict:
     repeats = [{"what": k, "times": n} for k, n in kinds.most_common() if n >= 3]
     loops = [{"call": f"{t}: {b}", "times": n} for (t, b), n in exact.items() if n >= 2]
     blocked = [{"step": i + 1, "call": c.brief(), "said": first_line(c.result)}
-               for i, c in enumerate(calls) if c.result and BLOCK_RE.search(first_line(c.result, 400))]
+               for i, c in enumerate(calls) if refused(c)]
     collapsed, last = [], None
     for i, c in enumerate(calls):
         k = (c.tool, norm(c.brief(400)))

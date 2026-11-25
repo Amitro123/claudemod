@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed: the digest's "Blocked or denied" listed calls whose output only mentioned a word like `blocked` or `permission` (a real digest listed GitHub's `mergeable_state: blocked` twice, and a grep that quoted refusal phrases from source code), while they had succeeded. A failed call is still listed on those words. A call that succeeded is listed only when its first line opens with a refusal (`Permission denied`, `request blocked`, `403`, Claude Code's "Permission for this action was denied"), after an optional `program: ` prefix. A text transcript, which has no exit status, keeps the word rule. `tests/test_trace_blocked.py` holds the rows, four of them real results from that session; on the code before this fix 7 of its 11 tests fail.
+
 ## 0.3.0 (2026-11-20)
 
 `/retro:distill` routes each lesson to where it holds (a check, a test, access, guidance, a skill, a model choice or no change) before drafting a skill; masking covers private keys and Azure DevOps PATs and keeps JSON valid; agent-audit splits resumed agents, judges scratch by location and reports what it could only take on the agent's word; the board shows disagreements between writers.
