@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed (security, #198): `mask()` left a `curl -u` credential in an argument list visible when the list was cut off inside the value (a digest caps long lines): `ARGV_USER_RE` needed a closing quote after it. The value now also ends at a line end or the end of the text, after an optional backslash. Seven rows in `tests/test_mask_redos.py` (`cut-*`: after a backslash, no closing quote, after an escaped backslash, at a newline, the `json.dumps` and single-quoted forms) fail on the code before the fix. A value cut right after a backslash is masked with that backslash.
+
 ## 0.3.0 (2026-11-20)
 
 `/retro:distill` routes each lesson to where it holds (a check, a test, access, guidance, a skill, a model choice or no change) before drafting a skill; masking covers private keys and Azure DevOps PATs and keeps JSON valid; agent-audit splits resumed agents, judges scratch by location and reports what it could only take on the agent's word; the board shows disagreements between writers.
