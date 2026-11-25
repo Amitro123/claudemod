@@ -46,8 +46,11 @@ when_to_use: "The user names an issue to fix or says to start the next one: 'ת�
    then its row in `plugins/inspector/evals/premerge/README.md` (flag, worth changing?, `run on <sha>`), commit,
    push. If it prints `the diff was cut at 40k characters`, the PR says which part it read and the rest gets its own
    review.
-10. **PR** with the sections of `references/pr-body.md`, then the pre-merge output as a comment, unchanged.
-    Done: the PR link and the comment link.
+10. **PR, as a draft** (`gh api repos/<owner>/<name>/pulls -F draft=true …`) with the sections of
+    `references/pr-body.md`, then the pre-merge output as a comment, unchanged. GitHub refuses to merge a draft, so a
+    review's fixes can't be left behind by an early merge (#203). Done: the PR link and the comment link.
+11. **Ready** once the review is done and its fixes are pushed: `gh pr ready <n>`, or in a Claude Code cloud session
+    `gh api -X POST repos/<owner>/<name>/pulls/<n>/ccr/ready_for_review`. Then say it's ready to merge.
 
 ## Rules
 
@@ -67,7 +70,7 @@ when_to_use: "The user names an issue to fix or says to start the next one: 'ת�
 - `test_skill_md_stays_within_its_size_budget` fails → inspector's SKILL.md is at its 3900-word cap → put the line in a reference file it points to.
 - `test_doc_commands.py` fails after a docs edit → a code span with nested backticks broke the command parser → plain words in docs.
 - A commit went up with a test failing → `pytest … | tail -1 && git commit` takes `tail`'s exit code → run the suite on its own and check `$?`.
-- A review fixed after the PR merged → the merge came before the fixes were pushed → push review fixes before saying a PR is ready; if it merged, open the rest as a new PR.
+- A review fixed after the PR merged → the merge came before the fixes were pushed → keep the PR a draft until they are (step 10); if it merged anyway, open the rest as a new PR.
 - An env-var test row with `\x00` errors before the code runs → the OS refuses NUL in the environment → pick a control character a user can paste (`\x1b`).
 - The fix passes its table but the real-input run still shows a false hit → the rule was too loose for real output → add that output as a row, tighten, rerun both.
 - Two open PRs conflict only in the premerge eval table → both appended a row → keep both rows (or `merge=union`, PR #204).
