@@ -1039,6 +1039,12 @@ describe('worker text quoted into MISTAKES.md or context has its secrets redacte
     const left = (CASES.redact as [string, string][]).filter(([said, secret]) => redact(said).includes(secret))
     expect(left).toEqual([])
     expect((CASES.keep as string[]).filter(k => redact(k) !== k)).toEqual([])
+    // #195: the secret goes and the rest of the command stays (a flag with no value, a separator, the next line).
+    const after = (CASES.after as [string, string[], string[]][]).filter(([said, gone, stays]) => {
+      const out = redact(said)
+      return gone.some(g => out.includes(g)) || stays.some(k => !out.includes(k))
+    })
+    expect(after.map(([said]) => said)).toEqual([])
   })
 })
 
