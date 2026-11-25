@@ -56,6 +56,10 @@ MASKED = [
     ("curl -u quoted, with a space in the password", 'curl -u "alice:p w" url', "curl -u [token] url"),
     ("curl --user=", "curl --user=alice:pw url", "curl --user=[token] url"),
     ("argument-list form of curl -u", '["curl", "-u", "alice:pw"]', '["curl", "-u", "[token]"]'),
+    # The copy of retro's #198 gap (2026-11-25 inspector run): an argument list cut off inside the value.
+    ("argument list cut with no closing quote", '["curl", "-u", "alice:pw', '["curl", "-u", "[token]'),
+    ("argument list cut after a backslash", '["curl", "-u", "alice:pw\\', '["curl", "-u", "[token]'),
+    ("argument list cut at a line end", '["curl", "-u", "alice:pw\nnext', '["curl", "-u", "[token]\nnext'),
     ("password inside a URL", "git clone https://bob:hunter2@github.com/o/r.git",
      "git clone https://[token]@github.com/o/r.git"),
     ("?key= query value", "GET /v1/x?key=abc123def456&x=1", "GET /v1/x?key=[token]&x=1"),
@@ -394,6 +398,27 @@ def test_the_premerge_body_carries_no_token():
     premerge.check(f"+++ b/x.py\n+token = '{GH}'\n+curl -u alice:pw url\n", f"fix {SK}", post=post)
     sent = json.dumps(post.bodies)
     assert post.bodies and GH not in sent and SK not in sent and "alice:pw" not in sent
+
+
+class ChatRecorder(Recorder):
+    def __call__(self, url, body, headers):
+        self.bodies.append(body)
+        return {"choices": [{"message": {"content": "{}"}}]}
+
+
+def test_the_decision_fix_eval_bodies_carry_no_token(monkeypatch):
+    # 2026-11-25 inspector run: evals/decision-fix/client.py built both bodies itself and never scrubbed them, and its
+    # input carries commit subjects and changed code lines (run.py unit_text). A copy left behind by #199.
+    sys.path.insert(0, str(Path(__file__).parent.parent / "evals" / "decision-fix"))
+    import client
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k-test")
+    units = f"#1 fix {SK}\n+token = '{GH}'\n+curl -H 'Authorization: Bearer {'r' * 24}'"
+    qs = [{"id": "#1", "text": f"Unit #1 ({AKIA}): a fix?"}]
+    for call, post in ((lambda p: client.openrouter_decisions(units, qs, post=p), Recorder()),
+                       (lambda p: client.openrouter_decide(units, qs, "m/x", post=p), ChatRecorder())):
+        call(post)
+        sent = json.dumps(post.bodies)
+        assert post.bodies and not any(s in sent for s in (SK, GH, AKIA, "r" * 24)), sent[:300]
 
 
 def test_the_merge_cards_pair_body_carries_no_token():

@@ -126,7 +126,7 @@ CURL_USER_RE = re.compile(r"""(?<![^\s"'])(-u[ \t]*|--user(?:[ \t]+|=))"""
 # Changed from the retro copy: its single-backslash branch `\\(?!["'])` also matches the first of a `\\` pair, which the pair
 # branch matches too, so a long run of backslashes backtracked exponentially (a 20k run never finished). Here the single
 # branch refuses a following backslash, so each text has one way to match.
-ARGV_USER_RE = re.compile(r"""(\\?["'](?:-u|--user)\\?["']\s*,\s*\\?["'])(?:[^"'\\\n:]|\\\\|\\(?![\\"']))*:(?:[^"'\\\n]|\\\\|\\(?![\\"']))*(?=\\?["'])""")
+ARGV_USER_RE = re.compile(r"""(\\?["'](?:-u|--user)\\?["']\s*,\s*\\?["'])(?:[^"'\\\n:]|\\\\|\\(?![\\"']))*:(?:[^"'\\\n]|\\\\|\\(?![\\"']))*(?=\\?(?:["']|\n|\Z))""")
 PRIVATE_KEY_RE = re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|(?=(?<!\\)")|\Z)', re.S)
 ADO_PAT_RE = re.compile(r"(?<![A-Za-z0-9])[a-z2-7]{52}(?![A-Za-z0-9])")      # an Azure DevOps PAT: 52 lowercase base32
 # https://user:password@host (the password is the secret; a token alone as the user is caught by TOKEN_RE).
