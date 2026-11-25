@@ -36,7 +36,11 @@ export type Goal = {
   // When its plan was last proposed: a re-plan restarts the task ids at t1, so two copies of one goal
   // merge task by task only when they hold the same plan; else the newer plan wins.
   planAt?: number
+  // A factory goal only: what its run last told goal-run (/session-goal factory-run <state>, #192). Its tasks being
+  // done doesn't reach it; the run's `reached` does.
+  factoryRun?: FactoryRunState
 }
+export type FactoryRunState = 'reached' | 'reopen' | 'stopped' | 'needs-human'
 
 // Work started from the followups to-do list (its Start button) while a goal is open: counted apart,
 // and offered to the goal as tasks until the person answers.

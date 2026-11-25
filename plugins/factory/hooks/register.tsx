@@ -98,7 +98,7 @@ import type { Issue, Queue, QueueState } from './issues'
 import { addUsage, costOf, DEFAULT_CONFIG, parseConfig, protectedHits, usd } from './config'
 import type { FactoryConfig } from './config'
 import { applyRulings, changedOf, diffLines, disputable, forbiddenCommand, forbiddenInReview, forbiddenTool, routeReview } from './route'
-import { FACTORY_START_TOOL, factoryArgs, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, parsePlanResultArgs, toolText } from './texts'
+import { FACTORY_START_TOOL, factoryArgs, factoryRunArgs, type FactoryRunState, type GoalTask, parseFactoryArgs, parsePlanApprovedArgs, parsePlanOutcome, parsePlanResultArgs, toolText } from './texts'
 
 // Every run of the session, by slug, in the order they started: up to `concurrency` at work at once.
 const runs = atom({ plugin: 'factory', key: 'runs' } as const, {} as Record<string, Run>)
@@ -229,6 +229,7 @@ async function patch($: EngineInterface, rid: string, fn: (r: Run) => Run): Prom
   const t = await $.clock.now()
   let refused = false
   let moved = false
+  let from: Phase | null = null
   let out: Run | null = null
   await update($, runs, all => {
     const key = rid || pickRun(all)?.slug
@@ -245,13 +246,27 @@ async function patch($: EngineInterface, rid: string, fn: (r: Run) => Run): Prom
       }
     }
     out = next
+    from = cur.phase
     moved = next.phase !== cur.phase
     return next === cur ? all : { ...all, [key]: next }
   })
   // At each step the run's state goes to its record, so a restart doesn't lose it.
   const kept = out as Run | null
   if (!refused && moved && kept?.record) await $.fs.write(`${kept.record}/${SAVED_RUN}`, JSON.stringify(kept)).catch(() => {})
+  // A goal-run goal is reached by its run, not by its builder's tasks (#192): goal-run hears the run's state.
+  const told = !refused && moved && kept ? goalRunState(from, kept) : null
+  if (told) $.clock.after(0, () => void $.command.run({ command: 'session-goal', args: factoryRunArgs(told) }).catch(() => {}))
   return refused ? null : out
+}
+
+// What a phase change tells goal-run about a run its plan came from: the goal is reached at ready (approved) or
+// done (the PR); a build after the first one is a review round's fixes; stopped and needs-human say so. Else nothing.
+export function goalRunState(from: Phase | null, r: Run): FactoryRunState | null {
+  if (r.gate !== 'goal-run' || !r.goalTasks?.length) return null
+  if (r.phase === 'ready' || r.phase === 'done') return 'reached'
+  if (r.phase === 'build') return from && from !== 'plan' && from !== 'build' ? 'reopen' : null
+  if (r.phase === 'stopped' || r.phase === 'needs-human') return r.phase
+  return null
 }
 
 // A move to a phase the run works in clears what it was blocked on.

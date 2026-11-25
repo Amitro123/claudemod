@@ -4,6 +4,8 @@ Earlier releases are described in the repository README.
 
 ## Unreleased
 
+- Fixed (#192): a factory goal in goal-run showed **Goal reached!** as soon as the builder had marked every task, while the run was still in review (its reviewers had sent changes back) and had no approver verdict and no PR. On each phase change, the factory now tells goal-run its run's state with `/session-goal factory-run <state>`: `reached` at ready or done, `reopen` when a build follows a review or checks, and `stopped` or `needs-human`. goal-run reaches a factory goal only on `reached`. With all its tasks done, the pane says the run is in review; the update tool says review and approval are still ahead; a stopped run never closes the goal. One rule (`completeStatus`) covers marking a task, adding a side job, closing a to-do item and merging two sessions. A person's own goal is unchanged.
+
 ## 0.28.0 (2026-11-20)
 
 Survives a restart (`/factory resume`), re-runs a failing check on the base before sending the builder back (`baseFailures`), takes session links out of the builder's commits, hands out shell-safe PR commands for the right repository, keeps what the reviewers didn't check (`notChecked`), and budgets from measured runs.
