@@ -8,9 +8,12 @@ them (N=36 took 4 s, N=40 did not finish). A transcript line holding such a run 
 What each table pins. Regression tests (they fail on the code before the fix): test_backslash_run_terminates (the
 N=200 rows), test_long_backslash_run_is_linear (its long rows), the `email-dots` row of
 test_other_rules_linear_at_200k, and test_email_leading_punctuation (the EMAIL_RE rows). Pins (they PASS on the
-code before the fix, so they are not failing-first): the 9 MASK_ROWS rows and the other 9 rows of
+code before the fix, so they are not failing-first): the first 9 MASK_ROWS rows and the other 9 rows of
 test_other_rules_linear_at_200k; they only guard that the fix did not change what is masked or break a shape that
 was already linear. Do not read them as regression tests.
+
+Issue #198 (broken invariant: "an argument-list value ends only at a closing quote"): the `cut-*` MASK_ROWS rows are
+regression tests, failing on the code before #203: a list cut off inside the value kept the password.
 
 Every hostile input runs in a subprocess with a hard timeout: a regression shows as a timeout, never as a hung test
 run. Never call mask() on these inputs in the test process itself."""
@@ -94,6 +97,13 @@ OTHER_RULES = [
     ("many-flags", "", "-u ", "", "CURL_USER_RE: a flag at every third character"),
     ("many-argv-openers", "", '"-u", "a', "", "ARGV_USER_RE: an opener at every start"),
     ("many-argv-colon-bs", "", '"-u", "a:\\', "", "ARGV_USER_RE: opener, colon and a backslash, repeated"),
+    # Review of #207: the patterns ported from inspector, with inspector's own hostile shapes (test_decide_scrub.py)
+    ("bearer-repeats", "", "bearer ", "", "BEARER_RE: a start at every word, each short of 16"),
+    ("bearer-long-blanks", "Bearer", " ", "x", "BEARER_RE: a long run of blanks after the word"),
+    ("x-api-key-repeats", "", "x-api-key:", "", "X_API_KEY_RE: a name and sign at every start"),
+    ("x-api-key-quotes", "", '"x-api-key"\\"', "", "X_API_KEY_RE: quoted names with escaped quotes"),
+    ("x-api-key-blanks", "x-api-key", " ", "=", "X_API_KEY_RE: a long run of blanks before the sign"),
+    ("token-prefixes", "", "npm_sk_live_AIza", "", "TOKEN_RE: a prefix at every start, none long enough"),
 ]
 
 
@@ -120,6 +130,16 @@ MASK_ROWS = [
     ("backslash-before-newline", '"-u", "alice:' + PW + '", "x\\\nnext line', PW, "next line", "a backslash before a newline later in the text does not reach back into the match"),
     ("email-with-underscore", "x_alice@example.com", "alice", "example.com", "keep-pin, passes on old code too: `_` is in the local-part class, so it is masked with the rest of the local part before and after the fix"),
     ("escaped-form", '\\"-u\\", \\"alice:' + PW + '\\"', PW, "", "the json.dumps form"),
+    # Issue #198: an argument list cut off inside the value (a digest caps long lines). Each fails on the code before
+    # the fix, which needed a closing quote after the value.
+    ("cut-after-backslash", '"-u", "alice:' + PW + '\\', PW, "", "#198 row 1: cut right after one backslash, the start of an escaped quote"),
+    ("cut-no-closing-quote", '"-u", "alice:' + PW, PW, "", "#198 row 2: cut with no closing quote"),
+    ("cut-after-escaped-backslash", '"-u", "alice:' + PW + '\\\\', PW, "", "#198 row 3: an escaped backslash (a pair) is part of the password, then the text ends"),
+    ("cut-at-newline", '"-u", "alice:' + PW + '\nnext line', PW, "next line", "a cut line inside a multi-line text: the value stops at the line end, the next line is kept"),
+    ("cut-backslash-at-newline", '"-u", "alice:' + PW + '\\\nnext line', PW, "next line", "the same with the cut right after a backslash"),
+    ("cut-escaped-form", '\\"-u\\", \\"alice:' + PW, PW, "", "the json.dumps form, cut off"),
+    ("cut-single-quoted", "'-u', 'alice:" + PW, PW, "", "the Python repr form (single quotes), cut off"),
+    ("cut-at-crlf", '"-u", "alice:' + PW + '\r\nnext line', PW, "\r\nnext line", "review of #203: a Windows line end; the value stops at `\\r`, which is kept"),
 ]
 
 
