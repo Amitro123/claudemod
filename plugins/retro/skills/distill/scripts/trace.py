@@ -34,11 +34,16 @@ REFUSAL_START_RE = re.compile(r"(?i)^\s*(?:[\w.@/-]+:\s+)?(?:request blocked|per
                               r"forbidden\s*$)")
 
 
+EXIT_LINE_RE = re.compile(r"\AExit code \d+[ \t]*\r?\n")
+
+
 def refused(c: T.Call) -> bool:
     """The host refused this call: a failed call on BLOCK_RE's words, a call reported done only on a refusal where one
     is written (REFUSAL_START_RE, REFUSAL_END_RE). A
     text transcript has no exit status (`ok` is None): BLOCK_RE's words are all there is to go on."""
-    head = first_line(c.result, 400) if c.result else ""
+    # Claude Code opens a failed Bash result with an `Exit code N` line; the refusal, if any, is the line after it.
+    text = EXIT_LINE_RE.sub("", c.result or "", count=1)
+    head = first_line(text, 400) if text.strip() else ""
     if not head:
         return False
     if c.ok:
