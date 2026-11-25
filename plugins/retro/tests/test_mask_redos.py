@@ -127,6 +127,15 @@ MASK_ROWS = [
     ("backslash-before-newline", '"-u", "alice:' + PW + '", "x\\\nnext line', PW, "next line", "a backslash before a newline later in the text does not reach back into the match"),
     ("email-with-underscore", "x_alice@example.com", "alice", "example.com", "keep-pin, passes on old code too: `_` is in the local-part class, so it is masked with the rest of the local part before and after the fix"),
     ("escaped-form", '\\"-u\\", \\"alice:' + PW + '\\"', PW, "", "the json.dumps form"),
+    # Issue #198: an argument list cut off inside the value (a digest caps long lines). Each fails on the code before
+    # the fix, which needed a closing quote after the value.
+    ("cut-after-backslash", '"-u", "alice:' + PW + '\\', PW, "", "#198 row 1: cut right after one backslash, the start of an escaped quote"),
+    ("cut-no-closing-quote", '"-u", "alice:' + PW, PW, "", "#198 row 2: cut with no closing quote"),
+    ("cut-after-escaped-backslash", '"-u", "alice:' + PW + '\\\\', PW, "", "#198 row 3: an escaped backslash (a pair) is part of the password, then the text ends"),
+    ("cut-at-newline", '"-u", "alice:' + PW + '\nnext line', PW, "next line", "a cut line inside a multi-line text: the value stops at the line end, the next line is kept"),
+    ("cut-backslash-at-newline", '"-u", "alice:' + PW + '\\\nnext line', PW, "next line", "the same with the cut right after a backslash"),
+    ("cut-escaped-form", '\\"-u\\", \\"alice:' + PW, PW, "", "the json.dumps form, cut off"),
+    ("cut-single-quoted", "'-u', 'alice:" + PW, PW, "", "the Python repr form (single quotes), cut off"),
 ]
 
 
