@@ -35,7 +35,7 @@ ROWS = [
     ("failed-permission-denied", "cat /root/secret", "cat: /root/secret: Permission denied", True, True,
      "the shell's own refusal, the call failed"),
     ("failed-exit-code-first", "cat /root/secret", "Exit code 1\ncat: /root/secret: Permission denied", True, True,
-     "real shape (review of #205): Claude Code opens a failed Bash result with `Exit code N`, the refusal is line 2"),
+     "review of #205: Claude Code opens a failed Bash result with `Exit code N` (every one in a real transcript); the refusal is line 2"),
     ("failed-exit-code-only", "false", "Exit code 1", True, False, "a failure with nothing after it is not a refusal"),
     ("ok-ssh-denied-in-a-chain", "git push origin x; echo done", "git@github.com: Permission denied (publickey).", False, True,
      "a refusal on the first line of a chain whose last command succeeded, so the call reports done"),
@@ -84,6 +84,8 @@ def test_blocked_lists_refusals_only(tmp_path, row) -> None:
     d = TR.digest(T.load(session_file(tmp_path, [row])))
     assert d["stats"]["calls"] == 1
     assert bool(d["blocked"]) == row[4], d["blocked"]
+    if d["blocked"]:
+        assert not d["blocked"][0]["said"].startswith("Exit code"), d["blocked"]   # what the host said, not the exit line
 
 
 def test_the_real_session_shape_lists_only_the_denial(tmp_path) -> None:

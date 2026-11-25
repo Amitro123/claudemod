@@ -37,13 +37,18 @@ REFUSAL_START_RE = re.compile(r"(?i)^\s*(?:[\w.@/-]+:\s+)?(?:request blocked|per
 EXIT_LINE_RE = re.compile(r"\AExit code \d+[ \t]*\r?\n")
 
 
+def said(c: T.Call, width: int = 200) -> str:
+    """The first line of what the host answered, after a failed Bash result's leading `Exit code N` line."""
+    text = EXIT_LINE_RE.sub("", c.result or "", count=1)
+    return first_line(text, width) if text.strip() else ""
+
+
 def refused(c: T.Call) -> bool:
     """The host refused this call: a failed call on BLOCK_RE's words, a call reported done only on a refusal where one
     is written (REFUSAL_START_RE, REFUSAL_END_RE). A
     text transcript has no exit status (`ok` is None): BLOCK_RE's words are all there is to go on."""
     # Claude Code opens a failed Bash result with an `Exit code N` line; the refusal, if any, is the line after it.
-    text = EXIT_LINE_RE.sub("", c.result or "", count=1)
-    head = first_line(text, 400) if text.strip() else ""
+    head = said(c, 400)
     if not head:
         return False
     if c.ok:
@@ -93,7 +98,7 @@ def digest(sess: T.Session, steps: int = 80) -> dict:
     kinds = Counter(key(c) for c in calls)
     repeats = [{"what": k, "times": n} for k, n in kinds.most_common() if n >= 3]
     loops = [{"call": f"{t}: {b}", "times": n} for (t, b), n in exact.items() if n >= 2]
-    blocked = [{"step": i + 1, "call": c.brief(), "said": first_line(c.result)}
+    blocked = [{"step": i + 1, "call": c.brief(), "said": said(c)}
                for i, c in enumerate(calls) if refused(c)]
     collapsed, last = [], None
     for i, c in enumerate(calls):
