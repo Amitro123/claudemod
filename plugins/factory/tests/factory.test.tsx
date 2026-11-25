@@ -6,6 +6,7 @@ import { applyRulings, changedOf, diffLines, forbiddenCommand, forbiddenInReview
 import { buildPrompt, extrasFrom, ledgerOf, LENSES, outcomesLine, prCommands, prMergeCommand, prPrompt, prRepoOf, resumeState, safeForIssue, SESSION_LINK_FILTER, SQUELCHED_FILTER_BRANCH, sessionLinkCommits, shq, skepticPrompt } from '../hooks/flow'
 import type { Run } from '../types'
 import { posix } from './support/posix'
+import { goalRunState } from '../hooks/register'
 import { linesByFile, parseIntake, reviewPlan, touchesUi } from '../hooks/intake'
 import { costLine, DEFAULT_CONFIG, globMatch, parseConfig, protectedHits } from '../hooks/config'
 import { issueFile, parsePages, parseRestIssue, parseRestIssueList, queueLines, refusal, trustedComments, type Issue } from '../hooks/issues'
@@ -3486,5 +3487,54 @@ describe('several runs at once (concurrency)', () => {
     await answer($, 'a1', INTAKE('ACCEPT'))
     expect(w.spawned).toHaveLength(3)
     expect(JSON.parse(w.written['/repo/.factory/queue.json']!)['1'].state).toBe('stopped')
+  })
+})
+
+// Issue #192: a factory goal in goal-run was "reached" as soon as the builder marked its tasks, while the run was
+// still in review. The run now tells goal-run its state on each phase change (/session-goal factory-run <state>).
+describe('goal-run hears the run, not only the plan (#192)', () => {
+  const goalRun = { gate: 'goal-run', goalTasks: [{ id: 't1', title: 'Bucket' }] } as unknown as Run
+  // (from, to, what goal-run is told, why)
+  const ROWS: [string | null, string, string | null, string][] = [
+    ['plan', 'build', null, 'the first build: the plan was just approved, nothing to reopen'],
+    ['review', 'build', 'reopen', 'a review round sent findings back to the builder'],
+    ['checks', 'build', 'reopen', 'failed checks send the builder back too'],
+    ['needs-human', 'build', 'reopen', 'a retry after an escalation rebuilds'],
+    ['build', 'checks', null, 'mid-run steps say nothing'],
+    ['review', 'approve', null, 'the approver deciding is not yet reached'],
+    ['approve', 'ready', 'reached', 'approved: the PR waits for the person'],
+    ['merging', 'done', 'reached', 'the PR is opened'],
+    ['review', 'stopped', 'stopped', 'stopped by the person: never reached'],
+    ['review', 'needs-human', 'needs-human', 'escalated: the person decides'],
+  ]
+  for (const [from, to, told, why] of ROWS) {
+    test(`${from} -> ${to}: ${told ?? 'nothing'} (${why})`, () => {
+      expect(goalRunState(from as never, { ...goalRun, phase: to } as Run)).toBe(told as never)
+    })
+  }
+
+  test('a run of its own (no goal-run plan) tells goal-run nothing', () => {
+    expect(goalRunState('approve', { gate: 'factory', phase: 'ready' } as unknown as Run)).toBeNull()
+    expect(goalRunState('approve', { gate: 'goal-run', goalTasks: [], phase: 'ready' } as unknown as Run)).toBeNull()
+  })
+
+  test('a goal-run run with findings sends reopen, and a stop sends stopped', { options: { skeptic: 'off' } } as never, async ($: Engine, on: On) => {
+    const w = engine(on)
+    const told: string[] = []
+    on('command.run', { command: 'session-goal' }, (_, e) => {
+      told.push(String(e.args))
+      return { text: '' } as never
+    })
+    await startRun($)
+    await answer($, 'a1', SPEC_ANSWER)
+    await command($, factoryPlanApprovedArgs([{ id: 't1', title: 'Token bucket core' }]))
+    await answer($, 'a2', 'built')
+    await answer($, 'a3', PASS)
+    await answer($, 'a4', CHANGES)
+    await w.clock.advance(10)
+    expect(told).toEqual(['factory-run reopen'])
+    await command($, 'stop')
+    await w.clock.advance(10)
+    expect(told).toEqual(['factory-run reopen', 'factory-run stopped'])
   })
 })

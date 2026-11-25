@@ -5,7 +5,7 @@ import type { Asking, Goal, Pace, Priority, Side, Task, TaskStatus } from '../ty
 import { TRACK_SIZE, trackSvg, trackText } from './art'
 import type { Pose } from './art'
 import { hasCommand, pick, projectOf } from './runtime'
-import { brainGoalReachedArgs, FACTORY_SOURCE, FACTORY_START_TOOL, factoryArgs, factoryChosenForGoal, factoryPlanApprovedArgs, factoryPlanResultArgs, GOAL_REACHED, goalClosedNote, goalPrompt, goalReachedToast, parseDoneResult, parseStartPrompt, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, PLAN_WAITING_FOR_FACTORY, planChangesForFactory, toolText } from './texts'
+import { brainGoalReachedArgs, FACTORY_SOURCE, FACTORY_START_TOOL, factoryArgs, factoryChosenForGoal, factoryPlanApprovedArgs, factoryPlanResultArgs, FACTORY_TASKS_DONE, GOAL_REACHED, goalClosedNote, parseFactoryRunArgs, goalPrompt, goalReachedToast, parseDoneResult, parseStartPrompt, planApprovedForFactory, PLAN_KEPT_FOR_FACTORY, PLAN_WAITING_FOR_FACTORY, planChangesForFactory, toolText } from './texts'
 // The goal-run tests import the start-prompt parser from here, as before it was shared.
 export { parseStartPrompt }
 
@@ -274,7 +274,8 @@ export function mergeGoal(base: Goal | null, mine: Goal, theirs: Goal): Goal {
     pace: pick(mine.pace, b.pace, theirs.pace),
     activeId,
     tasks: oneRunning,
-    status: status === 'active' && allDone ? 'done' : status,
+    // A factory goal is reached by its run, never by its tasks alone (#192).
+    status: status === 'active' && allDone && pick(mine.source, b.source, theirs.source) !== FACTORY_SOURCE ? 'done' : status,
     other: sum(mine.other, b.other, theirs.other),
     outside: sum(mine.outside, b.outside, theirs.outside) || undefined,
   }
@@ -443,6 +444,40 @@ function tellFactory($: EngineInterface, result: string): string {
 
 const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ')
 
+// What a factory goal's run told goal-run (/session-goal factory-run <state>, #192). Idempotent, and harmless for a
+// person's own goal: commands between mods arrive in any order, and twice.
+async function onFactoryRun($: EngineInterface, state: NonNullable<Goal['factoryRun']>): Promise<string> {
+  const g = await read($, goal)
+  if (!g || g.source !== FACTORY_SOURCE || g.status === 'planning' || g.status === 'proposed') return 'No factory goal to update.'
+  if (state === 'reached') {
+    if (g.status === 'done') return 'The goal is already reached.'
+    await setGoal($, cur => (cur ? { ...cur, status: 'done', factoryRun: 'reached', activeId: null, tasks: cur.tasks.map(t => ({ ...t, status: 'done' as const })) } : cur))
+    $.ui.toast(goalReachedToast(g.text))
+    $.clock.after(0, () => void $.command.run({ command: 'brain', args: brainGoalReachedArgs(g.text) }).catch(() => {}))
+    return `Goal reached: ${g.text}.`
+  }
+  if (state === 'reopen') {
+    // A review round sent findings back: one task stands for its fixes until the run is reached.
+    await setGoal($, cur => {
+      if (!cur) return cur
+      const open = cur.tasks.some(t => t.status !== 'done')
+      const id = `t${cur.tasks.reduce((n, t) => Math.max(n, idNum(t.id)), 0) + 1}-${tail()}`
+      const tasks = open ? cur.tasks : [...cur.tasks, { id, title: "Fix the review's findings", status: 'pending' as const, tokens: 0, priority: 'high' as const }]
+      return { ...cur, status: 'active', factoryRun: 'reopen', tasks }
+    })
+    return 'The goal is open again: the review sent findings back.'
+  }
+  await setGoal($, cur => (cur && cur.status !== 'done' ? { ...cur, factoryRun: state } : cur))
+  return `The goal stays open: the factory run ${state === 'stopped' ? 'stopped' : 'needs you'}.`
+}
+
+// The line a factory goal's pane shows while it is not reached.
+export function factoryNote(g: Goal): string {
+  if (g.factoryRun === 'stopped') return 'The factory run stopped: the goal is not reached.'
+  if (g.factoryRun === 'needs-human') return 'The factory run needs you: see the Factory tab.'
+  return g.tasks.length > 0 && g.tasks.every(t => t.status === 'done') ? 'All tasks done: the factory run is in review.' : ''
+}
+
 // Closes the goal task a done to-do item became, and notes it for a side job still waiting to be
 // added. Returns the goal's text when that closed the goal, else ''.
 async function closeFromTodo($: EngineInterface, ref: string): Promise<string> {
@@ -472,7 +507,14 @@ async function closeFromTodo($: EngineInterface, ref: string): Promise<string> {
 export function withStatus(g: Goal, id: string, status: TaskStatus): Goal {
   const tasks = g.tasks.map(t => (t.id === id ? { ...t, status } : t))
   const activeId = status === 'in_progress' ? id : g.activeId === id ? null : g.activeId
-  return { ...g, tasks, activeId, status: tasks.every(t => t.status === 'done') ? 'done' : 'active' }
+  return { ...g, tasks, activeId, status: completeStatus(g, tasks) }
+}
+
+// Whether a goal is reached by its tasks: all done for a person's goal. A factory goal's tasks are its builder's
+// first pass, and the run still has review and approval ahead: only its run's `reached` closes it (#192).
+export function completeStatus(g: Goal, tasks: Task[]): 'active' | 'done' {
+  if (g.source === FACTORY_SOURCE) return g.status === 'done' ? 'done' : 'active'
+  return tasks.length > 0 && tasks.every(t => t.status === 'done') ? 'done' : 'active'
 }
 
 // The side job's items as new tasks at the end of the plan: in progress (or done, if followups closed
@@ -496,7 +538,7 @@ export function addSide(g: Goal, sj: Side, suffix = tail()): { goal: Goal; taskI
       tasks,
       activeId: firstOpen ? firstOpen.id : g.activeId,
       outside: Math.max(0, (g.outside ?? 0) - sj.tokens),
-      status: tasks.every(t => t.status === 'done') ? 'done' : 'active',
+      status: completeStatus(g, tasks),
     },
     taskIds: added.map(t => t.id),
   }
@@ -672,6 +714,9 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'session-goal' }, async ($, e) => {
     const arg = e.args.trim()
+    const run = parseFactoryRunArgs(arg)
+    if (run === null) return { text: 'factory-run takes reached, reopen, stopped or needs-human.' }
+    if (run) return { text: await onFactoryRun($, run) }
     if (arg === 'clear') {
       await setGoal($, () => null)
       return { text: 'Goal cleared.' }
@@ -756,6 +801,7 @@ export const register: Register = (on, options) => {
     const where = `${id} is ${status.replace('_', ' ')}. ${now.tasks.filter(t => t.status === 'done').length}/${now.tasks.length} tasks done (${percentOf(now)}%).`
     const next = now.tasks.find(t => t.status === 'pending')
     if (now.status === 'done') return { result: `${where} ${GOAL_REACHED}` }
+    if (now.source === FACTORY_SOURCE && !next && now.tasks.every(t => t.status === 'done')) return { result: `${where} ${FACTORY_TASKS_DONE}` }
     // In a factory run the builder works through the tasks on its own: nothing to ask, nowhere to send it.
     if (status !== 'done' || !next || now.source === FACTORY_SOURCE) return { result: where }
     if (paceOf(now) === 'run') return { result: `${where} Go straight on to ${next.id}: ${next.title}.` }
@@ -1024,6 +1070,7 @@ export const register: Register = (on, options) => {
           </Box>
         ) : null}
         {g.status === 'done' ? <Text color="#1f9d6b" bold>Goal reached!</Text> : null}
+        {g.status === 'active' && g.source === FACTORY_SOURCE && factoryNote(g) ? <Text color="#c9a227">{factoryNote(g)}</Text> : null}
         {g.tasks.length ? (
           <Box flexDirection="column">
             {g.tasks.map(t => (

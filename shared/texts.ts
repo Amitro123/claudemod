@@ -66,6 +66,8 @@ export const goalPrompt = (text: string) => `My goal for this session: ${text}`
 export const parseGoalPrompt = (text: string) => /^My goal for this session: (.+)$/m.exec(text)?.[1]?.trim() ?? null
 export const goalReachedToast = (text: string) => `Goal reached: ${text}`
 export const GOAL_REACHED = 'The goal is reached.'
+// #192: a factory goal's tasks are the builder's first pass; the run still has review and approval ahead.
+export const FACTORY_TASKS_DONE = 'All tasks are done; the factory run still has to pass review and approval before the goal is reached.'
 // goal-run: the note it adds to followups' done result when that to-do item closed the goal's last task.
 export const goalClosedNote = (text: string) => `That closed the last task of the session goal "${text}". ${GOAL_REACHED}`
 export const parseGoalClosedNote = (text: string) => /^That closed the last task of the session goal "(.+)"\. /.exec(text)?.[1] ?? null
@@ -138,6 +140,18 @@ export function parsePlanOutcome(text: string): { approved: true; goalTasks?: Go
 // tool's answer from its own hook only when that hook runs above goal-run's, which Claude Code doesn't
 // promise, or from PostToolUse; the command reaches it whatever the order. Twice is harmless: the
 // factory acts on a plan's answer only while the plan waits.
+// The reverse of plan-approved (#192): the factory tells goal-run its run's state with /session-goal factory-run
+// <state>, so a factory goal is reached when the run is (ready or done), not when its builder marks the tasks.
+export const FACTORY_RUN_ARG = 'factory-run'
+export const FACTORY_RUN_STATES = ['reached', 'reopen', 'stopped', 'needs-human'] as const
+export type FactoryRunState = (typeof FACTORY_RUN_STATES)[number]
+export const factoryRunArgs = (state: FactoryRunState) => `${FACTORY_RUN_ARG} ${state}`
+// The state /session-goal's arguments carry; undefined for other arguments, null for a state it doesn't know.
+export function parseFactoryRunArgs(args: string): FactoryRunState | null | undefined {
+  const m = /^factory-run(?:\s+(\S+))?\s*$/.exec(args.trim())
+  if (!m) return undefined
+  return (FACTORY_RUN_STATES as readonly string[]).includes(m[1] ?? '') ? (m[1] as FactoryRunState) : null
+}
 export const FACTORY_PLAN_RESULT_ARG = 'plan-result'
 export const factoryPlanResultArgs = (result: string) => `${FACTORY_PLAN_RESULT_ARG} ${result}`
 // The outcome /factory's arguments carry; undefined for other arguments, null for an answer it can't read.

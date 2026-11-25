@@ -119,3 +119,4 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-25 | #195 brain-hud journal.ts: host_layout.py's #184 redaction rules; one shared case list | none (4 of 4 answered; typesafe/jev-1.13, $0.0003; run on c941737) | — |
 | 2026-11-25 | inspector plan.py: a claim waits out a lock being removed on Windows | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 7cd7fe3) | — |
 | 2026-11-25 | `.claude/skills/review-pr`: the factory review loop, and `update_branch.py` | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 93aa338) | — |
+| 2026-11-25 | #192 goal-run + factory: a factory goal is reached by its run, not by its builder's tasks | none (4 of 4 answered; typesafe/jev-1.13, $0.0005; run on ab6b1d0; the diff was cut at 40k characters, so INCOMPLETE: read through plugins/goal-run/hooks/texts.ts, not the goal-run tests, types or shared/texts.ts) | — |

@@ -1310,3 +1310,94 @@ describe('inspector open-bugs: two sessions on one goal (#5, #9)', () => {
     expect(after.tasks[2]!.tokens).toBe(400)
   })
 })
+
+// Issue #192. Broken invariant: "a goal is reached when its tasks are done". For a factory goal it isn't: its
+// builder marks every task done after its first pass, while the run still has to pass review and approval, and
+// the Goal tab said "Goal reached!" while the Factory tab showed review with three major findings. The factory now
+// tells goal-run its run's state (/session-goal factory-run <state>); only `reached` closes the goal.
+describe('a factory goal is reached by its run, not by its tasks (#192)', () => {
+  async function factoryGoalAllDone($: Engine, on: On) {
+    const ran: string[] = []
+    // Another mod's command (brain-hud's, the factory's) is answered here, as in the brain test above; goal-run's own
+    // /session-goal goes on to its handler.
+    on('command.run', (_, e) => {
+      if (e.command === 'session-goal') return undefined as never
+      ran.push(`${e.command} ${e.args ?? ''}`.trim())
+      return { text: '' } as never
+    })
+    const w = engine(on, { answers: ['Approve, start building'] })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await $.tool.call({ tool: PLAN, goal: 'Ship it', source: 'factory', tasks: [{ title: 'Bucket', priority: 'high' }, { title: 'Tests', priority: 'medium' }] } as never)
+    await $.tool.call({ tool: UPDATE, id: 't1', status: 'done' } as never)
+    const last = await $.tool.call({ tool: UPDATE, id: 't2', status: 'done' } as never)
+    return { w, ran, last }
+  }
+  const saved = (w: { saved: Record<string, unknown> }) => w.saved['goal:/repo'] as Goal
+
+  test("the builder's last task leaves the goal waiting for the run: no toast, no 'reached', the pane says so", async ($, on) => {
+    const { w, last } = await factoryGoalAllDone($, on)
+    expect(String(last.result)).not.toMatch(/The goal is reached/)
+    expect(String(last.result)).toMatch(/review and approval/)
+    expect(w.toasts.filter(t => t.startsWith('Goal reached'))).toEqual([])
+    expect(saved(w).status).toBe('active')
+    const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
+    const text = await texts(pane)
+    expect(text).not.toMatch(/Goal reached!/)
+    expect(text).toMatch(/in review/)
+    await pane.unmount()
+  })
+
+  test('the run reaching ready closes the goal once, whatever order the commands come in', async ($, on) => {
+    const { w, ran } = await factoryGoalAllDone($, on)
+    await $.command.run({ command: 'session-goal', args: 'factory-run reached' } as never)
+    await $.command.run({ command: 'session-goal', args: 'factory-run reached' } as never)
+    await w.clock.advance(10)
+    expect(saved(w).status).toBe('done')
+    expect(w.toasts.filter(t => t === 'Goal reached: Ship it')).toHaveLength(1)
+    expect(ran.filter(c => c.startsWith('brain '))).toEqual([`brain ${brainGoalReachedArgs('Ship it')}`])
+    const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
+    expect(await texts(pane)).toMatch(/Goal reached!/)
+    await pane.unmount()
+  })
+
+  test('a review round that sends findings back reopens the goal', async ($, on) => {
+    const { w } = await factoryGoalAllDone($, on)
+    await $.command.run({ command: 'session-goal', args: 'factory-run reopen' } as never)
+    const g = saved(w)
+    expect(g.status).toBe('active')
+    expect(g.tasks.some(t => t.status !== 'done')).toBe(true)
+    // reached after the fixes: every task closes with the goal
+    await $.command.run({ command: 'session-goal', args: 'factory-run reached' } as never)
+    expect(saved(w).status).toBe('done')
+    expect(saved(w).tasks.every(t => t.status === 'done')).toBe(true)
+  })
+
+  for (const state of ['stopped', 'needs-human'] as const) {
+    test(`a run that is ${state} never closes the goal, and the pane says it`, async ($, on) => {
+      const { w } = await factoryGoalAllDone($, on)
+      await $.command.run({ command: 'session-goal', args: `factory-run ${state}` } as never)
+      expect(saved(w).status).toBe('active')
+      expect(w.toasts.filter(t => t.startsWith('Goal reached'))).toEqual([])
+      const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
+      expect(await texts(pane)).toMatch(state === 'stopped' ? /factory run stopped/ : /needs you/)
+      await pane.unmount()
+    })
+  }
+
+  test("a person's own goal is untouched by factory-run commands", async ($, on) => {
+    const w = engine(on, { answers: ['Approve, run through'] })
+    await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true } as never)
+    await $.tool.call({ tool: PLAN, goal: 'Mine', tasks: ['A'] } as never)
+    await $.command.run({ command: 'session-goal', args: 'factory-run reached' } as never)
+    expect(saved(w).status).toBe('active')
+    expect(saved(w).text).toBe('Mine')
+  })
+
+  test('two sessions merging a factory goal whose tasks are all done keep it waiting for the run', () => {
+    const tasks = [{ id: 't1', title: 'A', status: 'done' as const, tokens: 0 }, { id: 't2', title: 'B', status: 'done' as const, tokens: 0 }]
+    const g = { text: 'Ship it', status: 'active' as const, source: 'factory' as const, tasks, activeId: null, setAt: 1, other: 0 } as unknown as Goal
+    expect(mergeGoal(g, g, g).status).toBe('active')
+    const own = { ...g, source: undefined } as unknown as Goal
+    expect(mergeGoal(own, own, own).status).toBe('done')
+  })
+})
