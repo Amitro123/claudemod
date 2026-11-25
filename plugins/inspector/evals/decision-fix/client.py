@@ -26,9 +26,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "inspect" / "scripts"))
+import decide as _decide_mod  # noqa: E402  (api_key: one reader of OPENROUTER_API_KEY, issue #186; `decide` is a function here)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -122,11 +127,19 @@ def parse_decisions(res: dict, keys: dict[str, str]) -> tuple[dict[str, dict], i
     return out, refusals
 
 
+def _key() -> str:
+    """The key as decide.api_key() reads it (one reader for every caller, issue #186); raises without the value."""
+    key, bad = _decide_mod.api_key()
+    if bad:
+        raise RuntimeError(bad)
+    return key
+
+
 def openrouter_decisions(shared_input: str, questions: list[dict], model: str = DECISION_MODEL,
                          post=None) -> tuple[dict[str, dict], dict]:
     """Gemini Decision 1 (or another decisions model) through OpenRouter: (answers, meta)."""
     post = post or _post
-    key = os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy"
+    key = _key()
     body, keys = decisions_body(shared_input, questions, model)
     t0 = time.monotonic()
     res = post(DECISIONS_URL, body, {"Authorization": f"Bearer {key}", "Accept": "application/json"})
@@ -151,7 +164,7 @@ def _post(url: str, body: dict, headers: dict, timeout: int = 300) -> dict:
 
 def openrouter_decide(shared_input: str, questions: list[dict], model: str, post=_post) -> tuple[dict[str, dict], dict]:
     """(answers, meta): meta has the model that answered, its token usage and the wall time of the call."""
-    key = os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy"
+    key = _key()
     body = {"model": model, "messages": openrouter_messages(shared_input, questions), "temperature": 0,
             "response_format": {"type": "json_object"}}
     t0 = time.monotonic()

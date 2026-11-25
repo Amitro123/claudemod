@@ -228,6 +228,25 @@ def _http_code(err: Exception) -> int | None:
     return int(m.group(1)) if m else None
 
 
+KEY_PLACEHOLDER = "set-by-the-session-proxy"   # no variable: the session's network proxy injects the key
+
+
+def api_key() -> tuple[str, str | None]:
+    """(key, None) to send, or ("", reason) when OPENROUTER_API_KEY holds something that is not a key.
+
+    Spaces and line ends around the value are stripped (a .env line or `echo` adds a newline). Whitespace or a
+    control character inside is never part of a key: nothing is sent, and the reason gives the length, never the
+    value (issue #186: urllib's `Invalid header value b'Bearer <key>\\n'` carried the whole key into the report).
+    Every caller that sends the key reads it here."""
+    raw = os.environ.get("OPENROUTER_API_KEY")
+    key = (raw or KEY_PLACEHOLDER).strip()
+    if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in key):
+        return "", (f"OPENROUTER_API_KEY holds {len(key)} characters with whitespace or a control character inside: "
+                    f"that is not a key (a pasted command, or a key split over two lines?), so nothing was sent; "
+                    f"set it again")
+    return key, None
+
+
 def _post(url: str, body: dict, headers: dict, timeout: int = 120) -> dict:
     req = urllib.request.Request(url, data=json.dumps(scrub(body)).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json", **headers})
@@ -243,19 +262,17 @@ def ask(texts: dict[str, str], model: str = DEFAULT_MODEL, post=None) -> tuple[d
     unit the service refused (after the request was split down to that one unit) to the reason: the other units
     keep their answers."""
     post = post or _post
-    key = (os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy").strip()
+    key, bad_key = api_key()
     labels = list(texts)
     out: dict[str, float] = {}
     # `cost` is the run's total only when every request reported one; otherwise None, with what is known in
     # `known_cost` (2026-11-14 review, O114-01: a reply without usage.cost read as $0). A reported 0 stays 0.
     meta: dict = {"model": model, "asked": len(labels), "requests": 0, "seconds": 0.0, "cost": None,
                   "known_cost": 0.0, "cost_complete": True, "skipped": {}}
-    if re.search(r"\s", key):
+    if bad_key:
         # 2026-11-15: a pasted COMMAND (74 characters with spaces) sat in the variable, and the service answered
-        # 401 "Missing Authentication header", which reads as a wrong key. A header value with whitespace inside is
-        # never a key. Say so and send nothing; the value is never printed.
-        meta["error"] = (f"OPENROUTER_API_KEY holds {len(key)} characters with whitespace inside: that is not a key "
-                         f"(a pasted command?), so nothing was sent; set it again")
+        # 401 "Missing Authentication header", which reads as a wrong key. Say so and send nothing.
+        meta["error"] = bad_key
         labels = []
     headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
     meta["attempts"] = 0          # every request sent; `requests` stays the count that came back answered

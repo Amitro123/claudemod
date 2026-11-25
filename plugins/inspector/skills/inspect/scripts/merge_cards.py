@@ -254,11 +254,13 @@ def ask_pairs(raw: list[dict], possible: list[tuple], model: str, post=None) -> 
             "questions": {k: {"type": "noul", "criteria": PAIR_CRITERIA,
                               "instructions": f"Pair {k[1:]}: do Lead A and Lead B describe the same defect, so that one fix would close both?"}
                           for k in keys}})
-    key = (os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy").strip()
+    key, bad_key = decide.api_key()
     import time
     t0 = time.monotonic()
     out: dict[tuple[int, int], float] = {}
     try:
+        if bad_key:
+            raise RuntimeError(bad_key)
         res = post(decide.DECISIONS_URL, body, {"Authorization": f"Bearer {key}", "Accept": "application/json"})
         if not isinstance(res, dict):
             raise ValueError(f"a reply of type {type(res).__name__}, not an object")

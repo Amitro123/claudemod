@@ -90,9 +90,11 @@ def check(diff: str, title: str = "", model: str = decide.DEFAULT_MODEL, cut: fl
         return {"flagged": [], "p": {}, "meta": {**meta, "skipped": "empty diff: nothing asked", "answered": 0,
                                                "missing": list(QUESTIONS)}}
     body, meta["diff_cut"] = request_body(diff, title, model)
-    key = os.environ.get("OPENROUTER_API_KEY") or "set-by-the-session-proxy"
+    key, bad_key = decide.api_key()
     t0 = time.monotonic()
     try:
+        if bad_key:
+            raise RuntimeError(bad_key)
         res = post(decide.DECISIONS_URL, body, {"Authorization": f"Bearer {key}", "Accept": "application/json"})
         if not isinstance(res, dict):
             raise ValueError(f"a reply of type {type(res).__name__}, not an object")
