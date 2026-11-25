@@ -115,4 +115,5 @@ those the guard is a test that covers the whole family (the route guard's corpus
 | 2026-11-25 | #198 retro mask(): ARGV_USER_RE also ends a value at a line end or the end of the text | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 7537cb2) | — |
 | 2026-11-25 | retro mask(): the review fixes of #203 (`\r` ends an argv value, docstring, open item #13) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 9c37330) | — |
 | 2026-11-25 | tests: unique test file names, so `pytest plugins` collects (retro R2) | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on d003247) | — |
+| 2026-11-25 | inspector tests: retro's and inspector's masker copies keep their shared rules identical | none (4 of 4 answered; typesafe/jev-1.13, $0.0001; run on 3b4a04e) | — |
 | 2026-11-25 | #195 brain-hud journal.ts: host_layout.py's #184 redaction rules; one shared case list | none (4 of 4 answered; typesafe/jev-1.13, $0.0003; run on c941737) | — |
